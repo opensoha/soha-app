@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Name=Soha
+Comment=Soha cross-platform client
+# The Exec line includes %u to pass the URL to the application
+Exec=/usr/local/bin/soha-app %u
+Terminal=false
+Type=Application
+Icon=soha-app
+Categories=Utility;
+StartupWMClass=soha-app
+
+ 

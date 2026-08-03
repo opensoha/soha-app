@@ -1,0 +1,11 @@
+{
+  "name": "soha-app-frontend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "npm --prefix ../../soha-web run dev -- --host 127.0.0.1",
+    "build:dev": "npm --prefix ../../soha-web run build:app",
+    "build": "npm --prefix ../../soha-web run build:app"
+  }
+}

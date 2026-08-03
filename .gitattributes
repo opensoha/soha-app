@@ -1,0 +1,5 @@
+build/android/gradlew.bat -whitespace
+build/ios/LaunchScreen.storyboard -whitespace
+build/linux/appimage/build.sh -whitespace
+build/linux/desktop -whitespace
+build/windows/** -whitespace

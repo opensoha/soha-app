@@ -1,0 +1,15 @@
+{
+	"fixed": {
+		"file_version": "0.1.0"
+	},
+	"info": {
+		"0000": {
+			"ProductVersion": "0.1.0",
+			"CompanyName": "OpenSoha",
+			"FileDescription": "Soha cross-platform client",
+			"LegalCopyright": "Copyright 2026 OpenSoha",
+			"ProductName": "Soha",
+			"Comments": "Phase 1 technical preview"
+		}
+	}
+}
