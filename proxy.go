@@ -10,14 +10,12 @@ import (
 )
 
 const apiPrefix = "/api/v1"
+const appPrefix = "/app/v1"
 
-func newAppHandler(static http.Handler, rawServerURL string) (http.Handler, error) {
-	target, err := url.Parse(rawServerURL)
-	if err != nil || target.Host == "" || (target.Scheme != "http" && target.Scheme != "https") {
-		return nil, fmt.Errorf("invalid SOHA_SERVER_URL %q", rawServerURL)
-	}
-	if target.User != nil || target.RawQuery != "" || target.Fragment != "" {
-		return nil, fmt.Errorf("SOHA_SERVER_URL must not contain credentials, query, or fragment")
+func newAppHandler(static, runtimeAPI http.Handler, rawServerURL string) (http.Handler, error) {
+	target, err := parseServerURL(rawServerURL)
+	if err != nil {
+		return nil, err
 	}
 
 	proxy := httputil.NewSingleHostReverseProxy(target)
@@ -32,10 +30,25 @@ func newAppHandler(static http.Handler, rawServerURL string) (http.Handler, erro
 	}
 
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == appPrefix || strings.HasPrefix(request.URL.Path, appPrefix+"/") {
+			runtimeAPI.ServeHTTP(writer, request)
+			return
+		}
 		if request.URL.Path == apiPrefix || strings.HasPrefix(request.URL.Path, apiPrefix+"/") {
 			proxy.ServeHTTP(writer, request)
 			return
 		}
 		static.ServeHTTP(writer, request)
 	}), nil
+}
+
+func parseServerURL(rawServerURL string) (*url.URL, error) {
+	target, err := url.Parse(rawServerURL)
+	if err != nil || target.Host == "" || (target.Scheme != "http" && target.Scheme != "https") {
+		return nil, fmt.Errorf("invalid SOHA_SERVER_URL %q", rawServerURL)
+	}
+	if target.User != nil || target.RawQuery != "" || target.Fragment != "" {
+		return nil, fmt.Errorf("SOHA_SERVER_URL must not contain credentials, query, or fragment")
+	}
+	return target, nil
 }

@@ -17,8 +17,23 @@ func main() {
 	if serverURL == "" {
 		serverURL = "http://127.0.0.1:8080"
 	}
+	catalogPath := strings.TrimSpace(os.Getenv("SOHA_APP_SOFTWARE_CATALOG"))
+	var catalog softwareCatalog
+	if catalogPath != "" {
+		catalog = fileSoftwareCatalog{path: catalogPath}
+	} else {
+		remoteCatalog, err := newServerSoftwareCatalog(serverURL)
+		if err != nil {
+			log.Fatal(err)
+		}
+		catalog = remoteCatalog
+	}
 
-	handler, err := newAppHandler(application.AssetFileServerFS(assets), serverURL)
+	runtimeAPI := &appRuntime{
+		version:  appVersion,
+		software: newSoftwareLibrary(catalog),
+	}
+	handler, err := newAppHandler(application.AssetFileServerFS(assets), runtimeAPI, serverURL)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -33,6 +48,10 @@ func main() {
 			ApplicationShouldTerminateAfterLastWindowClosed: true,
 		},
 	})
+	runtimeAPI.software.openFile = app.Browser.OpenFile
+	if err := configureAppUpdater(app.Context(), runtimeAPI, app.Updater); err != nil {
+		log.Printf("Soha updates are unavailable: %v", err)
+	}
 
 	app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:     "Soha",

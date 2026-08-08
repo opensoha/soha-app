@@ -1,0 +1,22 @@
+{
+  "items": [
+    {
+      "id": "example-tools",
+      "name": "Example Tools",
+      "description": "Replace this entry with an approved software package.",
+      "publisher": "Example Publisher",
+      "category": "Developer Tools",
+      "version": "1.0.0",
+      "artifacts": [
+        {
+          "platform": "darwin",
+          "arch": "arm64",
+          "url": "https://downloads.example.com/example-tools-1.0.0-arm64.pkg",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "fileName": "example-tools-1.0.0-arm64.pkg",
+          "size": 1048576
+        }
+      ]
+    }
+  ]
+}

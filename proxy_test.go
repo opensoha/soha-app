@@ -24,7 +24,10 @@ func TestAppHandlerRoutesOnlySohaAPI(t *testing.T) {
 	static := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		_, _ = io.WriteString(writer, "static:"+request.URL.Path)
 	})
-	handler, err := newAppHandler(static, upstream.URL)
+	runtimeAPI := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		_, _ = io.WriteString(writer, "runtime:"+request.URL.Path)
+	})
+	handler, err := newAppHandler(static, runtimeAPI, upstream.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,11 +45,17 @@ func TestAppHandlerRoutesOnlySohaAPI(t *testing.T) {
 	if staticResponse.Body.String() != "static:/login" {
 		t.Fatalf("unexpected static response: %q", staticResponse.Body.String())
 	}
+
+	runtimeResponse := httptest.NewRecorder()
+	handler.ServeHTTP(runtimeResponse, httptest.NewRequest(http.MethodGet, "/app/v1/info", nil))
+	if runtimeResponse.Body.String() != "runtime:/app/v1/info" {
+		t.Fatalf("unexpected runtime response: %q", runtimeResponse.Body.String())
+	}
 }
 
 func TestAppHandlerRejectsUnsafeServerURLs(t *testing.T) {
 	for _, serverURL := range []string{"", "ftp://example.com", "https://user:pass@example.com", "https://example.com?token=secret"} {
-		if _, err := newAppHandler(http.NotFoundHandler(), serverURL); err == nil {
+		if _, err := newAppHandler(http.NotFoundHandler(), http.NotFoundHandler(), serverURL); err == nil {
 			t.Fatalf("expected %q to be rejected", serverURL)
 		}
 	}

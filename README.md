@@ -1,6 +1,6 @@
 # Soha App
 
-Wails 3 host for the Soha desktop and experimental mobile client. Phase 1 reuses the login and application shell from the sibling `soha-web` repository and forwards only `/api/v1` requests to a configured Soha server.
+Wails 3 host for the standalone Soha desktop client. It shares authentication and API clients with `soha-web`, but uses its own desktop routes for home, applications, software, account, and settings. Only `/api/v1` requests are forwarded to the configured Soha server.
 
 ## Prerequisites
 
@@ -28,6 +28,30 @@ SOHA_SERVER_URL=https://soha.example.com wails3 build
 ```
 
 The frontend source remains in `../soha-web`. `npm run build:app` stages its output into `frontend/dist` for embedding.
+
+## Updates
+
+Update checks use the Wails updater and are disabled unless a release repository is configured. Releases must include platform assets and a `checksums.txt` SHA-256 sidecar.
+
+```sh
+SOHA_APP_UPDATE_REPOSITORY=opensoha/soha-app wails3 build
+```
+
+Configured builds check shortly after launch and every six hours. Users can also open Settings and run a manual check. `SOHA_APP_UPDATE_TOKEN` is supported for private repositories and must be supplied at runtime, not embedded in distributed builds.
+
+## Software Library
+
+The app reads approved packages uploaded from the Soha internal workbench. Catalog and download requests use the current in-memory login token, and the native runtime verifies the package before opening the system installer.
+
+For local development, a JSON catalog can override the server catalog. Copy `configs/software-catalog.example.json`, replace the sample metadata, and point the app to the resulting file:
+
+```sh
+SOHA_APP_SOFTWARE_CATALOG=/etc/soha/software-catalog.json wails3 dev
+```
+
+Catalog entries may contain multiple `artifacts`; the app only returns the artifact matching the current Go `platform` and `arch`. Each artifact requires an HTTPS URL, exact byte size, SHA-256 digest, and safe file name. The browser receives only display metadata and a software ID. After confirmation, the native runtime downloads and verifies the package, then opens it with the operating system installer. It does not run a silent privileged installation.
+
+`softwareCatalog` remains the catalog boundary; the server catalog is the default and the JSON adapter is only an explicit override.
 
 ## Mobile Preview
 

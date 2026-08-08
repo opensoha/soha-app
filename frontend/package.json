@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "npm --prefix ../../soha-web run dev -- --host 127.0.0.1",
+    "dev": "npm --prefix ../../soha-web run dev:app -- --host 127.0.0.1",
     "build:dev": "npm --prefix ../../soha-web run build:app",
     "build": "npm --prefix ../../soha-web run build:app"
   }
