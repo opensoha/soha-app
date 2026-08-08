@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAppHandlerRoutesOnlySohaAPI(t *testing.T) {
@@ -50,6 +52,72 @@ func TestAppHandlerRoutesOnlySohaAPI(t *testing.T) {
 	handler.ServeHTTP(runtimeResponse, httptest.NewRequest(http.MethodGet, "/app/v1/info", nil))
 	if runtimeResponse.Body.String() != "runtime:/app/v1/info" {
 		t.Fatalf("unexpected runtime response: %q", runtimeResponse.Body.String())
+	}
+}
+
+func TestAppHandlerStreamsSSEWithoutBuffering(t *testing.T) {
+	releaseUpstream := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		writer.Header().Set("Cache-Control", "no-cache")
+		writer.Header().Set("X-Accel-Buffering", "no")
+		_, _ = io.WriteString(writer, "data: {\"type\":\"message.delta\"}\n\n")
+		writer.(http.Flusher).Flush()
+		<-releaseUpstream
+		_, _ = io.WriteString(writer, "data: {\"type\":\"message.done\"}\n\n")
+	}))
+	defer upstream.Close()
+
+	handler, err := newAppHandler(http.NotFoundHandler(), upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appServer := httptest.NewServer(handler)
+	defer appServer.Close()
+	defer close(releaseUpstream)
+
+	responseChannel := make(chan *http.Response, 1)
+	errorChannel := make(chan error, 1)
+	go func() {
+		response, err := http.Get(appServer.URL + "/api/v1/copilot/sessions/session-1/messages/stream") //nolint:gosec -- local test server
+		if err != nil {
+			errorChannel <- err
+			return
+		}
+		responseChannel <- response
+	}()
+
+	var response *http.Response
+	select {
+	case response = <-responseChannel:
+	case err := <-errorChannel:
+		t.Fatalf("stream request failed: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("proxy buffered SSE response headers")
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.Header.Get("Content-Type") != "text/event-stream" || response.Header.Get("X-Accel-Buffering") != "no" {
+		t.Fatalf("unexpected SSE headers: %#v", response.Header)
+	}
+
+	frameChannel := make(chan string, 1)
+	go func() {
+		frame, readErr := bufio.NewReader(response.Body).ReadString('\n')
+		if readErr != nil {
+			errorChannel <- readErr
+			return
+		}
+		frameChannel <- frame
+	}()
+	select {
+	case frame := <-frameChannel:
+		if frame != "data: {\"type\":\"message.delta\"}\n" {
+			t.Fatalf("unexpected first SSE frame: %q", frame)
+		}
+	case err := <-errorChannel:
+		t.Fatalf("read first SSE frame: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("proxy buffered the first SSE frame")
 	}
 }
 

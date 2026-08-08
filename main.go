@@ -7,10 +7,14 @@ import (
 	"strings"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/events"
 )
 
 //go:embed all:frontend/dist
 var assets embed.FS
+
+//go:embed build/appicon.png
+var trayIcon []byte
 
 func main() {
 	serverURL := strings.TrimSpace(os.Getenv("SOHA_SERVER_URL"))
@@ -45,7 +49,7 @@ func main() {
 			Handler: handler,
 		},
 		Mac: application.MacOptions{
-			ApplicationShouldTerminateAfterLastWindowClosed: true,
+			ApplicationShouldTerminateAfterLastWindowClosed: false,
 		},
 	})
 	runtimeAPI.software.openFile = app.Browser.OpenFile
@@ -53,7 +57,7 @@ func main() {
 		log.Printf("Soha updates are unavailable: %v", err)
 	}
 
-	app.Window.NewWithOptions(application.WebviewWindowOptions{
+	mainWindow := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:     "Soha",
 		Width:     1100,
 		Height:    760,
@@ -67,6 +71,16 @@ func main() {
 		BackgroundColour: application.NewRGB(248, 248, 248),
 		URL:              "/",
 	})
+	mainWindow.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
+		mainWindow.Hide()
+		event.Cancel()
+	})
+	positions, err := defaultWindowPositionStore()
+	if err != nil {
+		log.Fatal(err)
+	}
+	companionWindow := newCompanionWindow(app, positions)
+	configureSystemTray(app, mainWindow, companionWindow, trayIcon)
 
 	if err := app.Run(); err != nil {
 		log.Fatal(err)
