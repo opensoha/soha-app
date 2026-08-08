@@ -68,7 +68,7 @@ func TestAppHandlerStreamsSSEWithoutBuffering(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	handler, err := newAppHandler(http.NotFoundHandler(), upstream.URL)
+	handler, err := newAppHandler(http.NotFoundHandler(), http.NotFoundHandler(), upstream.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
