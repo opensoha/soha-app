@@ -8,9 +8,9 @@ info:
   companyName: "OpenSoha"
   productName: "Soha"
   productIdentifier: "com.opensoha.app"
-  description: "Soha cross-platform client"
+  description: "Soha desktop client"
   copyright: "Copyright 2026 OpenSoha"
-  comments: "Phase 1 technical preview"
+  comments: "Desktop foundation"
   version: "0.1.0"
   # cfBundleIconName: "appicon" # The macOS icon name in Assets.car icon bundles (optional)
   #                               # Should match the name of your .icon file without the extension
@@ -28,7 +28,7 @@ ios:
 #   # The company/organisation name for templates and project settings
   company: "OpenSoha"
 #   # Additional comments to embed in Info.plist metadata
-  comments: "Phase 1 technical preview"
+  comments: "Desktop foundation"
 
 # Dev mode configuration
 dev_mode:

@@ -10,10 +10,10 @@ version: "0.1.0"
 section: "default"
 priority: "extra"
 maintainer: ${GIT_COMMITTER_NAME} <${GIT_COMMITTER_EMAIL}>
-description: "Soha cross-platform client"
+description: "Soha desktop client for connecting to a Soha Server"
 vendor: "OpenSoha"
-homepage: "https://wails.io"
-license: "MIT"
+homepage: "https://docs.opensoha.dev/"
+license: "Apache-2.0"
 release: "1"
 
 contents:

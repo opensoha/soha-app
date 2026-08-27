@@ -1,0 +1,415 @@
+name: app-ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  workflow-lint:
+    name: Workflow lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.26.5'
+          cache: false
+      - name: Lint workflows
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend
+        working-directory: frontend
+        run: npm ci
+      - name: Typecheck frontend
+        working-directory: frontend
+        run: npm run typecheck
+      - name: Lint frontend and verify native boundary
+        working-directory: frontend
+        run: npm run lint
+      - name: Test frontend
+        working-directory: frontend
+        run: npm test
+      - name: Audit frontend dependencies
+        working-directory: frontend
+        run: npm audit --registry=https://registry.npmjs.org --audit-level=high
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+  desktop:
+    name: Desktop (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            os: ubuntu-24.04
+            race: true
+            package_command: wails3 task linux:create:deb
+            artifact_path: |
+              bin/soha-app
+              bin/*.deb
+              bin/SHA256SUMS-linux.txt
+          - platform: windows
+            os: windows-latest
+            race: false
+            package_command: wails3 task windows:create:nsis:installer INSTALL_SCOPE=user
+            artifact_path: |
+              bin/soha-app.exe
+              bin/*-installer.exe
+              bin/SHA256SUMS-windows.txt
+          - platform: macos
+            os: macos-latest
+            race: true
+            package_command: wails3 task darwin:package:dmg
+            artifact_path: |
+              bin/soha-app
+              bin/soha-app.app/**
+              bin/*.dmg
+              bin/SHA256SUMS-macos.txt
+    env:
+      GOWORK: 'off'
+      GIT_COMMITTER_NAME: OpenSoha
+      GIT_COMMITTER_EMAIL: maintainers@opensoha.dev
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.26.5'
+          cache: true
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libgtk-4-dev libwebkitgtk-6.0-dev xvfb
+      - name: Install NSIS
+        if: runner.os == 'Windows'
+        run: choco install nsis --no-progress --yes
+      - name: Scan repository secrets
+        if: runner.os == 'Linux'
+        run: go run github.com/zricethezav/gitleaks/v8@v8.30.1 detect --source . --no-git --redact --no-banner
+      - name: Verify Go modules
+        run: go mod verify
+      - name: Verify Go module graph
+        run: go mod tidy -diff
+      - name: Install frontend
+        working-directory: frontend
+        run: npm ci
+      - name: Build frontend for host checks
+        working-directory: frontend
+        run: npm run build
+      - name: Audit Go dependencies
+        if: runner.os == 'Linux'
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 . ./build/...
+      - name: Test host
+        run: go test . ./build/...
+      - name: Race test host
+        if: matrix.race
+        run: go test -race . ./build/...
+      - name: Vet host
+        run: go vet . ./build/...
+      - name: Install Wails
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.2
+      - name: Build desktop artifact
+        run: wails3 build
+      - name: Package desktop artifact
+        run: ${{ matrix.package_command }}
+      - name: Validate Linux engineering artifact
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -x bin/soha-app
+          file bin/soha-app | grep -Eq 'ELF 64-bit LSB.*executable'
+
+          shopt -s nullglob
+          debs=(bin/*.deb)
+          test "${#debs[@]}" -eq 1
+          test "$(dpkg-deb --field "${debs[0]}" Architecture)" = amd64
+          dpkg-deb --info "${debs[0]}" >/dev/null
+          dpkg-deb --contents "${debs[0]}" > "${RUNNER_TEMP}/soha-app-deb-contents.txt"
+          grep -Fq 'usr/local/bin/soha-app' "${RUNNER_TEMP}/soha-app-deb-contents.txt"
+          grep -Fq 'usr/share/applications/soha-app.desktop' "${RUNNER_TEMP}/soha-app-deb-contents.txt"
+          grep -Fq 'usr/share/icons/hicolor/128x128/apps/soha-app.png' "${RUNNER_TEMP}/soha-app-deb-contents.txt"
+
+          sudo dpkg --install "${debs[0]}"
+          test -x /usr/local/bin/soha-app
+          set +e
+          timeout --kill-after=5s 15s xvfb-run -a /usr/local/bin/soha-app >"${RUNNER_TEMP}/soha-app-launch.log" 2>&1
+          launch_status=$?
+          set -e
+          if [[ "${launch_status}" -ne 124 ]]; then
+            cat "${RUNNER_TEMP}/soha-app-launch.log"
+            exit 1
+          fi
+          grep -Fq 'event=renderer_ready' "${RUNNER_TEMP}/soha-app-launch.log"
+          sudo dpkg --remove soha-app
+          test ! -e /usr/local/bin/soha-app
+
+          sha256sum bin/soha-app "${debs[0]}" > bin/SHA256SUMS-linux.txt
+          sha256sum --check bin/SHA256SUMS-linux.txt
+      - name: Validate Windows engineering artifact
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $binary = Get-Item -LiteralPath 'bin/soha-app.exe'
+          $installers = @(Get-ChildItem -Path 'bin/*-installer.exe' -File)
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one NSIS installer, found $($installers.Count)"
+          }
+
+          foreach ($artifact in @($binary) + $installers) {
+            if ($artifact.Length -le 0) {
+              throw "$($artifact.FullName) is empty"
+            }
+            $stream = [System.IO.File]::OpenRead($artifact.FullName)
+            try {
+              if ($stream.ReadByte() -ne 0x4d -or $stream.ReadByte() -ne 0x5a) {
+                throw "$($artifact.FullName) is not a PE executable"
+              }
+            } finally {
+              $stream.Dispose()
+            }
+            $signature = Get-AuthenticodeSignature -FilePath $artifact.FullName
+            if ($signature.Status -ne 'NotSigned') {
+              throw "$($artifact.FullName) has unexpected signature status $($signature.Status)"
+            }
+          }
+
+          $checksums = foreach ($artifact in @($binary) + $installers) {
+            $relativePath = [System.IO.Path]::GetRelativePath((Get-Location).Path, $artifact.FullName).Replace([System.IO.Path]::DirectorySeparatorChar, [char]'/')
+            [PSCustomObject]@{ Path = $artifact.FullName; RelativePath = $relativePath; Hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $artifact.FullName).Hash.ToLowerInvariant() }
+          }
+          $checksums | ForEach-Object { "$($_.Hash)  $($_.RelativePath)" } | Set-Content -Encoding ascii 'bin/SHA256SUMS-windows.txt'
+          foreach ($checksum in $checksums) {
+            if ((Get-FileHash -Algorithm SHA256 -LiteralPath $checksum.Path).Hash.ToLowerInvariant() -ne $checksum.Hash) {
+              throw "Checksum verification failed for $($checksum.RelativePath)"
+            }
+          }
+
+          $installDirectory = Join-Path $env:LOCALAPPDATA 'Programs\Soha'
+          $installedBinary = Join-Path $installDirectory 'soha-app.exe'
+          $uninstaller = Join-Path $installDirectory 'uninstall.exe'
+          $rendererLog = Join-Path $env:LOCALAPPDATA 'OpenSoha\Soha\logs\soha.log'
+          $appProcess = $null
+          try {
+            $install = Start-Process -FilePath $installers[0].FullName -ArgumentList '/S' -Wait -PassThru
+            if ($install.ExitCode -ne 0) {
+              throw "NSIS installer exited with $($install.ExitCode)"
+            }
+            if (-not (Test-Path -LiteralPath $installedBinary) -or -not (Test-Path -LiteralPath $uninstaller)) {
+              throw 'Per-user install did not create the expected application and uninstaller'
+            }
+
+            Remove-Item -LiteralPath $rendererLog -Force -ErrorAction SilentlyContinue
+            $appProcess = Start-Process -FilePath $installedBinary -PassThru
+            $windowReady = $false
+            $rendererReady = $false
+            for ($attempt = 0; $attempt -lt 60; $attempt++) {
+              Start-Sleep -Milliseconds 500
+              $appProcess.Refresh()
+              if ($appProcess.HasExited) {
+                throw "Installed application exited early with $($appProcess.ExitCode)"
+              }
+              if ($appProcess.MainWindowHandle -ne [System.IntPtr]::Zero) {
+                $windowReady = $true
+              }
+              if (-not $rendererReady -and (Test-Path -LiteralPath $rendererLog)) {
+                try {
+                  $rendererReady = Select-String -LiteralPath $rendererLog -SimpleMatch 'event=renderer_ready' -Quiet
+                } catch {
+                  $rendererReady = $false
+                }
+              }
+              if ($windowReady -and $rendererReady) {
+                break
+              }
+            }
+            if (-not $windowReady) {
+              throw 'Installed application did not create a native window within 30 seconds'
+            }
+            if (-not $rendererReady) {
+              if (Test-Path -LiteralPath $rendererLog) {
+                Get-Content -LiteralPath $rendererLog | Write-Host
+              }
+              throw 'Installed application did not report renderer readiness within 30 seconds'
+            }
+
+            Stop-Process -Id $appProcess.Id -Force
+            $appProcess.WaitForExit()
+            $uninstall = Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait -PassThru
+            if ($uninstall.ExitCode -ne 0 -or (Test-Path -LiteralPath $installedBinary)) {
+              throw "NSIS uninstaller failed with exit code $($uninstall.ExitCode)"
+            }
+          } finally {
+            if ($null -ne $appProcess) {
+              $appProcess.Refresh()
+              if (-not $appProcess.HasExited) {
+                Stop-Process -Id $appProcess.Id -Force
+                $appProcess.WaitForExit()
+              }
+            }
+            if (Test-Path -LiteralPath $uninstaller) {
+              $cleanup = Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait -PassThru
+              if ($cleanup.ExitCode -ne 0) {
+                Write-Warning "Cleanup uninstaller exited with $($cleanup.ExitCode)"
+              }
+            }
+          }
+      - name: Validate macOS engineering artifact
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_path='bin/soha-app.app'
+          test -x bin/soha-app
+          file bin/soha-app | grep -Fq 'Mach-O'
+          test -x "${app_path}/Contents/MacOS/soha-app"
+          test -f "${app_path}/Contents/Resources/icons.icns"
+          plutil -lint "${app_path}/Contents/Info.plist"
+          codesign --verify --deep --strict "${app_path}"
+          signature_details="$(codesign -dv --verbose=4 "${app_path}" 2>&1)"
+          [[ "${signature_details}" == *'Signature=adhoc'* ]]
+
+          shopt -s nullglob
+          dmgs=(bin/*.dmg)
+          test "${#dmgs[@]}" -eq 1
+          hdiutil verify "${dmgs[0]}"
+
+          mount_dir="$(mktemp -d "${RUNNER_TEMP}/soha-dmg.XXXXXX")"
+          mounted=0
+          app_pid=''
+          terminate_process() {
+            local pid="${1:-}"
+            local killer_pid=''
+            if [[ -z "${pid}" ]]; then
+              return
+            fi
+            if kill -0 "${pid}" 2>/dev/null; then
+              kill "${pid}" 2>/dev/null || true
+              (
+                sleep 5
+                kill -KILL "${pid}" 2>/dev/null || true
+              ) &
+              killer_pid=$!
+            fi
+            wait "${pid}" 2>/dev/null || true
+            if [[ -n "${killer_pid}" ]]; then
+              kill "${killer_pid}" 2>/dev/null || true
+              wait "${killer_pid}" 2>/dev/null || true
+            fi
+          }
+          cleanup() {
+            terminate_process "${app_pid}"
+            if [[ "${mounted}" -eq 1 ]]; then
+              hdiutil detach "${mount_dir}" || hdiutil detach -force "${mount_dir}" || true
+            fi
+            rmdir "${mount_dir}" || true
+          }
+          trap cleanup EXIT
+          hdiutil attach -nobrowse -readonly -mountpoint "${mount_dir}" "${dmgs[0]}"
+          mounted=1
+          mounted_app="${mount_dir}/soha-app.app"
+          test -x "${mounted_app}/Contents/MacOS/soha-app"
+          plutil -lint "${mounted_app}/Contents/Info.plist"
+          codesign --verify --deep --strict "${mounted_app}"
+
+          app_binary="${mounted_app}/Contents/MacOS/soha-app"
+          app_log="${HOME}/Library/Caches/OpenSoha/Soha/logs/soha.log"
+          lsregister='/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister'
+          event_count() {
+            local event="$1"
+            if [[ ! -f "${app_log}" ]]; then
+              echo 0
+              return
+            fi
+            grep -Fc "event=${event}" "${app_log}" || true
+          }
+
+          renderer_before="$(event_count renderer_ready)"
+          "${lsregister}" -f "${mounted_app}"
+          open -n "${mounted_app}"
+          for _ in {1..10}; do
+            app_pid="$(pgrep -f "^${app_binary}$" | head -n 1 || true)"
+            if [[ -n "${app_pid}" ]]; then
+              break
+            fi
+            sleep 1
+          done
+          if [[ -z "${app_pid}" ]]; then
+            exit 1
+          fi
+
+          renderer_ready=0
+          for _ in {1..30}; do
+            if [[ "$(event_count renderer_ready)" -gt "${renderer_before}" ]]; then
+              renderer_ready=1
+              break
+            fi
+            if ! kill -0 "${app_pid}" 2>/dev/null; then
+              exit 1
+            fi
+            sleep 1
+          done
+          if [[ "${renderer_ready}" -ne 1 ]]; then
+            exit 1
+          fi
+
+          second_before="$(event_count second_instance_received)"
+          open -n "${mounted_app}"
+          second_instance_received=0
+          for _ in {1..10}; do
+            if [[ "$(event_count second_instance_received)" -gt "${second_before}" ]]; then
+              second_instance_received=1
+              break
+            fi
+            if ! kill -0 "${app_pid}" 2>/dev/null; then
+              exit 1
+            fi
+            sleep 1
+          done
+          if [[ "${second_instance_received}" -ne 1 ]]; then
+            exit 1
+          fi
+          kill -0 "${app_pid}"
+          instance_count="$(pgrep -f "^${app_binary}$" | wc -l | tr -d '[:space:]')"
+          test "${instance_count}" -eq 1
+          terminate_process "${app_pid}"
+          app_pid=''
+
+          hdiutil detach "${mount_dir}"
+          mounted=0
+          rmdir "${mount_dir}"
+          trap - EXIT
+
+          shasum -a 256 bin/soha-app "${dmgs[0]}" > bin/SHA256SUMS-macos.txt
+          shasum -a 256 --check bin/SHA256SUMS-macos.txt
+      - name: Upload unsigned engineering artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: soha-app-${{ matrix.platform }}-unsigned
+          path: ${{ matrix.artifact_path }}
+          if-no-files-found: error
+          retention-days: 7

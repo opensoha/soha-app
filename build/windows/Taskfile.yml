@@ -34,7 +34,7 @@ tasks:
     summary: Builds the application using native Go cross-compilation
     internal: true
     deps:
-      - task: common:go:mod:tidy
+      - task: common:go:mod:verify
       - task: common:build:frontend
         vars:
           BUILD_FLAGS:
@@ -45,7 +45,7 @@ tasks:
             ref: .DEV
       - task: common:generate:icons
     preconditions:
-      - sh: '{{if eq .OBFUSCATED "true"}}command -v garble >/dev/null 2>&1{{else}}true{{end}}'
+      - sh: '{{if eq .OBFUSCATED "true"}}garble -version{{else}}exit 0{{end}}'
         msg: "garble is required for obfuscated builds. Install it with: go install mvdan.cc/garble@v0.16.0 (requires Go 1.24+). See https://github.com/burrowers/garble/releases for version/toolchain compatibility."
     cmds:
       - task: generate:syso
@@ -118,7 +118,7 @@ tasks:
     deps:
       - task: build
     preconditions:
-      - sh: '[ "{{.INSTALL_SCOPE}}" = "user" ] || [ "{{.INSTALL_SCOPE}}" = "machine" ]'
+      - sh: '{{if or (eq .INSTALL_SCOPE "user") (eq .INSTALL_SCOPE "machine")}}exit 0{{else}}exit 1{{end}}'
         msg: "INSTALL_SCOPE must be 'user' or 'machine', got '{{.INSTALL_SCOPE}}'"
     cmds:
       # Create the Microsoft WebView2 bootstrapper if it doesn't exist
