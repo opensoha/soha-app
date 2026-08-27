@@ -51,25 +51,25 @@ func (runtimeAPI *appRuntime) ServeHTTP(writer http.ResponseWriter, request *htt
 		if runtimeAPI.updater != nil {
 			info.UpdateState = string(runtimeAPI.updater.State())
 		}
-		writeJSON(writer, http.StatusOK, info)
+		writeRuntimeJSON(writer, http.StatusOK, info)
 	case request.Method == http.MethodPost && request.URL.Path == "/app/v1/updates/check":
 		if runtimeAPI.updater == nil {
-			writeJSON(writer, http.StatusServiceUnavailable, map[string]string{
+			writeRuntimeJSON(writer, http.StatusServiceUnavailable, map[string]string{
 				"message": "当前构建未配置更新源",
 			})
 			return
 		}
 		if err := runtimeAPI.checkAndPrompt(request.Context()); err != nil {
-			writeJSON(writer, http.StatusBadGateway, map[string]string{"message": err.Error()})
+			writeRuntimeJSON(writer, http.StatusBadGateway, map[string]string{"message": err.Error()})
 			return
 		}
-		writeJSON(writer, http.StatusOK, map[string]string{"message": "更新检查已完成"})
+		writeRuntimeJSON(writer, http.StatusOK, map[string]string{"message": "更新检查已完成"})
 	default:
-		writeJSON(writer, http.StatusNotFound, map[string]string{"message": "not found"})
+		writeRuntimeJSON(writer, http.StatusNotFound, map[string]string{"message": "not found"})
 	}
 }
 
-func writeJSON(writer http.ResponseWriter, status int, value any) {
+func writeRuntimeJSON(writer http.ResponseWriter, status int, value any) {
 	writer.WriteHeader(status)
 	_ = json.NewEncoder(writer).Encode(value)
 }
