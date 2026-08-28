@@ -38,7 +38,7 @@ tasks:
   build:
     summary: Creates a debug build of the application for Android
     deps:
-      - task: common:go:mod:tidy
+      - task: common:go:mod:verify
       - task: generate:android:overlay
       - task: common:build:frontend
         vars:

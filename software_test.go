@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -107,6 +108,48 @@ func TestServerSoftwareCatalogForwardsAuthorizationThroughInstall(t *testing.T) 
 	case <-opened:
 	default:
 		t.Fatal("system installer was not opened")
+	}
+}
+
+func TestActiveServerSoftwareCatalogFollowsHostTarget(t *testing.T) {
+	newCatalogServer := func(name string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			if request.URL.Path != "/api/v1/software/packages" {
+				http.NotFound(writer, request)
+				return
+			}
+			_ = json.NewEncoder(writer).Encode(map[string]any{"items": []map[string]any{{
+				"id": "0123456789abcdef0123456789abcdef", "softwareId": "managed-tool",
+				"name": name, "publisher": "OpenSoha", "version": "1.0.0",
+				"platform": runtime.GOOS, "arch": runtime.GOARCH, "fileName": installerFileName(runtime.GOOS),
+				"sizeBytes": 1, "sha256": strings.Repeat("a", 64),
+			}}})
+		}))
+	}
+
+	serverA := newCatalogServer("Server A Tool")
+	defer serverA.Close()
+	serverB := newCatalogServer("Server B Tool")
+	defer serverB.Close()
+
+	host, err := newTestAppHost(http.NotFoundHandler(), serverA.URL, nil, false, "test", AppInfo{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog := activeServerSoftwareCatalog{host: host}
+	items, err := catalog.List(context.Background(), "")
+	if err != nil || len(items) != 1 || items[0].Name != "Server A Tool" {
+		t.Fatalf("initial catalog = %#v, error = %v", items, err)
+	}
+
+	targetB, err := url.Parse(serverB.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host.target.Store(targetB)
+	items, err = catalog.List(context.Background(), "")
+	if err != nil || len(items) != 1 || items[0].Name != "Server B Tool" {
+		t.Fatalf("switched catalog = %#v, error = %v", items, err)
 	}
 }
 

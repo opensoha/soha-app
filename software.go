@@ -89,6 +89,21 @@ type serverSoftwareCatalog struct {
 	client  *http.Client
 }
 
+type activeServerSoftwareCatalog struct {
+	host *appHost
+}
+
+func (catalog activeServerSoftwareCatalog) List(ctx context.Context, authorization string) ([]softwareCatalogItem, error) {
+	if catalog.host == nil || catalog.host.target.Load() == nil {
+		return nil, errors.New("active server is unavailable")
+	}
+	serverCatalog, err := newServerSoftwareCatalog(catalog.host.target.Load().String())
+	if err != nil {
+		return nil, err
+	}
+	return serverCatalog.List(ctx, authorization)
+}
+
 type serverSoftwarePackage struct {
 	ID          string `json:"id"`
 	SoftwareID  string `json:"softwareId"`

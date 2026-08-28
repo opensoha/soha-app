@@ -10,6 +10,9 @@ vars:
   # tasks below dispatch to the matching platform Taskfile via this variable.
   GOOS: '{{.GOOS | default OS}}'
 
+env:
+  GOWORK: "off"
+
 includes:
   common: ./build/Taskfile.yml
   windows: ./build/windows/Taskfile.yml
