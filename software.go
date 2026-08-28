@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -269,7 +268,7 @@ func (library *softwareLibrary) ServeHTTP(writer http.ResponseWriter, request *h
 func (library *softwareLibrary) list(writer http.ResponseWriter, request *http.Request) {
 	items, err := library.loadCatalog(request.Context(), request.Header.Get("Authorization"))
 	if err != nil {
-		log.Printf("Soha software catalog is unavailable: %v", err)
+		appLog.Error("software catalog is unavailable", "request_id", request.Header.Get("X-Request-Id"), "component", "software", "event", "app.software.catalog_unavailable", "error_type", logErrorType(err))
 		writeSoftwareError(writer, http.StatusServiceUnavailable, "catalog_unavailable", "软件目录暂不可用")
 		return
 	}
@@ -295,6 +294,7 @@ func (library *softwareLibrary) list(writer http.ResponseWriter, request *http.R
 func (library *softwareLibrary) install(writer http.ResponseWriter, request *http.Request, id string) {
 	items, err := library.loadCatalog(request.Context(), request.Header.Get("Authorization"))
 	if err != nil {
+		appLog.Error("software catalog is unavailable", "request_id", request.Header.Get("X-Request-Id"), "component", "software", "event", "app.software.catalog_unavailable", "error_type", logErrorType(err))
 		writeSoftwareError(writer, http.StatusServiceUnavailable, "catalog_unavailable", "软件目录暂不可用")
 		return
 	}
@@ -348,7 +348,7 @@ func (library *softwareLibrary) runInstall(taskID string, item softwareCatalogIt
 	library.updateTask(taskID, softwareTaskDownloading, 0, "正在下载安装包")
 	path, err := library.download(taskID, item, artifact)
 	if err != nil {
-		log.Printf("Soha software download failed for %s: %v", item.ID, err)
+		appLog.Error("software download failed", "component", "software", "event", "app.software.download_failed", "software_id", item.ID, "task_id", taskID, "error_type", logErrorType(err))
 		library.updateTask(taskID, softwareTaskFailed, 0, "安装包下载或校验失败")
 		return
 	}

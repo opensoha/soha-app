@@ -2,7 +2,6 @@ package main
 
 import (
 	"embed"
-	"log"
 	"os"
 	"strings"
 
@@ -28,7 +27,8 @@ func main() {
 	} else {
 		remoteCatalog, err := newServerSoftwareCatalog(serverURL)
 		if err != nil {
-			log.Fatal(err)
+			appLog.Error("software catalog configuration failed", "component", "startup", "event", "app.software_catalog.configuration_failed", "error_type", logErrorType(err))
+			os.Exit(1)
 		}
 		catalog = remoteCatalog
 	}
@@ -39,7 +39,8 @@ func main() {
 	}
 	handler, err := newAppHandler(application.AssetFileServerFS(assets), runtimeAPI, serverURL)
 	if err != nil {
-		log.Fatal(err)
+		appLog.Error("application handler configuration failed", "component", "startup", "event", "app.handler.configuration_failed", "error_type", logErrorType(err))
+		os.Exit(1)
 	}
 
 	app := application.New(application.Options{
@@ -54,7 +55,7 @@ func main() {
 	})
 	runtimeAPI.software.openFile = app.Browser.OpenFile
 	if err := configureAppUpdater(app.Context(), runtimeAPI, app.Updater); err != nil {
-		log.Printf("Soha updates are unavailable: %v", err)
+		appLog.Warn("application updates are unavailable", "component", "updater", "event", "app.updater.unavailable", "error_type", logErrorType(err))
 	}
 
 	mainWindow := app.Window.NewWithOptions(application.WebviewWindowOptions{
@@ -77,12 +78,14 @@ func main() {
 	})
 	positions, err := defaultWindowPositionStore()
 	if err != nil {
-		log.Fatal(err)
+		appLog.Error("companion window state initialization failed", "component", "companion", "event", "app.companion.state_initialization_failed", "error_type", logErrorType(err))
+		os.Exit(1)
 	}
 	companionWindow := newCompanionWindow(app, positions)
 	configureSystemTray(app, mainWindow, companionWindow, trayIcon)
 
 	if err := app.Run(); err != nil {
-		log.Fatal(err)
+		appLog.Error("application runtime stopped with an error", "component", "runtime", "event", "app.runtime.failed", "error_type", logErrorType(err))
+		os.Exit(1)
 	}
 }

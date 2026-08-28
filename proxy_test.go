@@ -2,7 +2,9 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -40,6 +42,9 @@ func TestAppHandlerRoutesOnlySohaAPI(t *testing.T) {
 	handler.ServeHTTP(loginResponse, loginRequest)
 	if loginResponse.Code != http.StatusOK || len(loginResponse.Result().Cookies()) != 1 {
 		t.Fatalf("unexpected login response: status=%d cookies=%d", loginResponse.Code, len(loginResponse.Result().Cookies()))
+	}
+	if loginResponse.Header().Get("X-Request-Id") == "" {
+		t.Fatal("proxied API response is missing X-Request-Id")
 	}
 
 	staticResponse := httptest.NewRecorder()
@@ -126,5 +131,40 @@ func TestAppHandlerRejectsUnsafeServerURLs(t *testing.T) {
 		if _, err := newAppHandler(http.NotFoundHandler(), http.NotFoundHandler(), serverURL); err == nil {
 			t.Fatalf("expected %q to be rejected", serverURL)
 		}
+	}
+}
+
+func TestAppHandlerReturnsRequestIDWhenUpstreamIsUnavailable(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverURL := "http://" + listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	handler, err := newAppHandler(http.NotFoundHandler(), http.NotFoundHandler(), serverURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
+	request.Header.Set("X-Request-Id", "request-desktop-1")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadGateway || response.Header().Get("X-Request-Id") != "request-desktop-1" {
+		t.Fatalf("unexpected response: status=%d request_id=%q", response.Code, response.Header().Get("X-Request-Id"))
+	}
+	var body struct {
+		Error struct {
+			RequestID string `json:"request_id"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Error.RequestID != "request-desktop-1" {
+		t.Fatalf("request_id = %q", body.Error.RequestID)
 	}
 }

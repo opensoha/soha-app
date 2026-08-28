@@ -1,8 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
 	"fmt"
-	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -24,13 +24,26 @@ func newAppHandler(static, runtimeAPI http.Handler, rawServerURL string) (http.H
 		director(request)
 		request.Header.Del("Origin")
 	}
-	proxy.ErrorHandler = func(writer http.ResponseWriter, _ *http.Request, proxyErr error) {
-		log.Printf("Soha API is unavailable: %v", proxyErr)
-		http.Error(writer, `{"error":{"code":"upstream_unavailable","message":"Soha server is unavailable"}}`, http.StatusBadGateway)
+	proxy.ModifyResponse = func(response *http.Response) error {
+		response.Header.Set("X-Request-Id", response.Request.Header.Get("X-Request-Id"))
+		return nil
+	}
+	proxy.ErrorHandler = func(writer http.ResponseWriter, request *http.Request, proxyErr error) {
+		requestID := request.Header.Get("X-Request-Id")
+		appLog.Error("Soha server is unavailable", "request_id", requestID, "component", "http_proxy", "event", "app.proxy.upstream_unavailable", "error_type", logErrorType(proxyErr))
+		writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+		writer.Header().Set("X-Request-Id", requestID)
+		writeJSON(writer, http.StatusBadGateway, map[string]any{"error": map[string]string{
+			"code":       "upstream_unavailable",
+			"message":    "Soha server is unavailable",
+			"request_id": requestID,
+		}})
 	}
 
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requestID := ensureRequestID(request)
 		if request.URL.Path == appPrefix || strings.HasPrefix(request.URL.Path, appPrefix+"/") {
+			writer.Header().Set("X-Request-Id", requestID)
 			runtimeAPI.ServeHTTP(writer, request)
 			return
 		}
@@ -38,8 +51,30 @@ func newAppHandler(static, runtimeAPI http.Handler, rawServerURL string) (http.H
 			proxy.ServeHTTP(writer, request)
 			return
 		}
+		writer.Header().Set("X-Request-Id", requestID)
 		static.ServeHTTP(writer, request)
 	}), nil
+}
+
+func ensureRequestID(request *http.Request) string {
+	requestID := strings.TrimSpace(request.Header.Get("X-Request-Id"))
+	if !validRequestID(requestID) {
+		requestID = rand.Text()
+	}
+	request.Header.Set("X-Request-Id", requestID)
+	return requestID
+}
+
+func validRequestID(requestID string) bool {
+	if requestID == "" || len(requestID) > 128 {
+		return false
+	}
+	for _, char := range requestID {
+		if !((char >= 'A' && char <= 'Z') || (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || strings.ContainsRune("._:-", char)) {
+			return false
+		}
+	}
+	return true
 }
 
 func parseServerURL(rawServerURL string) (*url.URL, error) {
