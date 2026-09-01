@@ -1,5 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import {
+  AppstoreOutlined,
   HomeOutlined,
   LogoutOutlined,
   ReloadOutlined,
@@ -36,6 +37,7 @@ import {
   SettingsPage,
   connectionMessage,
 } from '@/pages'
+import { PortalApplicationPage, PortalPage } from '@/portal-pages'
 import { useAppStore } from '@/store'
 import { avatarURL, displayName } from '@/types'
 
@@ -56,6 +58,8 @@ export function DesktopApp({ initialEntries }: { initialEntries?: string[] } = {
           <Route element={<AuthGuard />}>
             <Route element={<DesktopShell />}>
               <Route path="/home" element={<HomePage />} />
+              <Route path="/portal" element={<PortalPage />} />
+              <Route path="/portal/applications/:applicationId" element={<PortalApplicationPage />} />
               <Route path="/profile" element={<ProfilePage />} />
               <Route path="/settings" element={<SettingsPage />} />
             </Route>
@@ -247,6 +251,7 @@ function DesktopShell() {
 
   const navigation = [
     { path: '/home', label: text.home, icon: <HomeOutlined /> },
+    { path: '/portal', label: text.portal, icon: <AppstoreOutlined /> },
     { path: '/profile', label: text.profile, icon: <UserOutlined /> },
     { path: '/settings', label: text.settings, icon: <SettingOutlined /> },
   ]
@@ -269,7 +274,7 @@ function DesktopShell() {
       </NavLink>
       <aside className="sidebar">
         <div className="brand">
-          <span className="brand-mark">S</span>
+          <img alt="" aria-hidden="true" className="brand-mark" src="/logo.svg" />
           <span>
             <strong>{bootstrap?.branding.sidebarTitle || text.appName}</strong>
             <small>Desktop</small>

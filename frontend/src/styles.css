@@ -74,16 +74,10 @@ input {
 }
 
 .brand-mark {
-  display: grid;
   width: 34px;
   height: 34px;
   flex: 0 0 34px;
-  place-items: center;
-  border-radius: 7px;
-  color: #ffffff;
-  background: #176b5b;
-  font-size: 17px;
-  font-weight: 700;
+  object-fit: contain;
 }
 
 .connection-screen,
@@ -613,6 +607,124 @@ input {
   margin-bottom: 14px;
 }
 
+.portal-toolbar {
+  display: grid;
+  gap: 10px;
+}
+
+.portal-toolbar > .ant-input-affix-wrapper {
+  max-width: 360px;
+}
+
+.portal-categories {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.portal-section {
+  margin-top: 28px;
+}
+
+.portal-section > h2 {
+  margin: 0 0 14px;
+  font-size: 16px;
+}
+
+.portal-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 14px;
+}
+
+.portal-card {
+  display: grid;
+  min-height: 190px;
+  grid-template-rows: auto 1fr auto auto;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.portal-card header {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) 32px;
+  align-items: center;
+  gap: 10px;
+}
+
+.portal-card header span,
+.portal-card header strong,
+.portal-card header small {
+  display: block;
+  min-width: 0;
+}
+
+.portal-card header strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.portal-card header small,
+.portal-card p,
+.portal-recent-list small {
+  color: var(--text-muted);
+}
+
+.portal-card p {
+  margin: 0;
+}
+
+.portal-card-tags {
+  min-height: 24px;
+}
+
+.portal-card footer,
+.portal-detail-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.portal-summary-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, .65fr);
+  gap: 28px;
+}
+
+.portal-recent-list {
+  border-top: 1px solid var(--border);
+}
+
+.portal-recent-list button {
+  display: flex;
+  width: 100%;
+  min-height: 48px;
+  align-items: center;
+  justify-content: space-between;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.portal-detail {
+  display: grid;
+  max-width: 720px;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 24px;
+  margin-top: 24px;
+}
+
+.portal-detail-actions {
+  margin-bottom: 24px;
+}
+
 .ant-result {
   min-height: 100vh;
   background: var(--app-bg);
@@ -630,6 +742,11 @@ input {
 
   .page {
     width: calc(100% - 40px);
+  }
+
+  .portal-summary-grid {
+    grid-template-columns: 1fr;
+    gap: 0;
   }
 }
 

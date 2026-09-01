@@ -1,12 +1,20 @@
 import type {
   AuthProvider as ContractAuthProvider,
+  IdentityApplication as ContractIdentityApplication,
+  IdentityApplicationLaunch as ContractIdentityApplicationLaunch,
   LoginOptions as ContractLoginOptions,
+  PortalBootstrap as ContractPortalBootstrap,
+  PortalLaunchDecision as ContractPortalLaunchDecision,
   Principal as ContractPrincipal,
 } from '@opensoha/contracts/gen/ts/sohaapi'
 
 export type AuthProvider = ContractAuthProvider
 export type LoginOptions = ContractLoginOptions
 export type Principal = ContractPrincipal
+export type IdentityApplication = ContractIdentityApplication
+export type IdentityApplicationLaunch = ContractIdentityApplicationLaunch
+export type PortalBootstrap = ContractPortalBootstrap
+export type PortalLaunchDecision = ContractPortalLaunchDecision
 
 export interface Session {
   accessToken: string

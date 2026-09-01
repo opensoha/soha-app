@@ -1,6 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { getBootstrap, loginWithProvider, setAccessToken, setSessionListener } from '@/api'
-import { getHostState } from '@/native/host'
+import {
+  getBootstrap,
+  getPortalApplication,
+  getPortalBootstrap,
+  launchPortalApplication,
+  loginWithProvider,
+  setAccessToken,
+  setPortalFavorite,
+  setSessionListener,
+} from '@/api'
+import { getHostState, openBrowserURL } from '@/native/host'
 
 const principal = {
   userId: 'user-1',
@@ -191,6 +200,86 @@ describe('API transport', () => {
     expect(path).toBe('/app/v1/auth/desktop/start')
     expect(JSON.parse(String(init.body))).toEqual({ providerId: 'oidc-main' })
     expect(init.signal).toBe(controller.signal)
+  })
+
+  it('uses generated portal envelopes, encoded IDs, and the current App bearer', async () => {
+    const application = {
+      id: 'app/1',
+      slug: 'console',
+      name: 'Soha Console',
+      status: 'enabled',
+      createdAt: '2026-08-31T01:00:00Z',
+      updatedAt: '2026-08-31T01:00:00Z',
+    }
+    const bootstrap = {
+      principal,
+      applications: [application],
+      favorites: [],
+      recent: [],
+      categories: ['console'],
+      security: {
+        principal,
+        mfaEnabled: false,
+        linkedSources: [],
+        activeSession: 1,
+      },
+    }
+    const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const path = String(input)
+      const method = init?.method || 'GET'
+      expect(new Headers(init?.headers).get('Authorization')).toBe('Bearer portal-token')
+      if (path.endsWith('/portal/bootstrap')) return Promise.resolve(jsonResponse({ data: bootstrap }))
+      if (path.endsWith('/portal/applications/app%2F1') && method === 'GET') {
+        return Promise.resolve(jsonResponse({ data: application }))
+      }
+      if (path.endsWith('/portal/applications/app%2F1/launch')) {
+        expect(JSON.parse(String(init?.body))).toEqual({ surface: 'desktop' })
+        return Promise.resolve(jsonResponse({
+          data: {
+            application,
+            launchUrl: '/auth/browser-handoff/handoff-1',
+            providerType: 'link',
+            decision: 'allow',
+            handoffExpiresAt: '2026-08-31T01:01:00Z',
+          },
+        }))
+      }
+      if (path.endsWith('/portal/applications/app%2F1/favorite') && method === 'POST') {
+        return Promise.resolve(jsonResponse({ data: { ...application, favorite: true } }))
+      }
+      if (path.endsWith('/portal/applications/app%2F1/favorite') && method === 'DELETE') {
+        return Promise.resolve(new Response(null, { status: 204 }))
+      }
+      throw new Error(`unexpected request: ${method} ${path}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    setAccessToken('portal-token')
+
+    await expect(getPortalBootstrap()).resolves.toEqual(bootstrap)
+    await expect(getPortalApplication('app/1')).resolves.toEqual(application)
+    await expect(launchPortalApplication('app/1')).resolves.toMatchObject({
+      launchUrl: '/auth/browser-handoff/handoff-1',
+      handoffExpiresAt: '2026-08-31T01:01:00Z',
+    })
+    await expect(setPortalFavorite('app/1', true)).resolves.toMatchObject({ favorite: true })
+    await expect(setPortalFavorite('app/1', false)).resolves.toBeUndefined()
+  })
+
+  it('opens external navigation only through the App host action', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ data: { status: 'ok' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await openBrowserURL('https://soha.example.com/auth/browser-handoff/handoff-1')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/app/v1/browser/open',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          url: 'https://soha.example.com/auth/browser-handoff/handoff-1',
+        }),
+      }),
+    )
   })
 })
 

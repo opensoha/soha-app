@@ -4,10 +4,8 @@ import {
   CloudServerOutlined,
   FolderOpenOutlined,
   LockOutlined,
-  MoonOutlined,
   ReloadOutlined,
   SafetyCertificateOutlined,
-  SunOutlined,
   UserOutlined,
 } from '@ant-design/icons'
 import {
@@ -133,7 +131,7 @@ export function ConnectionPage() {
   return (
     <div className="connection-screen">
       <header className="connection-header">
-        <span className="brand-mark">S</span>
+        <img alt="" aria-hidden="true" className="brand-mark" src="/logo.svg" />
         <strong>{text.appName}</strong>
       </header>
       <main className="connection-main">
@@ -182,8 +180,6 @@ export function LoginPage() {
   const authAttemptPending = useRef(false)
   const providerController = useRef<AbortController | null>(null)
   const host = useAppStore((state) => state.host)
-  const themeMode = useAppStore((state) => state.themeMode)
-  const setThemeMode = useAppStore((state) => state.setThemeMode)
   const commitSession = useAppStore((state) => state.commitSession)
   const optionsQuery = useQuery({ queryKey: ['auth', 'login-options'], queryFn: getLoginOptions })
   const providersQuery = useQuery({ queryKey: ['auth', 'providers'], queryFn: getAuthProviders })
@@ -276,16 +272,9 @@ export function LoginPage() {
     <div className="login-screen">
       <header className="login-titlebar">
         <div className="login-brand">
-          <span className="brand-mark">S</span>
+          <img alt="" aria-hidden="true" className="brand-mark" src="/logo.svg" />
           <strong>{options?.branding?.appTitle || text.appName}</strong>
         </div>
-        <Button
-          aria-label={themeMode === 'dark' ? text.themeLight : text.themeDark}
-          icon={themeMode === 'dark' ? <SunOutlined /> : <MoonOutlined />}
-          onClick={() => setThemeMode(themeMode === 'dark' ? 'light' : 'dark')}
-          title={themeMode === 'dark' ? text.themeLight : text.themeDark}
-          type="text"
-        />
       </header>
       <main className="login-main">
         <section className="login-panel">
@@ -352,13 +341,7 @@ export function LoginPage() {
                       />
                     </Form.Item>
                   ) : null}
-                  <Button
-                    block
-                    disabled={sliderEnabled && !sliderVerified}
-                    htmlType="submit"
-                    loading={pending}
-                    type="primary"
-                  >
+                  <Button block disabled={sliderEnabled && !sliderVerified} htmlType="submit" loading={pending} type="primary">
                     {text.signIn}
                   </Button>
                 </Form>
@@ -720,7 +703,7 @@ export function SettingsPage() {
   )
 }
 
-function Page({ title, description, children }: { title: string; description: string; children: ReactNode }) {
+export function Page({ title, description, children }: { title: string; description: string; children: ReactNode }) {
   return <div className="page"><header className="page-heading"><h1>{title}</h1><p>{description}</p></header>{children}</div>
 }
 

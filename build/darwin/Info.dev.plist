@@ -8,8 +8,6 @@
 		<string>Phase 1 technical preview</string>
 		<key>CFBundleIconFile</key>
 		<string>icons</string>
-		<key>CFBundleIconName</key>
-		<string>appicon</string>
 		<key>CFBundleIdentifier</key>
 		<string>com.opensoha.app</string>
 		<key>CFBundleName</key>
