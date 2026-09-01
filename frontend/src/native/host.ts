@@ -103,6 +103,10 @@ export function getSoftwareTask(taskId: string): Promise<SoftwareTaskResponse> {
   )
 }
 
+export function openBrowserURL(url: string): Promise<void> {
+  return hostRequest('/app/v1/browser/open', jsonRequest({ url })).then(() => undefined)
+}
+
 export function startDesktopAuth(providerId: string, signal: AbortSignal): Promise<unknown> {
   return hostRequest<unknown>('/app/v1/auth/desktop/start', {
     ...jsonRequest({ providerId }),

@@ -11,6 +11,7 @@ import {
   getAuthProviders,
   getBootstrap,
   getLoginOptions,
+  getPortalBootstrap,
   getProfile,
   loginWithProvider,
   loginWithPassword,
@@ -67,6 +68,7 @@ vi.mock('@/native/host', () => ({
   listSoftware: vi.fn(),
   installSoftware: vi.fn(),
   getSoftwareTask: vi.fn(),
+  openBrowserURL: vi.fn(),
 }))
 
 vi.mock('@/api', () => {
@@ -109,6 +111,10 @@ vi.mock('@/api', () => {
     getProfile: vi.fn(),
     updateProfile: vi.fn(),
     changePassword: vi.fn(),
+    getPortalApplication: vi.fn(),
+    getPortalBootstrap: vi.fn(),
+    launchPortalApplication: vi.fn(),
+    setPortalFavorite: vi.fn(),
   }
 })
 
@@ -211,7 +217,7 @@ describe('desktop app', () => {
     container.remove()
   })
 
-  it('restores a session into the App-owned home without Web portal routes', async () => {
+  it('restores a session into the App-owned home with one desktop portal entry', async () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     await act(async () => {
       root.render(
@@ -234,7 +240,7 @@ describe('desktop app', () => {
     expect(container.textContent).toContain('当前账号没有查看公告的权限')
     expect(container.querySelector('.status-band')?.getAttribute('aria-label')).toBe('会话状态')
     expect(container.textContent).toContain('软件库')
-    expect(container.textContent).not.toContain('企业应用')
+    expect(container.textContent).toContain('应用门户')
     expect(getAnnouncementInbox).not.toHaveBeenCalled()
   })
 
@@ -310,6 +316,14 @@ describe('desktop app', () => {
     await waitForUI(() => expect(container.textContent).toContain('登录 Soha'))
 
     expect(container.textContent).not.toContain('管理这个桌面客户端的外观')
+  })
+
+  it('protects direct portal routes with the existing App session guard', async () => {
+    const queryClient = await renderApp(['/portal'])
+    await waitForLoginQueries(queryClient)
+    await waitForUI(() => expect(container.textContent).toContain('登录 Soha'))
+
+    expect(getPortalBootstrap).not.toHaveBeenCalled()
   })
 
   it('returns to login with a session-expired message when refresh invalidates the session', async () => {

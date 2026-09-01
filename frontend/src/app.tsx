@@ -38,6 +38,7 @@ import {
   SoftwarePage,
   connectionMessage,
 } from '@/pages'
+import { PortalApplicationPage, PortalPage } from '@/portal-pages'
 import { useAppStore } from '@/store'
 import { avatarURL, displayName } from '@/types'
 
@@ -58,6 +59,8 @@ export function DesktopApp({ initialEntries }: { initialEntries?: string[] } = {
           <Route element={<AuthGuard />}>
             <Route element={<DesktopShell />}>
               <Route path="/home" element={<HomePage />} />
+              <Route path="/portal" element={<PortalPage />} />
+              <Route path="/portal/applications/:applicationId" element={<PortalApplicationPage />} />
               <Route path="/profile" element={<ProfilePage />} />
               <Route path="/software" element={<SoftwarePage />} />
               <Route path="/settings" element={<SettingsPage />} />
@@ -250,6 +253,7 @@ function DesktopShell() {
 
   const navigation = [
     { path: '/home', label: text.home, icon: <HomeOutlined /> },
+    { path: '/portal', label: text.portal, icon: <AppstoreOutlined /> },
     { path: '/software', label: text.software, icon: <AppstoreOutlined /> },
     { path: '/profile', label: text.profile, icon: <UserOutlined /> },
     { path: '/settings', label: text.settings, icon: <SettingOutlined /> },

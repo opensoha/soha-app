@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
@@ -31,6 +32,7 @@ const (
 	wailsRequestBodyHeader         = "X-Soha-App-Body"
 	maxWailsRequestBodySize        = 64 << 10
 	connectionProbeMaxResponseSize = 1 << 20
+	proxyJSONMaxRequestSize        = 1 << 20
 )
 
 var errContractMismatch = errors.New("server response contract mismatch")
@@ -166,6 +168,8 @@ func (h *appHost) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		h.handleSessionClear(writer, request)
 	case request.URL.Path == hostPrefix+"/logs/open":
 		h.handleOpenLogDirectory(writer, request)
+	case request.URL.Path == hostPrefix+"/browser/open":
+		h.handleOpenBrowser(writer, request)
 	case request.URL.Path == hostPrefix+"/auth/desktop/start":
 		h.handleDesktopAuth(writer, request)
 	case request.URL.Path == hostPrefix || strings.HasPrefix(request.URL.Path, hostPrefix+"/"):
@@ -249,6 +253,22 @@ func (h *appHost) handleAPI(writer http.ResponseWriter, request *http.Request) {
 	if h.hasPendingSwitch() {
 		writeError(writer, http.StatusServiceUnavailable, "server_switch_pending", "Server switch is pending")
 		return
+	}
+	mediaType, _, _ := mime.ParseMediaType(request.Header.Get("Content-Type"))
+	if request.Body != nil && mediaType == "application/json" {
+		payload, err := io.ReadAll(io.LimitReader(request.Body, proxyJSONMaxRequestSize+1))
+		if err != nil {
+			writeError(writer, http.StatusBadRequest, "invalid_request", "Unable to read request body")
+			return
+		}
+		if len(payload) > proxyJSONMaxRequestSize {
+			writeError(writer, http.StatusRequestEntityTooLarge, "payload_too_large", "Request body exceeds the desktop limit")
+			return
+		}
+		_ = request.Body.Close()
+		request.Body = io.NopCloser(bytes.NewReader(payload))
+		request.ContentLength = int64(len(payload))
+		request.TransferEncoding = nil
 	}
 	request = request.WithContext(context.WithValue(request.Context(), proxyTargetContextKey{}, h.target.Load()))
 	h.proxy.ServeHTTP(writer, request)
@@ -407,6 +427,34 @@ func (h *appHost) handleOpenLogDirectory(writer http.ResponseWriter, request *ht
 	h.nativeMu.RUnlock()
 	if open == nil || open() != nil {
 		writeError(writer, http.StatusServiceUnavailable, "native_action_unavailable", "Unable to open the log directory")
+		return
+	}
+	writeData(writer, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (h *appHost) handleOpenBrowser(writer http.ResponseWriter, request *http.Request) {
+	if !validateHostMutation(writer, request) {
+		return
+	}
+	var input struct {
+		URL string `json:"url"`
+	}
+	if err := decodeRequestJSON(request, &input); err != nil {
+		writeError(writer, http.StatusBadRequest, "invalid_request", "A valid browser URL is required")
+		return
+	}
+	rawURL := strings.TrimSpace(input.URL)
+	parsed, err := url.Parse(rawURL)
+	if err != nil || rawURL != input.URL || len(rawURL) > 4096 || parsed.Opaque != "" ||
+		(parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" || parsed.User != nil {
+		writeError(writer, http.StatusBadRequest, "invalid_url", "Only absolute HTTP and HTTPS URLs are allowed")
+		return
+	}
+	h.nativeMu.RLock()
+	open := h.openBrowserURL
+	h.nativeMu.RUnlock()
+	if open == nil || open(rawURL) != nil {
+		writeError(writer, http.StatusServiceUnavailable, "native_action_unavailable", "Unable to open the browser")
 		return
 	}
 	writeData(writer, http.StatusOK, map[string]string{"status": "ok"})

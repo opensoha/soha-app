@@ -837,7 +837,7 @@ export function SettingsPage() {
   )
 }
 
-function Page({ title, description, children }: { title: string; description?: string; children: ReactNode }) {
+export function Page({ title, description, children }: { title: string; description?: string; children: ReactNode }) {
   return <div className="page">{description ? <header className="page-heading"><h1>{title}</h1><p>{description}</p></header> : <h1 className="visually-hidden">{title}</h1>}{children}</div>
 }
 

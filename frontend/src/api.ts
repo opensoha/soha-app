@@ -4,8 +4,11 @@ import type {
   AuthProvider,
   Bootstrap,
   Branding,
+  IdentityApplication,
   LinkedIdentity,
   LoginOptions,
+  PortalBootstrap,
+  PortalLaunchDecision,
   Principal,
   ProfileUpdate,
   Session,
@@ -168,6 +171,41 @@ export function markAnnouncementRead(id: string): Promise<void> {
   return request(`/announcements/${encodeURIComponent(id)}/read`, { method: 'POST', body: '{}' }).then(
     () => undefined,
   )
+}
+
+export async function getPortalBootstrap(): Promise<PortalBootstrap> {
+  const data = envelopeData(await request('/portal/bootstrap'))
+  if (!isPortalBootstrap(data)) throw contractError()
+  return data as unknown as PortalBootstrap
+}
+
+export async function getPortalApplication(id: string): Promise<IdentityApplication> {
+  const data = envelopeData(await request(`/portal/applications/${encodeURIComponent(id)}`))
+  if (!isIdentityApplication(data)) throw contractError()
+  return data as unknown as IdentityApplication
+}
+
+export async function launchPortalApplication(id: string): Promise<PortalLaunchDecision> {
+  const data = envelopeData(await request(`/portal/applications/${encodeURIComponent(id)}/launch`, {
+    method: 'POST',
+    body: JSON.stringify({ surface: 'desktop' }),
+  }))
+  if (!isPortalLaunchDecision(data)) throw contractError()
+  return data as unknown as PortalLaunchDecision
+}
+
+export async function setPortalFavorite(
+  id: string,
+  favorite: boolean,
+): Promise<IdentityApplication | undefined> {
+  const path = `/portal/applications/${encodeURIComponent(id)}/favorite`
+  if (!favorite) {
+    await request(path, { method: 'DELETE' })
+    return undefined
+  }
+  const data = envelopeData(await request(path, { method: 'POST' }))
+  if (!isIdentityApplication(data)) throw contractError()
+  return data as unknown as IdentityApplication
 }
 
 async function request(
@@ -340,6 +378,41 @@ function normalizePrincipal(value: Record<string, unknown>): Principal {
 
 function isAnnouncement(value: unknown): boolean {
   return isRecord(value) && hasStrings(value, ['id', 'title', 'summary', 'level']) && typeof value.isRead === 'boolean'
+}
+
+function isIdentityApplication(value: unknown): value is Record<string, unknown> {
+  return isRecord(value) && hasStrings(value, ['id', 'name', 'slug', 'status', 'createdAt', 'updatedAt']) &&
+    (!('tags' in value) || (Array.isArray(value.tags) && value.tags.every((item) => typeof item === 'string')))
+}
+
+function isIdentityApplicationLaunch(value: unknown): value is Record<string, unknown> {
+  return isRecord(value) && hasStrings(value, [
+    'id',
+    'applicationId',
+    'userId',
+    'providerType',
+    'result',
+    'createdAt',
+  ])
+}
+
+function isPortalBootstrap(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value) || !isPrincipal(value.principal) || !isRecord(value.security)) return false
+  const security = value.security
+  return Array.isArray(value.applications) && value.applications.every(isIdentityApplication) &&
+    Array.isArray(value.favorites) && value.favorites.every(isIdentityApplication) &&
+    Array.isArray(value.recent) && value.recent.every(isIdentityApplicationLaunch) &&
+    Array.isArray(value.categories) && value.categories.every((item) => typeof item === 'string') &&
+    isPrincipal(security.principal) && typeof security.mfaEnabled === 'boolean' &&
+    Array.isArray(security.linkedSources) && security.linkedSources.every((item) => typeof item === 'string') &&
+    typeof security.activeSession === 'number'
+}
+
+function isPortalLaunchDecision(value: unknown): value is Record<string, unknown> {
+  return isRecord(value) && isIdentityApplication(value.application) &&
+    typeof value.launchUrl === 'string' && value.launchUrl.length > 0 &&
+    typeof value.providerType === 'string' && value.decision === 'allow' &&
+    (!('handoffExpiresAt' in value) || typeof value.handoffExpiresAt === 'string')
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -58,6 +58,8 @@ func TestAppHandlerRoutesOnlySohaAPI(t *testing.T) {
 	)
 	loginRequest.Header.Set("X-Soha-App-Body", url.PathEscape(`{"login":"admin"}`))
 	loginRequest.Header.Set("Origin", "wails://localhost")
+	loginRequest.Header.Set("Content-Type", "application/json")
+	loginRequest.ContentLength = 0 // WKURLSchemeTask does not provide a reliable content length on macOS.
 	loginRequest.Header.Set("Forwarded", "for=attacker")
 	loginRequest.Header.Set("X-Forwarded-Proto", "https")
 	loginResponse := httptest.NewRecorder()
@@ -67,6 +69,16 @@ func TestAppHandlerRoutesOnlySohaAPI(t *testing.T) {
 	}
 	if loginResponse.Header().Get("X-Request-ID") == "" {
 		t.Fatal("proxied response is missing X-Request-ID")
+	}
+
+	oversizedRequest := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(strings.Repeat("a", proxyJSONMaxRequestSize+1)))
+	oversizedRequest.Header.Set("Origin", "wails://localhost")
+	oversizedRequest.Header.Set("Content-Type", "application/json")
+	oversizedRequest.ContentLength = 0
+	oversizedResponse := httptest.NewRecorder()
+	handler.ServeHTTP(oversizedResponse, oversizedRequest)
+	if oversizedResponse.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized JSON status=%d body=%s", oversizedResponse.Code, oversizedResponse.Body.String())
 	}
 
 	staticResponse := httptest.NewRecorder()
@@ -168,6 +180,71 @@ func TestStaticSecurityHeadersOnlyRelaxForFrontendDevServer(t *testing.T) {
 		if !strings.Contains(developmentCSP, required) {
 			t.Fatalf("development CSP %q is missing %q", developmentCSP, required)
 		}
+	}
+}
+
+func TestOpenBrowserActionValidatesAndUsesNativeBrowser(t *testing.T) {
+	tests := []struct {
+		name        string
+		method      string
+		contentType string
+		body        string
+		wantStatus  int
+		wantURL     string
+	}{
+		{name: "valid https", method: http.MethodPost, contentType: "application/json", body: `{"url":"https://soha.example.com/auth/browser-handoff/id"}`, wantStatus: http.StatusOK, wantURL: "https://soha.example.com/auth/browser-handoff/id"},
+		{name: "wrong method", method: http.MethodGet, contentType: "application/json", body: `{}`, wantStatus: http.StatusMethodNotAllowed},
+		{name: "wrong content type", method: http.MethodPost, contentType: "text/plain", body: `{}`, wantStatus: http.StatusUnsupportedMediaType},
+		{name: "invalid json", method: http.MethodPost, contentType: "application/json", body: `{`, wantStatus: http.StatusBadRequest},
+		{name: "empty host", method: http.MethodPost, contentType: "application/json", body: `{"url":"https:///path"}`, wantStatus: http.StatusBadRequest},
+		{name: "userinfo", method: http.MethodPost, contentType: "application/json", body: `{"url":"https://user:pass@soha.example.com/path"}`, wantStatus: http.StatusBadRequest},
+		{name: "javascript", method: http.MethodPost, contentType: "application/json", body: `{"url":"javascript:alert(1)"}`, wantStatus: http.StatusBadRequest},
+		{name: "file", method: http.MethodPost, contentType: "application/json", body: `{"url":"file:///tmp/test"}`, wantStatus: http.StatusBadRequest},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			host, err := newTestAppHost(http.NotFoundHandler(), newHealthyServer(t, nil).URL, nil, false, "runtime", AppInfo{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var opened string
+			host.setOpenBrowserURL(func(rawURL string) error {
+				opened = rawURL
+				return nil
+			})
+			request := httptest.NewRequest(test.method, "/app/v1/browser/open", strings.NewReader(test.body))
+			request.Header.Set("Origin", "wails://localhost")
+			request.Header.Set("Content-Type", test.contentType)
+			response := httptest.NewRecorder()
+
+			host.ServeHTTP(response, request)
+
+			if response.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d; body=%s", response.Code, test.wantStatus, response.Body.String())
+			}
+			if opened != test.wantURL {
+				t.Fatalf("opened URL = %q, want %q", opened, test.wantURL)
+			}
+		})
+	}
+}
+
+func TestOpenBrowserActionReportsNativeFailure(t *testing.T) {
+	host, err := newTestAppHost(http.NotFoundHandler(), newHealthyServer(t, nil).URL, nil, false, "runtime", AppInfo{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	host.setOpenBrowserURL(func(string) error { return errors.New("open failed") })
+	request := httptest.NewRequest(http.MethodPost, "/app/v1/browser/open", strings.NewReader(`{"url":"https://soha.example.com/path"}`))
+	request.Header.Set("Origin", "wails://localhost")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	host.ServeHTTP(response, request)
+
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusServiceUnavailable)
 	}
 }
 

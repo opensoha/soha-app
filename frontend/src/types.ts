@@ -1,5 +1,6 @@
 import type {
   AuthProvider as ContractAuthProvider,
+  IdentityApplication as ContractIdentityApplication,
   LoginOptions as ContractLoginOptions,
   Principal as ContractPrincipal,
 } from '@opensoha/contracts/gen/ts/sohaapi'
@@ -7,6 +8,64 @@ import type {
 export type AuthProvider = ContractAuthProvider
 export type LoginOptions = ContractLoginOptions
 export type Principal = ContractPrincipal
+
+// ponytail: remove this compatibility layer when @opensoha/contracts >= 0.1.16 is published.
+type PortalProviderType = 'link' | 'oidc' | 'proxy' | 'saml'
+
+export type IdentityApplication = Omit<ContractIdentityApplication, 'status'> & {
+  iconUrl?: string
+  category?: string
+  tags?: string[]
+  providerId?: string
+  providerType?: PortalProviderType
+  portalVisible?: boolean
+  featured?: boolean
+  sortOrder?: number
+  status: 'active' | 'draft' | 'enabled' | 'disabled' | 'maintenance'
+  metadata?: Record<string, unknown>
+  favorite?: boolean
+  lastLaunchedAt?: string
+  createdBy?: string
+  updatedBy?: string
+}
+
+export interface IdentityApplicationLaunch {
+  id: string
+  applicationId: string
+  applicationName?: string
+  userId: string
+  providerId?: string
+  providerType: PortalProviderType
+  result: string
+  reason?: string
+  launchUrl?: string
+  sourceIp?: string
+  userAgent?: string
+  createdAt: string
+}
+
+export interface PortalBootstrap {
+  principal: Principal
+  applications: IdentityApplication[]
+  favorites: IdentityApplication[]
+  recent: IdentityApplicationLaunch[]
+  categories: string[]
+  security: {
+    principal: Principal
+    mfaEnabled: boolean
+    linkedSources: string[]
+    activeSession: number
+    recentLoginAt?: string
+  }
+}
+
+export interface PortalLaunchDecision {
+  application: IdentityApplication
+  launchUrl: string
+  providerType: PortalProviderType
+  decision: 'allow'
+  handoffExpiresAt?: string
+}
 
 export interface Session {
   accessToken: string
