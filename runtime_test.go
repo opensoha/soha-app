@@ -28,4 +28,16 @@ func TestAppRuntimeReportsInfoAndRejectsUnconfiguredUpdates(t *testing.T) {
 	if updateResponse.Code != http.StatusServiceUnavailable {
 		t.Fatalf("unexpected update status: %d", updateResponse.Code)
 	}
+	var updateError struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(updateResponse.Body).Decode(&updateError); err != nil {
+		t.Fatal(err)
+	}
+	if updateError.Error.Code != "updates_unavailable" || updateError.Error.Message == "" {
+		t.Fatalf("unexpected update error: %#v", updateError)
+	}
 }

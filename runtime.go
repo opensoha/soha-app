@@ -54,18 +54,16 @@ func (runtimeAPI *appRuntime) ServeHTTP(writer http.ResponseWriter, request *htt
 		writeRuntimeJSON(writer, http.StatusOK, info)
 	case request.Method == http.MethodPost && request.URL.Path == "/app/v1/updates/check":
 		if runtimeAPI.updater == nil {
-			writeRuntimeJSON(writer, http.StatusServiceUnavailable, map[string]string{
-				"message": "当前构建未配置更新源",
-			})
+			writeError(writer, http.StatusServiceUnavailable, "updates_unavailable", "当前构建未配置更新源")
 			return
 		}
 		if err := runtimeAPI.checkAndPrompt(request.Context()); err != nil {
-			writeRuntimeJSON(writer, http.StatusBadGateway, map[string]string{"message": err.Error()})
+			writeError(writer, http.StatusBadGateway, "update_check_failed", err.Error())
 			return
 		}
 		writeRuntimeJSON(writer, http.StatusOK, map[string]string{"message": "更新检查已完成"})
 	default:
-		writeRuntimeJSON(writer, http.StatusNotFound, map[string]string{"message": "not found"})
+		writeError(writer, http.StatusNotFound, "runtime_not_found", "Runtime endpoint was not found")
 	}
 }
 

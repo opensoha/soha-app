@@ -1,6 +1,22 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { getBootstrap, loginWithProvider, setAccessToken, setSessionListener } from '@/api'
-import { getHostState } from '@/native/host'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  changePassword,
+  getBootstrap,
+  loginWithProvider,
+  loginWithPassword,
+  logoutServer,
+  setAccessToken,
+  setSessionListener,
+  updateProfile,
+} from '@/api'
+import {
+  checkForUpdates,
+  getHostState,
+  getSoftwareTask,
+  installSoftware,
+  listSoftware,
+  wailsRequestBodyHeader,
+} from '@/native/host'
 
 const principal = {
   userId: 'user-1',
@@ -13,10 +29,62 @@ const principal = {
 }
 
 describe('API transport', () => {
+  beforeEach(() => {
+    vi.stubGlobal('location', new URL('wails://localhost'))
+  })
+
   afterEach(() => {
     setAccessToken(null)
     setSessionListener(null)
     vi.unstubAllGlobals()
+  })
+
+  it('sends password login JSON through the Wails body header', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({
+      data: {
+        user: principal,
+        tokens: {
+          accessToken: 'password-access',
+          refreshToken: 'http-only-refresh',
+          tokenType: 'Bearer',
+          expiresIn: 300,
+          expiresAt: '2026-08-20T00:00:00Z',
+        },
+      },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(loginWithPassword('opensoha', 'secret-password')).resolves.toMatchObject({
+      accessToken: 'password-access',
+    })
+
+    const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(path).toBe('/api/v1/auth/login')
+    expect(decodedRequestBody(init)).toBe('{"login":"opensoha","password":"secret-password"}')
+    expect(new Headers(init.headers).get('Content-Type')).toBe('application/json')
+  })
+
+  it('keeps password login JSON in the standard HTTP request body', async () => {
+    vi.stubGlobal('location', new URL('http://127.0.0.1:9245'))
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({
+      data: {
+        user: principal,
+        tokens: {
+          accessToken: 'password-access',
+          refreshToken: 'http-only-refresh',
+          tokenType: 'Bearer',
+          expiresIn: 300,
+          expiresAt: '2026-08-20T00:00:00Z',
+        },
+      },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await loginWithPassword('opensoha', 'secret-password')
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(init.body).toBe('{"login":"opensoha","password":"secret-password"}')
+    expect(new Headers(init.headers).get(wailsRequestBodyHeader)).toBeNull()
   })
 
   it('uses one refresh for concurrent 401 responses and retries each request once', async () => {
@@ -167,6 +235,146 @@ describe('API transport', () => {
     })
   })
 
+  it('uses the authenticated profile, password, and logout contracts', async () => {
+    const profile = {
+      userId: 'user-1',
+      username: 'admin',
+      displayName: 'Soha Admin',
+      email: 'admin@soha.local',
+      phone: '13800138000',
+      avatarUrl: 'https://soha.local/avatar.png',
+      avatarFit: 'cover',
+      status: 'active',
+      roles: ['admin'],
+      teams: [],
+      projects: [],
+      tags: [],
+      identities: [],
+    }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ data: profile }))
+      .mockResolvedValueOnce(jsonResponse({ data: { message: 'password changed' } }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetchMock)
+    setAccessToken('profile-token')
+
+    await expect(updateProfile({
+      displayName: profile.displayName,
+      email: profile.email,
+      phone: profile.phone,
+      avatarUrl: profile.avatarUrl,
+      avatarFit: profile.avatarFit,
+    })).resolves.toEqual(profile)
+    await expect(changePassword('old-password', 'new-password')).resolves.toBeUndefined()
+    await expect(logoutServer()).resolves.toBeUndefined()
+
+    const [profilePath, profileInit] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(profilePath).toBe('/api/v1/auth/profile')
+    expect(profileInit).toMatchObject({
+      method: 'PATCH',
+      credentials: 'include',
+    })
+    expect(decodedRequestBody(profileInit)).toBe(JSON.stringify({
+      displayName: profile.displayName,
+      email: profile.email,
+      phone: profile.phone,
+      avatarUrl: profile.avatarUrl,
+      avatarFit: profile.avatarFit,
+    }))
+
+    const [passwordPath, passwordInit] = fetchMock.mock.calls[1] as [string, RequestInit]
+    expect(passwordPath).toBe('/api/v1/auth/profile/password')
+    expect(passwordInit).toMatchObject({
+      method: 'POST',
+      credentials: 'include',
+    })
+    expect(decodedRequestBody(passwordInit)).toBe(JSON.stringify({
+      currentPassword: 'old-password',
+      newPassword: 'new-password',
+    }))
+
+    const [logoutPath, logoutInit] = fetchMock.mock.calls[2] as [string, RequestInit]
+    expect(logoutPath).toBe('/api/v1/auth/logout')
+    expect(logoutInit).toMatchObject({ method: 'POST', credentials: 'include' })
+    expect(decodedRequestBody(logoutInit)).toBe('{}')
+
+    for (const init of [profileInit, passwordInit, logoutInit]) {
+      expect(new Headers(init.headers).get('Authorization')).toBe('Bearer profile-token')
+    }
+  })
+
+  it('checks for desktop updates through the runtime endpoint', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ message: '更新检查已完成' }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(checkForUpdates()).resolves.toEqual({ message: '更新检查已完成' })
+
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(fetchMock).toHaveBeenCalledWith('/app/v1/updates/check', expect.objectContaining({
+      credentials: 'include',
+      method: 'POST',
+    }))
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(decodedRequestBody(init)).toBe('{}')
+  })
+
+  it('preserves runtime update errors and request IDs', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(
+      { error: { code: 'updates_unavailable', message: '当前构建未配置更新源' } },
+      503,
+      { 'X-Request-ID': 'update-request-503' },
+    )))
+
+    await expect(checkForUpdates()).rejects.toMatchObject({
+      status: 503,
+      code: 'updates_unavailable',
+      message: '当前构建未配置更新源',
+      requestId: 'update-request-503',
+    })
+  })
+
+  it('uses the native software endpoints without exposing raw artifact metadata', async () => {
+    const software = {
+      id: 'package/desktop agent',
+      name: 'Soha Agent',
+      publisher: 'OpenSoha',
+      version: '1.2.3',
+      size: 12_345,
+    }
+    const queued = {
+      id: 'task/1',
+      softwareId: software.id,
+      name: software.name,
+      state: 'queued' as const,
+      progress: 0,
+      message: '等待下载',
+    }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ items: [software] }))
+      .mockResolvedValueOnce(jsonResponse({ task: queued }, 202))
+      .mockResolvedValueOnce(jsonResponse({ task: { ...queued, state: 'completed', progress: 100 } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const listed = await listSoftware('access-token')
+    expect(listed).toEqual({ items: [software] })
+    expect(listed.items[0]).not.toHaveProperty('sha256')
+    await expect(installSoftware(software.id, 'access-token')).resolves.toEqual({ task: queued })
+    await expect(getSoftwareTask(queued.id)).resolves.toMatchObject({ task: { state: 'completed' } })
+
+    const [listPath, listInit] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(listPath).toBe('/app/v1/software')
+    expect(new Headers(listInit.headers).get('Authorization')).toBe('Bearer access-token')
+
+    const [installPath, installInit] = fetchMock.mock.calls[1] as [string, RequestInit]
+    expect(installPath).toBe('/app/v1/software/package%2Fdesktop%20agent/install')
+    expect(installInit.method).toBe('POST')
+    expect(new Headers(installInit.headers).get('Authorization')).toBe('Bearer access-token')
+
+    const [taskPath, taskInit] = fetchMock.mock.calls[2] as [string, RequestInit]
+    expect(taskPath).toBe('/app/v1/software/tasks/task%2F1')
+    expect(new Headers(taskInit.headers).get('Authorization')).toBeNull()
+  })
+
   it('starts desktop provider login through the host and keeps only the access token', async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({
       data: {
@@ -189,10 +397,17 @@ describe('API transport', () => {
     expect(fetchMock).toHaveBeenCalledOnce()
     const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit]
     expect(path).toBe('/app/v1/auth/desktop/start')
-    expect(JSON.parse(String(init.body))).toEqual({ providerId: 'oidc-main' })
+    expect(JSON.parse(decodedRequestBody(init))).toEqual({ providerId: 'oidc-main' })
     expect(init.signal).toBe(controller.signal)
   })
 })
+
+function decodedRequestBody(init: RequestInit): string {
+  expect(init.body).toBeUndefined()
+  const encodedBody = new Headers(init.headers).get(wailsRequestBodyHeader)
+  expect(encodedBody).not.toBeNull()
+  return decodeURIComponent(encodedBody!)
+}
 
 function jsonResponse(payload: unknown, status = 200, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(payload), {

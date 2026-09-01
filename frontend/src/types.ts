@@ -104,6 +104,7 @@ export interface AppInfo {
   arch: string
   logDirectory: string
   updateSupported: boolean
+  updateState?: string
 }
 
 export interface HostState {
@@ -111,6 +112,41 @@ export interface HostState {
   configurationSource: 'default' | 'saved' | 'environment' | 'runtime'
   managedByEnvironment: boolean
   app: AppInfo
+}
+
+export interface SoftwarePackage {
+  id: string
+  name: string
+  description?: string
+  publisher: string
+  category?: string
+  version: string
+  size: number
+}
+
+export type SoftwareTaskState =
+  | 'queued'
+  | 'downloading'
+  | 'verifying'
+  | 'opening'
+  | 'completed'
+  | 'failed'
+
+export interface SoftwareInstallTask {
+  id: string
+  softwareId: string
+  name: string
+  state: SoftwareTaskState
+  progress: number
+  message: string
+}
+
+export interface SoftwareListResponse {
+  items: SoftwarePackage[]
+}
+
+export interface SoftwareTaskResponse {
+  task: SoftwareInstallTask
 }
 
 export function displayName(user: Principal | null | undefined): string {

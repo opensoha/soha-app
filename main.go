@@ -99,6 +99,9 @@ func main() {
 		appLog.Warn("application updates are unavailable", "component", "updater", "event", "app.updater.unavailable", "error", err, "error_type", logErrorType(err))
 	}
 	host.appInfo.UpdateSupported = runtimeAPI.updater != nil
+	if runtimeAPI.updater != nil {
+		host.appInfo.UpdateState = string(runtimeAPI.updater.State())
+	}
 
 	host.setOpenLogDirectory(func() error {
 		if err := os.MkdirAll(logDirectory, 0o700); err != nil {

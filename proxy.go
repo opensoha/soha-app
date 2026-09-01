@@ -28,6 +28,8 @@ import (
 const (
 	apiPrefix                      = "/api/v1"
 	hostPrefix                     = "/app/v1"
+	wailsRequestBodyHeader         = "X-Soha-App-Body"
+	maxWailsRequestBodySize        = 64 << 10
 	connectionProbeMaxResponseSize = 1 << 20
 )
 
@@ -56,6 +58,7 @@ type AppInfo struct {
 	Arch            string `json:"arch"`
 	LogDirectory    string `json:"logDirectory"`
 	UpdateSupported bool   `json:"updateSupported"`
+	UpdateState     string `json:"updateState,omitempty"`
 }
 
 type hostState struct {
@@ -139,11 +142,16 @@ func newHostHTTPClient() *http.Client {
 }
 
 func (h *appHost) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
-	if request.URL.Path == apiPrefix || strings.HasPrefix(request.URL.Path, apiPrefix+"/") ||
-		request.URL.Path == hostPrefix || strings.HasPrefix(request.URL.Path, hostPrefix+"/") {
+	isAppRequest := request.URL.Path == apiPrefix || strings.HasPrefix(request.URL.Path, apiPrefix+"/") ||
+		request.URL.Path == hostPrefix || strings.HasPrefix(request.URL.Path, hostPrefix+"/")
+	if isAppRequest {
 		requestID := newRequestID()
 		request.Header.Set("X-Request-ID", requestID)
 		writer.Header().Set("X-Request-ID", requestID)
+		if err := restoreWailsRequestBody(request); err != nil {
+			writeError(writer, http.StatusBadRequest, "invalid_request_body", "Request body is invalid")
+			return
+		}
 	}
 	switch {
 	case request.URL.Path == hostPrefix+"/state":
@@ -176,6 +184,27 @@ func (h *appHost) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		setStaticSecurityHeaders(writer.Header())
 		h.static.ServeHTTP(writer, request)
 	}
+}
+
+func restoreWailsRequestBody(request *http.Request) error {
+	encoded := request.Header.Get(wailsRequestBodyHeader)
+	if encoded == "" {
+		return nil
+	}
+	request.Header.Del(wailsRequestBodyHeader)
+	if len(encoded) > maxWailsRequestBodySize*3 {
+		return errors.New("encoded request body is too large")
+	}
+	body, err := url.PathUnescape(encoded)
+	if err != nil {
+		return fmt.Errorf("decode request body: %w", err)
+	}
+	if len(body) > maxWailsRequestBodySize {
+		return errors.New("request body is too large")
+	}
+	request.Body = io.NopCloser(strings.NewReader(body))
+	request.ContentLength = int64(len(body))
+	return nil
 }
 
 func (h *appHost) setOpenLogDirectory(open func() error) {

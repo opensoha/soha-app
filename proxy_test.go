@@ -18,6 +18,13 @@ import (
 
 func TestAppHandlerRoutesOnlySohaAPI(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		body, err := io.ReadAll(request.Body)
+		if err != nil || string(body) != `{"login":"admin"}` {
+			t.Fatalf("unexpected upstream body: body=%q err=%v", body, err)
+		}
+		if request.Header.Get("X-Soha-App-Body") != "" {
+			t.Fatal("Wails request body header reached the upstream server")
+		}
 		if request.Header.Get("Origin") != "" {
 			t.Fatal("browser Origin header reached the upstream server")
 		}
@@ -47,8 +54,9 @@ func TestAppHandlerRoutesOnlySohaAPI(t *testing.T) {
 	loginRequest := httptest.NewRequest(
 		http.MethodPost,
 		"/api/v1/auth/login?source=endpoint",
-		strings.NewReader(`{"login":"admin"}`),
+		nil,
 	)
+	loginRequest.Header.Set("X-Soha-App-Body", url.PathEscape(`{"login":"admin"}`))
 	loginRequest.Header.Set("Origin", "wails://localhost")
 	loginRequest.Header.Set("Forwarded", "for=attacker")
 	loginRequest.Header.Set("X-Forwarded-Proto", "https")

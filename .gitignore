@@ -10,3 +10,9 @@ build/ios/xcode/gen/
 build/android/overlay.json
 build/android/gen/
 .DS_Store
+
+# Local planning and generated code-graph artifacts
+task_plan.md
+findings.md
+progress.md
+graphify-out/

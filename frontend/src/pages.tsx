@@ -2,12 +2,12 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   CheckOutlined,
   CloudServerOutlined,
+  DownloadOutlined,
   FolderOpenOutlined,
   LockOutlined,
-  MoonOutlined,
   ReloadOutlined,
   SafetyCertificateOutlined,
-  SunOutlined,
+  SyncOutlined,
   UserOutlined,
 } from '@ant-design/icons'
 import {
@@ -20,11 +20,12 @@ import {
   Form,
   Input,
   Modal,
+  Progress,
   Result,
   Segmented,
   Select,
   Skeleton,
-  Slider,
+  Space,
   Spin,
   Tag,
 } from 'antd'
@@ -48,8 +49,12 @@ import { type Text, useText } from '@/i18n'
 import {
   HostError,
   activateServerSwitch,
+  checkForUpdates,
   checkServer,
   getHostState,
+  getSoftwareTask,
+  installSoftware,
+  listSoftware,
   openLogDirectory,
   prepareServerSwitch,
 } from '@/native/host'
@@ -61,6 +66,8 @@ import {
   type ConnectionCheck,
   type HostState,
   type ProfileUpdate,
+  type SoftwarePackage,
+  type SoftwareTaskState,
 } from '@/types'
 
 export function ConnectionPage() {
@@ -131,9 +138,9 @@ export function ConnectionPage() {
     : null
 
   return (
-    <div className="connection-screen">
+    <div className="connection-screen" data-platform={host?.app.platform}>
       <header className="connection-header">
-        <span className="brand-mark">S</span>
+        <img alt="" aria-hidden="true" className="brand-mark" src="/logo.svg" />
         <strong>{text.appName}</strong>
       </header>
       <main className="connection-main">
@@ -176,14 +183,10 @@ export function LoginPage() {
   const { message } = App.useApp()
   const text = useText()
   const [pending, setPending] = useState(false)
-  const [sliderValue, setSliderValue] = useState(0)
-  const [sliderVerified, setSliderVerified] = useState(false)
   const [providerPending, setProviderPending] = useState<AuthProvider | null>(null)
   const authAttemptPending = useRef(false)
   const providerController = useRef<AbortController | null>(null)
   const host = useAppStore((state) => state.host)
-  const themeMode = useAppStore((state) => state.themeMode)
-  const setThemeMode = useAppStore((state) => state.setThemeMode)
   const commitSession = useAppStore((state) => state.commitSession)
   const optionsQuery = useQuery({ queryKey: ['auth', 'login-options'], queryFn: getLoginOptions })
   const providersQuery = useQuery({ queryKey: ['auth', 'providers'], queryFn: getAuthProviders })
@@ -192,7 +195,6 @@ export function LoginPage() {
     (provider) => provider.enabled && provider.type !== 'password' && typeof provider.id === 'string' && provider.id,
   )
   const passwordEnabled = options?.localPasswordLoginEnabled !== false
-  const sliderEnabled = options?.verification.sliderEnabled === true
 
   useEffect(() => {
     if (options?.branding) applyBranding(options.branding)
@@ -200,18 +202,7 @@ export function LoginPage() {
 
   useEffect(() => () => providerController.current?.abort(), [])
 
-  const resetSliderVerification = () => {
-    setSliderValue(0)
-    setSliderVerified(false)
-  }
-
   const login = async (values: { login: string; password: string }) => {
-    if (sliderEnabled && !sliderVerified) {
-      authAttemptPending.current = false
-      setPending(false)
-      message.warning(text.sliderVerificationRequired)
-      return
-    }
     try {
       const session = await loginWithPassword(values.login, values.password)
       const bootstrap = await getBootstrap()
@@ -219,7 +210,6 @@ export function LoginPage() {
       applyBranding(bootstrap.branding)
       navigate('/home', { replace: true })
     } catch (error) {
-      if (sliderEnabled) resetSliderVerification()
       const isCredentialError = error instanceof ApiError && (error.status === 401 || error.status === 403)
       message.error(isCredentialError ? text.loginFailed : readableError(error, text))
     } finally {
@@ -273,19 +263,12 @@ export function LoginPage() {
 
   const logo = options?.branding?.loginLogoUrl
   return (
-    <div className="login-screen">
+    <div className="login-screen" data-platform={host?.app.platform}>
       <header className="login-titlebar">
         <div className="login-brand">
-          <span className="brand-mark">S</span>
+          <img alt="" aria-hidden="true" className="brand-mark" src="/logo.svg" />
           <strong>{options?.branding?.appTitle || text.appName}</strong>
         </div>
-        <Button
-          aria-label={themeMode === 'dark' ? text.themeLight : text.themeDark}
-          icon={themeMode === 'dark' ? <SunOutlined /> : <MoonOutlined />}
-          onClick={() => setThemeMode(themeMode === 'dark' ? 'light' : 'dark')}
-          title={themeMode === 'dark' ? text.themeLight : text.themeDark}
-          type="text"
-        />
       </header>
       <main className="login-main">
         <section className="login-panel">
@@ -326,35 +309,8 @@ export function LoginPage() {
                   <Form.Item label={text.password} name="password" rules={[{ required: true, message: text.password }]}>
                     <Input.Password autoComplete="current-password" prefix={<LockOutlined />} />
                   </Form.Item>
-                  {sliderEnabled ? (
-                    <Form.Item
-                      extra={<span aria-live="polite">{sliderVerified ? text.sliderVerificationComplete : text.sliderVerificationHelp}</span>}
-                      label={text.sliderVerification}
-                    >
-                      <Slider
-                        ariaLabelForHandle={text.sliderVerification}
-                        ariaValueTextFormatterForHandle={(value) => `${value}%`}
-                        disabled={pending || sliderVerified}
-                        max={100}
-                        min={0}
-                        onChange={setSliderValue}
-                        onChangeComplete={(value) => {
-                          if (value >= 98) {
-                            setSliderValue(100)
-                            setSliderVerified(true)
-                            return
-                          }
-                          resetSliderVerification()
-                        }}
-                        step={1}
-                        tooltip={{ formatter: null }}
-                        value={sliderValue}
-                      />
-                    </Form.Item>
-                  ) : null}
                   <Button
                     block
-                    disabled={sliderEnabled && !sliderVerified}
                     htmlType="submit"
                     loading={pending}
                     type="primary"
@@ -460,6 +416,147 @@ export function HomePage() {
   )
 }
 
+export function SoftwarePage() {
+  const { message } = App.useApp()
+  const text = useText()
+  const session = useAppStore((state) => state.session)
+  const [selected, setSelected] = useState<SoftwarePackage | null>(null)
+  const [taskId, setTaskId] = useState<string | null>(null)
+  const catalogQuery = useQuery({
+    queryKey: ['software'],
+    queryFn: () => listSoftware(session!.accessToken),
+    enabled: Boolean(session),
+  })
+  const taskQuery = useQuery({
+    queryKey: ['software', 'task', taskId],
+    queryFn: () => getSoftwareTask(taskId!),
+    enabled: Boolean(taskId),
+    refetchInterval: (query) => {
+      const state = query.state.data?.task.state
+      return query.state.status === 'error' || state === 'completed' || state === 'failed' ? false : 250
+    },
+  })
+  const installMutation = useMutation({
+    mutationFn: (software: SoftwarePackage) => installSoftware(software.id, session!.accessToken),
+    onSuccess: (result) => {
+      setSelected(null)
+      setTaskId(result.task.id)
+    },
+    onError: (error) => message.error(readableError(error, text)),
+  })
+  const task = taskQuery.data?.task || installMutation.data?.task
+  const taskActive = Boolean(task && task.state !== 'completed' && task.state !== 'failed')
+  const taskLabels: Record<SoftwareTaskState, string> = {
+    queued: text.softwareQueued,
+    downloading: text.softwareDownloading,
+    verifying: text.softwareVerifying,
+    opening: text.softwareOpening,
+    completed: text.softwareCompleted,
+    failed: text.softwareFailed,
+  }
+
+  return (
+    <Page title={text.software}>
+      <section>
+        {catalogQuery.isLoading ? <Skeleton active paragraph={{ rows: 6 }} /> : null}
+        {catalogQuery.isError ? (
+          <Alert
+            action={<Button onClick={() => void catalogQuery.refetch()} size="small">{text.retry}</Button>}
+            description={readableError(catalogQuery.error, text)}
+            showIcon
+            title={text.softwareLoadFailed}
+            type="warning"
+          />
+        ) : null}
+        {catalogQuery.data && !catalogQuery.data.items.length ? (
+          <Empty description={text.noSoftware} image={Empty.PRESENTED_IMAGE_SIMPLE} />
+        ) : null}
+        {catalogQuery.data?.items.length ? (
+          <div role="list">
+            {catalogQuery.data.items.map((software) => (
+              <div key={software.id} role="listitem">
+                <SettingRow
+                  description={software.description}
+                  label={`${software.name} · ${software.version}`}
+                >
+                  <Space wrap>
+                    <Tag>{text.publisher}: {software.publisher}</Tag>
+                    {software.category ? <Tag>{text.category}: {software.category}</Tag> : null}
+                    <Tag>{text.size}: {software.size.toLocaleString()} {text.bytes}</Tag>
+                    <Tag color="green">{text.softwareCompatible}</Tag>
+                    <Button
+                      disabled={taskActive || installMutation.isPending}
+                      icon={<DownloadOutlined />}
+                      loading={installMutation.isPending && installMutation.variables?.id === software.id}
+                      onClick={() => setSelected(software)}
+                      type="primary"
+                    >
+                      {text.install}
+                    </Button>
+                  </Space>
+                </SettingRow>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </section>
+      {task ? (
+        <section aria-live="polite" className="page-section">
+          <header className="section-heading">
+            <h2>{text.installProgress}</h2>
+            <Tag color={task.state === 'failed' ? 'red' : task.state === 'completed' ? 'green' : 'blue'}>
+              {taskLabels[task.state]}
+            </Tag>
+          </header>
+          <strong>{task.name}</strong>
+          <Progress
+            aria-label={taskLabels[task.state]}
+            percent={task.progress}
+            status={task.state === 'failed' ? 'exception' : task.state === 'completed' ? 'success' : 'active'}
+          />
+          <p>{task.message}</p>
+          {taskQuery.isError ? (
+            <Alert
+              action={<Button onClick={() => void taskQuery.refetch()} size="small">{text.retry}</Button>}
+              description={readableError(taskQuery.error, text)}
+              showIcon
+              type="warning"
+            />
+          ) : null}
+        </section>
+      ) : null}
+      <Modal
+        cancelButtonProps={{ disabled: installMutation.isPending }}
+        cancelText={text.cancel}
+        confirmLoading={installMutation.isPending}
+        destroyOnHidden
+        mask={{ closable: false }}
+        okText={text.installAndOpen}
+        onCancel={() => {
+          if (!installMutation.isPending) setSelected(null)
+        }}
+        onOk={() => {
+          if (selected) installMutation.mutate(selected)
+        }}
+        open={Boolean(selected)}
+        title={text.installSoftware}
+      >
+        <Descriptions
+          column={1}
+          items={selected ? [
+            { key: 'name', label: text.software, children: selected.name },
+            { key: 'publisher', label: text.publisher, children: selected.publisher },
+            { key: 'version', label: text.version, children: selected.version },
+            { key: 'size', label: text.size, children: `${selected.size.toLocaleString()} ${text.bytes}` },
+          ] : []}
+          size="small"
+        />
+        <Alert description={text.installWarning} showIcon type="warning" />
+      </Modal>
+    </Page>
+  )
+}
+
 export function ProfilePage() {
   const { message } = App.useApp()
   const text = useText()
@@ -499,14 +596,14 @@ export function ProfilePage() {
     })
   }, [profile, profileForm])
 
-  if (profileQuery.isLoading) return <Page title={text.profile} description={text.profileDescription}><Skeleton active paragraph={{ rows: 8 }} /></Page>
+  if (profileQuery.isLoading) return <Page title={text.profile}><Skeleton active paragraph={{ rows: 8 }} /></Page>
   if (profileQuery.isError || !profile) {
-    return <Page title={text.profile} description={text.profileDescription}><Result extra={<Button onClick={() => void profileQuery.refetch()}>{text.retry}</Button>} status="error" title={text.offlineTitle} /></Page>
+    return <Page title={text.profile}><Result extra={<Button onClick={() => void profileQuery.refetch()}>{text.retry}</Button>} status="error" title={text.offlineTitle} /></Page>
   }
   const hasPasswordIdentity = profile.identities.some((identity) => identity.providerType === 'password')
 
   return (
-    <Page title={text.profile} description={text.profileDescription}>
+    <Page title={text.profile}>
       <section className="profile-summary">
         <Avatar icon={<UserOutlined />} size={72} src={profile.avatarUrl || avatarURL(session?.user)} />
         <div><h2>{profile.displayName || profile.username}</h2><p>{profile.email}</p><Tag color="success">{profile.status}</Tag></div>
@@ -588,6 +685,11 @@ export function SettingsPage() {
   const setHost = useAppStore((state) => state.setHost)
   const setConnection = useAppStore((state) => state.setConnection)
   const clearSession = useAppStore((state) => state.clearSession)
+  const updateMutation = useMutation({
+    mutationFn: checkForUpdates,
+    onSuccess: (result) => message.success(result.message),
+    onError: (error) => message.error(readableError(error, text)),
+  })
 
   const openServerModal = () => {
     serverForm.setFieldValue('serverUrl', host?.serverUrl || '')
@@ -640,7 +742,7 @@ export function SettingsPage() {
 
   const app = host?.app
   return (
-    <Page title={text.settings} description={text.settingsDescription}>
+    <Page title={text.settings}>
       <section className="settings-section">
         <h2>{text.appearance}</h2>
         <SettingRow label={text.theme}>
@@ -678,15 +780,30 @@ export function SettingsPage() {
             { key: 'version', label: text.version, children: app?.version || '-' },
             { key: 'platform', label: text.platform, children: app ? `${app.platform} / ${app.arch}` : '-' },
             { key: 'logs', label: text.logDirectory, children: app?.logDirectory || '-' },
-            { key: 'updates', label: text.updateStatus, children: text.updateUnavailable },
+            {
+              key: 'updates',
+              label: text.updateStatus,
+              children: app?.updateSupported ? text.updateReady : text.updateUnavailable,
+            },
           ]}
         />
-        <Button
-          icon={<FolderOpenOutlined />}
-          onClick={() => void openLogDirectory().catch((error) => message.error(readableError(error, text)))}
-        >
-          {text.openLogs}
-        </Button>
+        <Space wrap>
+          <Button
+            disabled={!app?.updateSupported || updateMutation.isPending}
+            icon={<ReloadOutlined />}
+            loading={updateMutation.isPending}
+            onClick={() => updateMutation.mutate()}
+          >
+            {text.checkUpdates}
+          </Button>
+          <Button
+            icon={<FolderOpenOutlined />}
+            onClick={() => void openLogDirectory().catch((error) => message.error(readableError(error, text)))}
+          >
+            {text.openLogs}
+          </Button>
+          <Button disabled icon={<SyncOutlined />}>{text.syncConfiguration}</Button>
+        </Space>
       </section>
       <Modal
         cancelText={text.cancel}
@@ -720,8 +837,8 @@ export function SettingsPage() {
   )
 }
 
-function Page({ title, description, children }: { title: string; description: string; children: ReactNode }) {
-  return <div className="page"><header className="page-heading"><h1>{title}</h1><p>{description}</p></header>{children}</div>
+function Page({ title, description, children }: { title: string; description?: string; children: ReactNode }) {
+  return <div className="page">{description ? <header className="page-heading"><h1>{title}</h1><p>{description}</p></header> : <h1 className="visually-hidden">{title}</h1>}{children}</div>
 }
 
 function SettingRow({ label, description, children }: { label: string; description?: string; children: ReactNode }) {

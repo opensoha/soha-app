@@ -1,4 +1,9 @@
-import type { ConnectionCheck, HostState } from '@/types'
+import type {
+  ConnectionCheck,
+  HostState,
+  SoftwareListResponse,
+  SoftwareTaskResponse,
+} from '@/types'
 
 interface DataEnvelope<T> {
   data: T
@@ -11,6 +16,12 @@ interface ErrorEnvelope {
 interface PreparedSwitch {
   activationToken: string
   connection: ConnectionCheck
+}
+
+export const wailsRequestBodyHeader = 'X-Soha-App-Body'
+
+export interface UpdateCheckResult {
+  message: string
 }
 
 export class HostError extends Error {
@@ -57,6 +68,41 @@ export function openLogDirectory(): Promise<void> {
   return hostRequest('/app/v1/logs/open', jsonRequest({})).then(() => undefined)
 }
 
+export function checkForUpdates(): Promise<UpdateCheckResult> {
+  return hostRequest<UpdateCheckResult>(
+    '/app/v1/updates/check',
+    jsonRequest({}),
+    false,
+  )
+}
+
+export function listSoftware(accessToken: string): Promise<SoftwareListResponse> {
+  return hostRequest<SoftwareListResponse>(
+    '/app/v1/software',
+    bearerRequest(accessToken),
+    false,
+  )
+}
+
+export function installSoftware(
+  softwareId: string,
+  accessToken: string,
+): Promise<SoftwareTaskResponse> {
+  return hostRequest<SoftwareTaskResponse>(
+    `/app/v1/software/${encodeURIComponent(softwareId)}/install`,
+    bearerRequest(accessToken, jsonRequest({})),
+    false,
+  )
+}
+
+export function getSoftwareTask(taskId: string): Promise<SoftwareTaskResponse> {
+  return hostRequest<SoftwareTaskResponse>(
+    `/app/v1/software/tasks/${encodeURIComponent(taskId)}`,
+    {},
+    false,
+  )
+}
+
 export function startDesktopAuth(providerId: string, signal: AbortSignal): Promise<unknown> {
   return hostRequest<unknown>('/app/v1/auth/desktop/start', {
     ...jsonRequest({ providerId }),
@@ -65,15 +111,29 @@ export function startDesktopAuth(providerId: string, signal: AbortSignal): Promi
 }
 
 function jsonRequest(body: object): RequestInit {
+  const payload = JSON.stringify(body)
   return {
     method: 'POST',
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    headers: {
+      'Content-Type': 'application/json',
+      [wailsRequestBodyHeader]: encodeURIComponent(payload),
+    },
   }
 }
 
-async function hostRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
+function bearerRequest(accessToken: string, init: RequestInit = {}): RequestInit {
+  return {
+    ...init,
+    headers: { ...init.headers, Authorization: `Bearer ${accessToken}` },
+  }
+}
+
+async function hostRequest<T>(
+  path: string,
+  init: RequestInit = {},
+  expectsDataEnvelope = true,
+): Promise<T> {
   let response: Response
   try {
     response = await fetch(path, { credentials: 'include', ...init })
@@ -85,9 +145,11 @@ async function hostRequest<T>(path: string, init: RequestInit = {}): Promise<T> 
   const payload = (await response.json().catch(() => null)) as
     | DataEnvelope<T>
     | ErrorEnvelope
+    | T
     | null
+  const envelope = payload as (DataEnvelope<T> & ErrorEnvelope) | null
   if (!response.ok) {
-    const error = payload && 'error' in payload ? payload.error : undefined
+    const error = envelope?.error
     throw new HostError(
       response.status,
       error?.code || 'host_request_failed',
@@ -95,7 +157,7 @@ async function hostRequest<T>(path: string, init: RequestInit = {}): Promise<T> 
       response.headers.get('X-Request-ID') || undefined,
     )
   }
-  if (!payload || !('data' in payload)) {
+  if (!payload || typeof payload !== 'object' || (expectsDataEnvelope && !('data' in payload))) {
     throw new HostError(
       response.status,
       'host_contract_mismatch',
@@ -103,5 +165,5 @@ async function hostRequest<T>(path: string, init: RequestInit = {}): Promise<T> 
       response.headers.get('X-Request-ID') || undefined,
     )
   }
-  return payload.data
+  return expectsDataEnvelope ? envelope!.data : payload as T
 }

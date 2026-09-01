@@ -1,16 +1,16 @@
 :root {
-  --app-bg: #f4f6f7;
+  --app-bg: #ffffff;
   --surface: #ffffff;
-  --surface-muted: #f7f9fa;
-  --border: #dce1e4;
-  --border-strong: #c4ccd1;
-  --text: #172026;
-  --text-secondary: #4d5d66;
-  --text-muted: #5f6d74;
-  --primary: #176b5b;
-  --primary-muted: #e5f2ef;
-  --success: #287a4b;
-  --shadow: 0 14px 36px rgb(22 38 45 / 10%);
+  --surface-muted: #f9f9fb;
+  --border: #e5e7eb;
+  --border-strong: #f0f2f5;
+  --text: #111827;
+  --text-secondary: #4b5563;
+  --text-muted: #6b7280;
+  --primary: #1677ff;
+  --primary-muted: #e6f4ff;
+  --success: #22c55e;
+  --shadow: 0 14px 34px rgb(22 119 255 / 8%);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans CJK SC", sans-serif;
   color: var(--text);
   background: var(--app-bg);
@@ -19,18 +19,18 @@
 }
 
 :root[data-theme='dark'] {
-  --app-bg: #15191b;
-  --surface: #1d2326;
-  --surface-muted: #20282b;
-  --border: #344045;
-  --border-strong: #4a585e;
-  --text: #eef3f4;
-  --text-secondary: #bac5c9;
-  --text-muted: #8f9da2;
-  --primary: #58b8a0;
-  --primary-muted: #203f39;
-  --success: #65bd86;
-  --shadow: 0 14px 36px rgb(0 0 0 / 28%);
+  --app-bg: #07111f;
+  --surface: #0d1726;
+  --surface-muted: #122238;
+  --border: #1e334d;
+  --border-strong: #28415f;
+  --text: #fafafa;
+  --text-secondary: #d4d4d8;
+  --text-muted: #a1a1aa;
+  --primary: #4096ff;
+  --primary-muted: rgb(64 150 255 / 16%);
+  --success: #4ade80;
+  --shadow: 0 18px 42px rgb(0 0 0 / 34%);
 }
 
 * {
@@ -74,16 +74,10 @@ input {
 }
 
 .brand-mark {
-  display: grid;
   width: 34px;
   height: 34px;
   flex: 0 0 34px;
-  place-items: center;
-  border-radius: 7px;
-  color: #ffffff;
-  background: #176b5b;
-  font-size: 17px;
-  font-weight: 700;
+  object-fit: contain;
 }
 
 .connection-screen,
@@ -107,6 +101,11 @@ input {
 .connection-header {
   justify-content: flex-start;
   gap: 10px;
+}
+
+.connection-screen[data-platform='darwin'] .connection-header,
+.login-screen[data-platform='darwin'] .login-titlebar {
+  padding-left: 86px;
 }
 
 .login-titlebar .ant-btn,
@@ -253,6 +252,10 @@ input {
   background: var(--app-bg);
 }
 
+.desktop-shell[data-platform='darwin'] {
+  grid-template-columns: 232px minmax(0, 1fr);
+}
+
 .skip-link {
   position: fixed;
   z-index: 1000;
@@ -280,17 +283,17 @@ input {
   background: var(--surface);
 }
 
-.brand {
-  display: flex;
+.sidebar-drag-region {
+  --wails-draggable: drag;
+
   min-height: 46px;
-  align-items: center;
-  gap: 10px;
-  padding: 0 8px 16px;
+  flex: 0 0 46px;
 }
 
-.brand span,
-.brand strong,
-.brand small,
+.desktop-shell[data-platform='darwin'] .skip-link {
+  left: 86px;
+}
+
 .user-summary span,
 .user-summary strong,
 .user-summary small {
@@ -298,14 +301,6 @@ input {
   min-width: 0;
 }
 
-.brand strong {
-  overflow: hidden;
-  font-size: 15px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.brand small,
 .user-summary small {
   color: var(--text-muted);
   font-size: 11px;
@@ -341,11 +336,21 @@ input {
 }
 
 .sidebar-footer {
-  display: grid;
-  gap: 8px;
   margin-top: auto;
   padding-top: 14px;
   border-top: 1px solid var(--border);
+}
+
+.user-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 44px;
+  align-items: center;
+  gap: 2px;
+  border-radius: 6px;
+}
+
+.user-card:hover {
+  background: var(--surface-muted);
 }
 
 .user-summary {
@@ -364,7 +369,7 @@ input {
 }
 
 .user-summary:hover {
-  background: var(--surface-muted);
+  background: transparent;
 }
 
 .user-summary strong,
@@ -372,6 +377,11 @@ input {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.user-logout.ant-btn {
+  width: 44px;
+  height: 44px;
 }
 
 .workspace {
@@ -425,6 +435,18 @@ input {
   width: min(1000px, calc(100% - 56px));
   margin: 0 auto;
   padding: 32px 0 48px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .page-heading {
@@ -491,11 +513,18 @@ input {
   white-space: nowrap;
 }
 
-.page-section,
-.settings-section {
+.page-section {
   margin-top: 28px;
   padding-top: 20px;
   border-top: 1px solid var(--border);
+}
+
+.settings-section {
+  margin-top: 32px;
+}
+
+.settings-section:first-of-type {
+  margin-top: 0;
 }
 
 .page-section > h2,
@@ -579,7 +608,10 @@ input {
   align-items: center;
   justify-content: space-between;
   gap: 24px;
-  border-bottom: 1px solid var(--border);
+}
+
+.settings-section > .setting-row + .setting-row {
+  border-top: 1px solid var(--border);
 }
 
 .setting-row > span,

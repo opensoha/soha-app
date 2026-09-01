@@ -11,7 +11,7 @@ import type {
   Session,
   UserProfile,
 } from '@/types'
-import { startDesktopAuth } from '@/native/host'
+import { startDesktopAuth, wailsRequestBodyHeader } from '@/native/host'
 
 export class ApiError extends Error {
   constructor(
@@ -180,11 +180,16 @@ async function request(
   headers.set('Accept', 'application/json')
   if (init.body != null && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
   if (authenticated && accessToken) headers.set('Authorization', `Bearer ${accessToken}`)
+  const wailsBody = typeof init.body === 'string' && isWailsAssetTransport() ? init.body : null
+  if (wailsBody !== null) {
+    headers.set(wailsRequestBodyHeader, encodeURIComponent(wailsBody))
+  }
 
   let response: Response
   try {
     response = await fetch(`/api/v1${path}`, {
       ...init,
+      body: wailsBody === null ? init.body : undefined,
       headers,
       credentials: 'include',
       redirect: 'error',
@@ -201,6 +206,10 @@ async function request(
   const payload = await readPayload(response)
   if (!response.ok) throw responseError(response, payload)
   return payload
+}
+
+function isWailsAssetTransport(): boolean {
+  return globalThis.location.protocol === 'wails:' || globalThis.location.hostname === 'wails.localhost'
 }
 
 async function singleFlightRefresh(): Promise<Session | null> {

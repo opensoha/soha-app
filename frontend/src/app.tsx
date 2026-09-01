@@ -1,12 +1,13 @@
 import { Component, type ErrorInfo, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import {
+  AppstoreOutlined,
   HomeOutlined,
   LogoutOutlined,
   ReloadOutlined,
   SettingOutlined,
   UserOutlined,
 } from '@ant-design/icons'
-import { App, Avatar, Button, Result, Spin } from 'antd'
+import { App, Avatar, Button, Result, Spin, Tooltip } from 'antd'
 import { useQueryClient } from '@tanstack/react-query'
 import {
   MemoryRouter,
@@ -34,6 +35,7 @@ import {
   LoginPage,
   ProfilePage,
   SettingsPage,
+  SoftwarePage,
   connectionMessage,
 } from '@/pages'
 import { useAppStore } from '@/store'
@@ -57,6 +59,7 @@ export function DesktopApp({ initialEntries }: { initialEntries?: string[] } = {
             <Route element={<DesktopShell />}>
               <Route path="/home" element={<HomePage />} />
               <Route path="/profile" element={<ProfilePage />} />
+              <Route path="/software" element={<SoftwarePage />} />
               <Route path="/settings" element={<SettingsPage />} />
             </Route>
           </Route>
@@ -247,6 +250,7 @@ function DesktopShell() {
 
   const navigation = [
     { path: '/home', label: text.home, icon: <HomeOutlined /> },
+    { path: '/software', label: text.software, icon: <AppstoreOutlined /> },
     { path: '/profile', label: text.profile, icon: <UserOutlined /> },
     { path: '/settings', label: text.settings, icon: <SettingOutlined /> },
   ]
@@ -256,7 +260,7 @@ function DesktopShell() {
   const connectionClass = checkingConnection ? 'checking' : (connection?.status || 'checking')
 
   return (
-    <div className="desktop-shell">
+    <div className="desktop-shell" data-platform={host?.app.platform}>
       <NavLink
         className="skip-link"
         onClick={(event) => {
@@ -268,13 +272,7 @@ function DesktopShell() {
         {text.skipToContent}
       </NavLink>
       <aside className="sidebar">
-        <div className="brand">
-          <span className="brand-mark">S</span>
-          <span>
-            <strong>{bootstrap?.branding.sidebarTitle || text.appName}</strong>
-            <small>Desktop</small>
-          </span>
-        </div>
+        <div aria-hidden="true" className="sidebar-drag-region" />
         <nav aria-label={text.desktopNavigation}>
           {navigation.map((item) => (
             <NavLink
@@ -288,16 +286,26 @@ function DesktopShell() {
           ))}
         </nav>
         <div className="sidebar-footer">
-          <button className="user-summary" onClick={() => navigate('/profile')} type="button">
-            <Avatar icon={<UserOutlined />} size={34} src={avatarURL(user)} />
-            <span>
-              <strong>{name}</strong>
-              <small>{user?.email || ''}</small>
-            </span>
-          </button>
-          <Button block icon={<LogoutOutlined />} onClick={() => void logout()} type="text">
-            {text.logout}
-          </Button>
+          <div className="user-card">
+            <button className="user-summary" onClick={() => navigate('/profile')} type="button">
+              <Avatar icon={<UserOutlined />} size={34} src={avatarURL(user)} />
+              <span>
+                <strong>{name}</strong>
+                <small>{user?.email || ''}</small>
+              </span>
+            </button>
+            <Tooltip placement="right" title={text.logout}>
+              <Button
+                aria-label={text.logout}
+                className="user-logout"
+                danger
+                icon={<LogoutOutlined />}
+                onClick={() => void logout()}
+                title={text.logout}
+                type="text"
+              />
+            </Tooltip>
+          </div>
         </div>
       </aside>
       <main

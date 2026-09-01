@@ -21,10 +21,15 @@ import {
   updateProfile,
 } from '@/api'
 import {
+  HostError,
   activateServerSwitch,
+  checkForUpdates,
   checkServer,
   clearHostSession,
   getHostState,
+  getSoftwareTask,
+  installSoftware,
+  listSoftware,
   prepareServerSwitch,
 } from '@/native/host'
 import { useAppStore } from '@/store'
@@ -54,10 +59,14 @@ vi.mock('@/native/host', () => ({
     },
   }),
   checkServer: vi.fn().mockResolvedValue({ status: 'online', serverUrl: 'https://soha.example.com' }),
+  checkForUpdates: vi.fn(),
   clearHostSession: vi.fn().mockResolvedValue(undefined),
   prepareServerSwitch: vi.fn(),
   activateServerSwitch: vi.fn(),
   openLogDirectory: vi.fn(),
+  listSoftware: vi.fn(),
+  installSoftware: vi.fn(),
+  getSoftwareTask: vi.fn(),
 }))
 
 vi.mock('@/api', () => {
@@ -130,6 +139,25 @@ const hostState = {
   },
 }
 
+const softwarePackage = {
+  id: 'soha-agent',
+  name: 'Soha Agent',
+  description: '组织批准的桌面代理',
+  publisher: 'OpenSoha',
+  category: 'Developer Tools',
+  version: '1.2.3',
+  size: 12_345_678,
+}
+
+const queuedSoftwareTask = {
+  id: 'task-1',
+  softwareId: softwarePackage.id,
+  name: softwarePackage.name,
+  state: 'queued' as const,
+  progress: 0,
+  message: '等待下载',
+}
+
 const bootstrap = {
   user: principal,
   currentUser: principal,
@@ -144,6 +172,12 @@ describe('desktop app', () => {
     vi.mocked(checkServer).mockResolvedValue({
       status: 'online',
       serverUrl: 'https://soha.example.com',
+    })
+    vi.mocked(checkForUpdates).mockResolvedValue({ message: '更新检查已完成' })
+    vi.mocked(listSoftware).mockResolvedValue({ items: [] })
+    vi.mocked(installSoftware).mockResolvedValue({ task: queuedSoftwareTask })
+    vi.mocked(getSoftwareTask).mockResolvedValue({
+      task: { ...queuedSoftwareTask, state: 'completed', progress: 100, message: '安装器已打开' },
     })
     vi.mocked(clearHostSession).mockResolvedValue(undefined)
     vi.mocked(restoreSession).mockResolvedValue({ accessToken: 'access-token', user: principal })
@@ -199,7 +233,7 @@ describe('desktop app', () => {
     expect(container.textContent).toContain('设置')
     expect(container.textContent).toContain('当前账号没有查看公告的权限')
     expect(container.querySelector('.status-band')?.getAttribute('aria-label')).toBe('会话状态')
-    expect(container.textContent).not.toContain('软件库')
+    expect(container.textContent).toContain('软件库')
     expect(container.textContent).not.toContain('企业应用')
     expect(getAnnouncementInbox).not.toHaveBeenCalled()
   })
@@ -312,7 +346,7 @@ describe('desktop app', () => {
     expect(useAppStore.getState().session).toBeNull()
   })
 
-  it('requires slider completion and resets it after a failed password login', async () => {
+  it('ignores the Server slider option and submits the password form directly', async () => {
     vi.mocked(restoreSession).mockResolvedValueOnce(null)
     vi.mocked(getLoginOptions).mockResolvedValueOnce({
       localPasswordLoginEnabled: true,
@@ -321,44 +355,33 @@ describe('desktop app', () => {
     vi.mocked(loginWithPassword).mockRejectedValueOnce(new ApiError(401, 'invalid_credentials', 'Unauthorized'))
     const queryClient = await renderApp()
     await waitForLoginQueries(queryClient)
-    await waitForUI(() => expect(container.querySelector('[role="slider"]')).not.toBeNull())
+    await waitForUI(() => expect(container.querySelector('input[autocomplete="username"]')).not.toBeNull())
 
-    const slider = container.querySelector<HTMLElement>('[role="slider"]')
     const signIn = findButton(container, '登录')
-    expect(slider?.getAttribute('aria-label')).toBe('登录验证')
-    expect(slider?.getAttribute('aria-valuemin')).toBe('0')
-    expect(slider?.getAttribute('aria-valuemax')).toBe('100')
-    expect(slider?.getAttribute('aria-valuenow')).toBe('0')
-    expect(signIn?.disabled).toBe(true)
+    expect(container.querySelector('[role="slider"]')).toBeNull()
+    expect(container.textContent).not.toContain('登录验证')
+    expect(signIn?.disabled).toBe(false)
     expect(container.querySelector('input[autocomplete="current-password"]')).not.toBeNull()
 
     await setInput(container.querySelector('input[autocomplete="username"]'), 'admin')
     await setInput(container.querySelector('input[autocomplete="current-password"]'), 'wrong-password')
-    await act(async () => {
-      container.querySelector('form')?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
-    })
-    await waitForUI(() => expect(document.body.textContent).toContain('请先完成滑块验证'))
-    expect(loginWithPassword).not.toHaveBeenCalled()
-
-    await setSliderFromEnd(slider, 3)
-    await waitForUI(() => expect(slider?.getAttribute('aria-valuenow')).toBe('0'))
-    expect(signIn?.disabled).toBe(true)
-
-    await setSliderFromEnd(slider, 2)
-    await waitForUI(() => {
-      expect(slider?.getAttribute('aria-valuenow')).toBe('100')
-      expect(container.textContent).toContain('验证完成')
-      expect(signIn?.disabled).toBe(false)
-    })
-
     await act(async () => signIn?.click())
     await waitForUI(() => expect(document.body.textContent).toContain('登录失败，请检查账号和密码'))
 
     expect(loginWithPassword).toHaveBeenCalledWith('admin', 'wrong-password')
-    expect(slider?.getAttribute('aria-valuenow')).toBe('0')
-    expect(signIn?.disabled).toBe(true)
     expect(getBootstrap).not.toHaveBeenCalled()
     expect(useAppStore.getState().session).toBeNull()
+  })
+
+  it('keeps theme controls in Settings and marks macOS layouts for the titlebar safe area', async () => {
+    vi.mocked(restoreSession).mockResolvedValueOnce(null)
+    const queryClient = await renderApp()
+    await waitForLoginQueries(queryClient)
+    await waitForUI(() => expect(container.querySelector('.login-screen')).not.toBeNull())
+
+    expect(container.querySelector('.login-screen')?.getAttribute('data-platform')).toBe('darwin')
+    expect(container.querySelector('button[aria-label="深色"]')).toBeNull()
+    expect(container.querySelector('button[aria-label="浅色"]')).toBeNull()
   })
 
   it('does not start provider login while password login is pending', async () => {
@@ -449,13 +472,18 @@ describe('desktop app', () => {
     expect(useAppStore.getState().session).toBeNull()
   })
 
-  it('clears local session and queries when remote logout fails', async () => {
+  it('uses native sidebar chrome and clears local session when icon logout fails remotely', async () => {
     vi.mocked(logoutServer).mockRejectedValueOnce(new Error('offline'))
     const queryClient = await renderAppToHome()
     queryClient.setQueryData(['private'], { secret: true })
 
-    const logout = findButton(container, '退出登录')
+    const footer = container.querySelector('.sidebar-footer')
+    const logout = footer?.querySelector<HTMLButtonElement>('button[aria-label="退出登录"]') ?? null
+    expect(container.querySelector('.brand')).toBeNull()
+    expect(container.querySelector('.sidebar-drag-region')).not.toBeNull()
     expect(logout).not.toBeNull()
+    expect(logout?.textContent).toBe('')
+    expect(logout?.getAttribute('title')).toBe('退出登录')
     await act(async () => logout?.click())
     await act(async () => {
       await vi.waitFor(() => expect(getLoginOptions).toHaveBeenCalledOnce())
@@ -704,9 +732,9 @@ describe('desktop app', () => {
     })
 
     await act(async () => {
-      await vi.waitFor(() => expect(findButton(container, '更换 Server')).not.toBeNull())
+      await vi.waitFor(() => expect(findButton(container, '编辑连接')).not.toBeNull())
     })
-    const changeServer = findButton(container, '更换 Server')
+    const changeServer = findButton(container, '编辑连接')
     await act(async () => changeServer?.click())
     await act(async () => {
       await vi.waitFor(() => expect(document.querySelector('.ant-modal input')).not.toBeNull())
@@ -745,9 +773,9 @@ describe('desktop app', () => {
     })
 
     await act(async () => {
-      await vi.waitFor(() => expect(findButton(container, '更换 Server')).not.toBeNull())
+      await vi.waitFor(() => expect(findButton(container, '编辑连接')).not.toBeNull())
     })
-    await act(async () => findButton(container, '更换 Server')?.click())
+    await act(async () => findButton(container, '编辑连接')?.click())
     await act(async () => {
       await vi.waitFor(() => expect(document.querySelector('.ant-modal input')).not.toBeNull())
     })
@@ -755,7 +783,7 @@ describe('desktop app', () => {
     await waitForUI(() => {
       expect(document.body.textContent).toContain(hostState.serverUrl)
       expect(document.body.textContent).toContain(nextConnection.serverUrl)
-      expect(document.body.textContent).toContain('新的 Server')
+      expect(document.body.textContent).toContain('新服务器')
     })
     const confirm = document.querySelector<HTMLButtonElement>('.ant-modal .ant-btn-primary')
     await act(async () => confirm?.click())
@@ -788,7 +816,7 @@ describe('desktop app', () => {
     })
     vi.mocked(activateServerSwitch).mockRejectedValueOnce(new Error('activation failed'))
 
-    await act(async () => findButton(container, '更换 Server')?.click())
+    await act(async () => findButton(container, '编辑连接')?.click())
     await waitForUI(() => expect(document.querySelector('.ant-modal input')).not.toBeNull())
     await setInput(document.querySelector('.ant-modal input'), nextConnection.serverUrl)
     await act(async () => document.querySelector<HTMLButtonElement>('.ant-modal .ant-btn-primary')?.click())
@@ -810,9 +838,20 @@ describe('desktop app', () => {
     expect(main?.getAttribute('tabindex')).toBe('-1')
 
     await clickNavigation('个人资料')
-    await waitForUI(() => expect(container.textContent).toContain('查看和更新你的个人资料'))
+    await waitForUI(() => expect(container.querySelector('.page > h1')?.textContent).toBe('个人资料'))
 
     expect(document.activeElement).toBe(main)
+  })
+
+  it('keeps page names accessible without repeating navigation headings', async () => {
+    await renderAppToHome()
+
+    for (const pageName of ['个人资料', '设置', '软件库']) {
+      await clickNavigation(pageName)
+      await waitForUI(() => expect(container.querySelector('.page > h1')?.textContent).toBe(pageName))
+      expect(container.querySelector('.page > h1')?.classList.contains('visually-hidden')).toBe(true)
+      expect(container.querySelector('.page-heading')).toBeNull()
+    }
   })
 
   it('keeps a managed Server fixed, persists appearance preferences, and reports updates unavailable', async () => {
@@ -827,8 +866,14 @@ describe('desktop app', () => {
       await vi.waitFor(() => expect(container.textContent).toContain('环境变量管理'))
     })
 
-    expect(findButton(container, '更换 Server')).toBeNull()
+    expect(findButton(container, '编辑连接')).toBeNull()
+    expect(container.textContent).toContain('连接服务器')
     expect(container.textContent).toContain('当前构建未配置签名更新源')
+    expect(findButton(container, '检查更新')?.disabled).toBe(true)
+    expect(findButton(container, '配置同步')?.disabled).toBe(true)
+    expect(findButton(container, '检查更新')?.closest('.ant-descriptions')).toBeNull()
+    expect(Array.from(container.querySelectorAll('.ant-segmented-item')).map((item) => item.textContent?.trim()))
+      .toEqual(expect.arrayContaining(['跟随系统', '浅色', '深色']))
     await clickSegmentedOption('深色')
     await clickSegmentedOption('English')
     await act(async () => {
@@ -836,16 +881,149 @@ describe('desktop app', () => {
       await vi.waitFor(() => expect(useAppStore.getState().locale).toBe('en_US'))
     })
     expect(container.textContent).toContain('Appearance and language')
+    expect(container.textContent).toContain('Connected server')
     expect(container.textContent).not.toContain('外观与语言')
     await clickNavigation('Home')
     await waitForUI(() => expect(container.textContent).toContain('Review the current server status'))
     expect(container.textContent).not.toContain('查看当前服务状态')
     await clickNavigation('Profile')
-    await waitForUI(() => expect(container.textContent).toContain('View and update your profile'))
+    await waitForUI(() => expect(container.querySelector('.page > h1')?.textContent).toBe('Profile'))
+    expect(container.textContent).not.toContain('View and update your profile')
     expect(container.textContent).not.toContain('查看和更新你的个人资料')
     const persisted = localStorage.getItem('soha-app-preferences') || ''
     expect(persisted).toContain('dark')
     expect(persisted).toContain('en_US')
+  })
+
+  it('checks for updates once while a request is pending and reports success', async () => {
+    let resolveCheck: ((result: { message: string }) => void) | undefined
+    vi.mocked(getHostState).mockResolvedValueOnce({
+      ...hostState,
+      app: { ...hostState.app, updateSupported: true, updateState: 'idle' },
+    })
+    vi.mocked(checkForUpdates).mockReturnValueOnce(new Promise((resolve) => {
+      resolveCheck = resolve
+    }))
+
+    await renderAppToHome()
+    await clickNavigation('设置')
+    const checkButton = findButton(container, '检查更新')
+    expect(checkButton?.classList.contains('ant-btn-sm')).toBe(false)
+    expect(checkButton?.closest('.ant-descriptions')).toBeNull()
+    expect(checkButton?.closest('.ant-space')?.contains(findButton(container, '打开日志目录') || null)).toBe(true)
+    expect(checkButton?.closest('.ant-space')?.contains(findButton(container, '配置同步') || null)).toBe(true)
+    await act(async () => checkButton?.click())
+    await waitForUI(() => expect(checkButton?.disabled).toBe(true))
+    checkButton?.click()
+
+    expect(checkForUpdates).toHaveBeenCalledOnce()
+    await act(async () => resolveCheck?.({ message: '更新检查已完成' }))
+    await waitForUI(() => expect(document.body.textContent).toContain('更新检查已完成'))
+  })
+
+  it('reports update check errors with the Host request ID', async () => {
+    vi.mocked(getHostState).mockResolvedValueOnce({
+      ...hostState,
+      app: { ...hostState.app, updateSupported: true, updateState: 'idle' },
+    })
+    vi.mocked(checkForUpdates).mockRejectedValueOnce(
+      new HostError(502, 'update_check_failed', '更新服务不可用', 'update-request-502'),
+    )
+
+    await renderAppToHome()
+    await clickNavigation('设置')
+    await act(async () => findButton(container, '检查更新')?.click())
+
+    await waitForUI(() => expect(document.body.textContent).toContain('更新服务不可用 (请求 ID: update-request-502)'))
+  })
+
+  it('lists compatible software and cancels before starting an install', async () => {
+    vi.mocked(listSoftware).mockResolvedValueOnce({ items: [softwarePackage] })
+
+    await renderAppToHome()
+    await clickNavigation('软件库')
+    await waitForUI(() => expect(container.textContent).toContain('Soha Agent'))
+
+    expect(listSoftware).toHaveBeenCalledWith('access-token')
+    expect(container.textContent).toContain('OpenSoha')
+    expect(container.textContent).toContain('1.2.3')
+    expect(container.textContent).toContain('适用于当前设备')
+    await act(async () => findButton(container, '安装')?.click())
+    await waitForUI(() => expect(document.querySelector('.ant-modal')).not.toBeNull())
+    expect(document.querySelector('.ant-modal')?.textContent).toContain('下载、校验并打开系统安装器')
+    expect(document.querySelector('.ant-modal')?.textContent).toContain('不会静默安装或提权')
+    await act(async () => findButton(document.querySelector('.ant-modal')!, '取消')?.click())
+
+    expect(installSoftware).not.toHaveBeenCalled()
+  })
+
+  it('shows an empty state when no software matches the current device', async () => {
+    await renderAppToHome()
+    await clickNavigation('软件库')
+
+    await waitForUI(() => expect(container.textContent).toContain('当前没有适用于此设备的软件'))
+  })
+
+  it('retries an unavailable software catalog', async () => {
+    vi.mocked(listSoftware)
+      .mockRejectedValueOnce(new HostError(503, 'catalog_unavailable', '软件目录暂不可用'))
+      .mockResolvedValueOnce({ items: [softwarePackage] })
+
+    await renderAppToHome()
+    await clickNavigation('软件库')
+    await waitForUI(() => expect(container.textContent).toContain('软件目录暂不可用'))
+    await act(async () => findButton(container, '重试')?.click())
+
+    await waitForUI(() => expect(container.textContent).toContain('Soha Agent'))
+    expect(listSoftware).toHaveBeenCalledTimes(2)
+  })
+
+  it('confirms an install, reports progress, and stops polling when completed', async () => {
+    vi.mocked(listSoftware).mockResolvedValueOnce({ items: [softwarePackage] })
+    vi.mocked(getSoftwareTask)
+      .mockResolvedValueOnce({
+        task: { ...queuedSoftwareTask, state: 'downloading', progress: 42, message: '正在下载安装包' },
+      })
+      .mockResolvedValueOnce({
+        task: { ...queuedSoftwareTask, state: 'completed', progress: 100, message: '安装器已打开' },
+      })
+
+    await renderAppToHome()
+    await clickNavigation('软件库')
+    await waitForUI(() => expect(container.textContent).toContain('Soha Agent'))
+    await act(async () => findButton(container, '安装')?.click())
+    await waitForUI(() => expect(document.querySelector('.ant-modal')).not.toBeNull())
+    await act(async () => document.querySelector<HTMLButtonElement>('.ant-modal .ant-btn-primary')?.click())
+
+    expect(installSoftware).toHaveBeenCalledWith('soha-agent', 'access-token')
+    await waitForUI(() => expect(container.querySelector('.ant-progress')?.getAttribute('aria-valuenow')).toBe('42'))
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 300)))
+    expect(container.textContent).toContain('安装器已打开')
+    const completedCalls = vi.mocked(getSoftwareTask).mock.calls.length
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 350)))
+    expect(getSoftwareTask).toHaveBeenCalledTimes(completedCalls)
+  })
+
+  it('shows a failed install task without continuing to poll', async () => {
+    vi.mocked(listSoftware).mockResolvedValueOnce({ items: [softwarePackage] })
+    vi.mocked(getSoftwareTask).mockResolvedValueOnce({
+      task: {
+        ...queuedSoftwareTask,
+        state: 'failed',
+        message: '安装包下载或校验失败',
+      },
+    })
+
+    await renderAppToHome()
+    await clickNavigation('软件库')
+    await waitForUI(() => expect(container.textContent).toContain('Soha Agent'))
+    await act(async () => findButton(container, '安装')?.click())
+    await waitForUI(() => expect(document.querySelector('.ant-modal')).not.toBeNull())
+    await act(async () => document.querySelector<HTMLButtonElement>('.ant-modal .ant-btn-primary')?.click())
+
+    await waitForUI(() => expect(container.textContent).toContain('安装包下载或校验失败'))
+    expect(container.querySelector('.ant-progress')?.getAttribute('aria-label')).toBe('安装失败')
+    expect(getSoftwareTask).toHaveBeenCalledOnce()
   })
 })
 
@@ -905,31 +1083,6 @@ async function waitForUI(assertion: () => void) {
     })
     assertion()
   }, { timeout: 3_000 })
-}
-
-async function setSliderFromEnd(slider: HTMLElement | null, stepsFromEnd: number) {
-  expect(slider).not.toBeNull()
-  await dispatchSliderKey(slider, 'keydown', 'End', 35)
-  for (let step = 0; step < stepsFromEnd; step += 1) {
-    await dispatchSliderKey(slider, 'keydown', 'ArrowLeft', 37)
-  }
-  await dispatchSliderKey(slider, 'keyup', stepsFromEnd ? 'ArrowLeft' : 'End', stepsFromEnd ? 37 : 35)
-}
-
-async function dispatchSliderKey(
-  slider: HTMLElement | null,
-  type: 'keydown' | 'keyup',
-  key: string,
-  keyCode: number,
-) {
-  await act(async () => {
-    const event = new KeyboardEvent(type, { bubbles: true, cancelable: true, key })
-    Object.defineProperties(event, {
-      keyCode: { value: keyCode },
-      which: { value: keyCode },
-    })
-    slider?.dispatchEvent(event)
-  })
 }
 
 function findButton(rootElement: ParentNode, label: string): HTMLButtonElement | null {
