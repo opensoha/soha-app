@@ -1,5 +1,11 @@
 #!/bin/sh
 
+if [ -d /sys/kernel/security/apparmor ] &&
+   [ ! -e /etc/apparmor.d/disable/soha-app ] &&
+   command -v apparmor_parser >/dev/null 2>&1; then
+  apparmor_parser -r /etc/apparmor.d/soha-app || exit 1
+fi
+
 # Update desktop database for .desktop file changes
 # This makes the application appear in application menus and registers its capabilities.
 if command -v update-desktop-database >/dev/null 2>&1; then

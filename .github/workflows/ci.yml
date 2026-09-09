@@ -159,6 +159,7 @@ jobs:
 
           sudo dpkg --install "${debs[0]}"
           test -x /usr/local/bin/soha-app
+          sudo grep -q '^soha-app (' /sys/kernel/security/apparmor/profiles
           set +e
           LIBGL_ALWAYS_SOFTWARE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1 \
             timeout --kill-after=5s 30s xvfb-run -a dbus-run-session -- /usr/local/bin/soha-app >"${RUNNER_TEMP}/soha-app-launch.log" 2>&1
@@ -174,6 +175,10 @@ jobs:
           fi
           sudo dpkg --remove soha-app
           test ! -e /usr/local/bin/soha-app
+          if sudo grep -q '^soha-app (' /sys/kernel/security/apparmor/profiles; then
+            echo "AppArmor profile remained loaded after uninstall" >&2
+            exit 1
+          fi
 
           sha256sum bin/soha-app "${debs[0]}" > bin/SHA256SUMS-linux.txt
           sha256sum --check bin/SHA256SUMS-linux.txt

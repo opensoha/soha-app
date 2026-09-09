@@ -1,0 +1,8 @@
+abi <abi/4.0>,
+include <tunables/global>
+
+# WebKitGTK uses user namespaces to sandbox its web processes.
+profile soha-app /usr/local/bin/soha-app flags=(unconfined) {
+  userns,
+  include if exists <local/soha-app>
+}

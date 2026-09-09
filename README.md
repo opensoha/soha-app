@@ -53,6 +53,8 @@ The CI workflow is configured to build a Linux `.deb`, a Windows machine-wide NS
 
 ## Updates
 
+On AppArmor-enabled Linux systems, the package loads `/etc/apparmor.d/soha-app` for `/usr/local/bin/soha-app`, allowing WebKitGTK to create its sandbox user namespaces. The profile is unloaded when the package is removed.
+
 Ordinary development builds use update mode `disabled`. Signed release builds inject the runtime version, update mode, and Ed25519 public key with linker flags. A configured build checks 30 seconds after launch and every six hours; checks only update status and never download, install, or restart automatically. A user must click the update action.
 
 - Windows amd64 opens the signed installer release so the App and machine service update as one unit.
