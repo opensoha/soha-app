@@ -235,7 +235,7 @@ export interface NetworkConnectionOption {
   siteName: string
   accessMedium: NetworkAccessMedium
   ssid?: string
-  authentication: 'radius_802_1x'
+  authentication: 'radius_802_1x' // gitleaks:allow -- public protocol enum
   accessProfile: 'onboarding' | 'full' | 'restricted' | 'quarantine' | 'deny'
   policyVersion: number
 }

@@ -3,3 +3,5 @@ build/ios/LaunchScreen.storyboard -whitespace
 build/linux/appimage/build.sh -whitespace
 build/linux/desktop -whitespace
 build/windows/** -whitespace
+go.mod text eol=lf
+go.sum text eol=lf

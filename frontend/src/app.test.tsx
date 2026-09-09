@@ -391,7 +391,7 @@ describe("desktop app", () => {
         siteName: "上海总部",
         accessMedium: "wifi",
         ssid: "Soha-Staff",
-        authentication: "radius_802_1x",
+        authentication: "radius_802_1x", // gitleaks:allow -- public protocol enum
         accessProfile: "full",
         policyVersion: 7,
       },
@@ -399,7 +399,7 @@ describe("desktop app", () => {
         siteId: "site-1",
         siteName: "上海总部",
         accessMedium: "wired",
-        authentication: "radius_802_1x",
+        authentication: "radius_802_1x", // gitleaks:allow -- public protocol enum
         accessProfile: "full",
         policyVersion: 7,
       },

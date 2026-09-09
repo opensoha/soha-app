@@ -125,7 +125,7 @@ describe('API transport', () => {
           siteName: 'Shanghai HQ',
           accessMedium: 'wifi',
           ssid: 'Soha-Staff',
-          authentication: 'radius_802_1x',
+          authentication: 'radius_802_1x', // gitleaks:allow -- public protocol enum
           accessProfile: 'full',
           policyVersion: 7,
         },
@@ -133,7 +133,7 @@ describe('API transport', () => {
           siteId: 'site-1',
           siteName: 'Shanghai HQ',
           accessMedium: 'wired',
-          authentication: 'radius_802_1x',
+          authentication: 'radius_802_1x', // gitleaks:allow -- public protocol enum
           accessProfile: 'restricted',
           policyVersion: 7,
         },

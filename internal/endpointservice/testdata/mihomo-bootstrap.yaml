@@ -4,7 +4,7 @@ bind-address: 127.0.0.1
 mode: direct
 ipv6: false
 external-controller: 127.0.0.1:9090
-secret: soha-mihomo-integration-secret-123456
+secret: soha-mihomo-integration-secret-123456 # gitleaks:allow -- disposable integration fixture
 tun:
   enable: false
 dns:
