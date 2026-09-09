@@ -103,9 +103,10 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes libgtk-4-dev libwebkitgtk-6.0-dev xvfb
+          sudo apt-get install --yes libgtk-4-dev libwebkitgtk-6.0-dev xvfb dbus-x11
       - name: Install NSIS
         if: runner.os == 'Windows'
+        shell: pwsh
         run: |
           choco install nsis --no-progress --yes
           "${env:ProgramFiles(x86)}\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
@@ -160,7 +161,7 @@ jobs:
           test -x /usr/local/bin/soha-app
           set +e
           LIBGL_ALWAYS_SOFTWARE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1 \
-            timeout --kill-after=5s 15s xvfb-run -a /usr/local/bin/soha-app >"${RUNNER_TEMP}/soha-app-launch.log" 2>&1
+            timeout --kill-after=5s 30s dbus-run-session -- xvfb-run -a /usr/local/bin/soha-app >"${RUNNER_TEMP}/soha-app-launch.log" 2>&1
           launch_status=$?
           set -e
           if [[ "${launch_status}" -ne 124 ]]; then
