@@ -161,7 +161,7 @@ jobs:
           test -x /usr/local/bin/soha-app
           set +e
           LIBGL_ALWAYS_SOFTWARE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1 \
-            timeout --kill-after=5s 30s dbus-run-session -- xvfb-run -a /usr/local/bin/soha-app >"${RUNNER_TEMP}/soha-app-launch.log" 2>&1
+            timeout --kill-after=5s 30s xvfb-run -a dbus-run-session -- /usr/local/bin/soha-app >"${RUNNER_TEMP}/soha-app-launch.log" 2>&1
           launch_status=$?
           set -e
           if [[ "${launch_status}" -ne 124 ]]; then
