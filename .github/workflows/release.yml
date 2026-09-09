@@ -169,6 +169,7 @@ jobs:
         shell: pwsh
         run: |
           choco install nsis --no-progress --yes
+          "${env:ProgramFiles(x86)}\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.16
           npm ci --prefix frontend
       - name: Build, sign, and package
