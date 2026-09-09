@@ -17,6 +17,35 @@ func TestRepositoryVersionMetadata(t *testing.T) {
 	}
 }
 
+func TestRepositoryVersionMetadataAcceptsCRLF(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{
+		"build/config.yml", "build/linux/nfpm/nfpm.yaml",
+		"build/windows/wails.exe.manifest", "build/windows/nsis/wails_tools.nsh",
+		"build/darwin/Info.plist", "build/windows/info.json",
+		"frontend/package.json", "frontend/package-lock.json",
+	} {
+		payload, err := os.ReadFile(filepath.Join("..", "..", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		destination := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		payload = bytes.ReplaceAll(bytes.ReplaceAll(payload, []byte("\r\n"), []byte("\n")), []byte("\n"), []byte("\r\n"))
+		if err := os.WriteFile(destination, payload, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := checkVersionFiles(root, "0.2.0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkVersionFiles(root, "0.2.1"); err == nil {
+		t.Fatal("accepted mismatched version metadata")
+	}
+}
+
 func TestBuildAndVerifyRelease(t *testing.T) {
 	directory := t.TempDir()
 	writeTestArtifact(t, directory, "soha-app-v0.2.0-windows-amd64.exe", bytes.Repeat([]byte("new executable"), 512))

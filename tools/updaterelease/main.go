@@ -710,7 +710,7 @@ func checkVersionFiles(root, expected string) error {
 		if err != nil {
 			return err
 		}
-		matches := regexp.MustCompile(check.pattern).FindAllStringSubmatch(string(payload), -1)
+		matches := regexp.MustCompile(check.pattern).FindAllStringSubmatch(strings.ReplaceAll(string(payload), "\r\n", "\n"), -1)
 		if len(matches) != check.count {
 			return fmt.Errorf("%s has an unexpected version layout", check.path)
 		}

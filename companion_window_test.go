@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -20,7 +21,7 @@ func TestWindowPositionStoreRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat position: %v", err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("position mode = %o; want 600", info.Mode().Perm())
 	}
 }

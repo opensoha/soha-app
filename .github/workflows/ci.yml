@@ -164,7 +164,10 @@ jobs:
             cat "${RUNNER_TEMP}/soha-app-launch.log"
             exit 1
           fi
-          grep -Fq '"event":"app.renderer.ready"' "${RUNNER_TEMP}/soha-app-launch.log"
+          if ! grep -Fq '"event":"app.renderer.ready"' "${RUNNER_TEMP}/soha-app-launch.log"; then
+            cat "${RUNNER_TEMP}/soha-app-launch.log"
+            exit 1
+          fi
           sudo dpkg --remove soha-app
           test ! -e /usr/local/bin/soha-app
 
