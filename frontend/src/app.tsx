@@ -1,14 +1,17 @@
 import { Component, type ErrorInfo, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import {
   AppstoreOutlined,
+  GlobalOutlined,
   HomeOutlined,
+  LinkOutlined,
   LogoutOutlined,
   ReloadOutlined,
+  SafetyCertificateOutlined,
   SettingOutlined,
   UserOutlined,
 } from '@ant-design/icons'
-import { App, Avatar, Button, Result, Spin, Tooltip } from 'antd'
-import { useQueryClient } from '@tanstack/react-query'
+import { Alert, App, Avatar, Badge, Button, Result, Spin, Tooltip } from 'antd'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   MemoryRouter,
   Navigate,
@@ -23,19 +26,30 @@ import {
   ApiError,
   getBootstrap,
   logoutServer,
+  registerEndpointDevice,
   restoreSession,
   setSessionListener,
 } from '@/api'
 import { applyBranding } from '@/branding'
 import { useText } from '@/i18n'
-import { checkServer, clearHostSession, getHostState } from '@/native/host'
+import {
+  checkServer,
+  clearHostSession,
+  getHostState,
+  getUpdateStatus,
+  installUpdate,
+  openBrowserURL,
+} from '@/native/host'
 import {
   ConnectionPage,
   HomePage,
   LoginPage,
+  NetworkPage,
   ProfilePage,
+  ProxyPage,
   SettingsPage,
   SoftwarePage,
+  VPNPage,
   connectionMessage,
 } from '@/pages'
 import { PortalApplicationPage, PortalPage } from '@/portal-pages'
@@ -61,6 +75,9 @@ export function DesktopApp({ initialEntries }: { initialEntries?: string[] } = {
               <Route path="/home" element={<HomePage />} />
               <Route path="/portal" element={<PortalPage />} />
               <Route path="/portal/applications/:applicationId" element={<PortalApplicationPage />} />
+              <Route path="/network" element={<NetworkPage />} />
+              <Route path="/vpn" element={<VPNPage />} />
+              <Route path="/proxy" element={<ProxyPage />} />
               <Route path="/profile" element={<ProfilePage />} />
               <Route path="/software" element={<SoftwarePage />} />
               <Route path="/settings" element={<SettingsPage />} />
@@ -201,10 +218,42 @@ function DesktopShell() {
   const setConnection = useAppStore((state) => state.setConnection)
   const clearSession = useAppStore((state) => state.clearSession)
   const [checkingConnection, setCheckingConnection] = useState(false)
+  const [dismissedUpdateVersion, setDismissedUpdateVersion] = useState('')
   const connectionCheckPending = useRef(false)
   const workspace = useRef<HTMLElement>(null)
   const user = bootstrap?.currentUser || session?.user
   const name = displayName(user) || text.account
+  const updateQuery = useQuery({
+    queryKey: ['update-status'],
+    queryFn: getUpdateStatus,
+    enabled: Boolean(host?.app.updateSupported),
+    refetchInterval: 60_000,
+    retry: false,
+  })
+  const deviceRegistration = useQuery({
+    queryKey: ['endpoint-device-registration', host?.serverUrl, host?.app.deviceId, session?.user.userId],
+    queryFn: async () => {
+      const deviceId = host!.app.deviceId!
+      const hostname = host!.app.hostname || ''
+      await registerEndpointDevice(deviceId, {
+        name: hostname || `${host!.app.name} ${host!.app.platform}`,
+        ...(hostname ? { hostname } : {}),
+        platform: host!.app.platform,
+        ...(host!.app.deviceType ? { deviceType: host!.app.deviceType } : {}),
+        ...(host!.app.reportedFacts ? { reportedFacts: host!.app.reportedFacts } : {}),
+      })
+      return deviceId
+    },
+    enabled: Boolean(host?.app.deviceId && session?.user.userId),
+    staleTime: Infinity,
+    retry: 1,
+  })
+  const installMutation = useMutation({
+    mutationFn: installUpdate,
+    onSuccess: (status) => queryClient.setQueryData(['update-status'], status),
+    onError: (error) => message.error(error instanceof Error ? error.message : text.updateFailed),
+  })
+  const availableUpdate = updateQuery.data?.state === 'available' ? updateQuery.data : undefined
 
   const refreshConnection = useCallback(async () => {
     if (!host?.serverUrl || connectionCheckPending.current) return
@@ -255,8 +304,15 @@ function DesktopShell() {
     { path: '/home', label: text.home, icon: <HomeOutlined /> },
     { path: '/portal', label: text.portal, icon: <AppstoreOutlined /> },
     { path: '/software', label: text.software, icon: <AppstoreOutlined /> },
+    { path: '/network', label: text.network, icon: <GlobalOutlined /> },
+    { path: '/vpn', label: text.vpn, icon: <SafetyCertificateOutlined /> },
+    { path: '/proxy', label: text.proxy, icon: <LinkOutlined /> },
     { path: '/profile', label: text.profile, icon: <UserOutlined /> },
-    { path: '/settings', label: text.settings, icon: <SettingOutlined /> },
+    {
+      path: '/settings',
+      label: text.settings,
+      icon: <Badge className="nav-update-badge" dot={Boolean(availableUpdate)}><SettingOutlined /></Badge>,
+    },
   ]
   const connectionCopy = connection
     ? connectionMessage(connection, text)
@@ -343,7 +399,42 @@ function DesktopShell() {
           </div>
           <span className="server-label" title={host?.serverUrl}>{host?.serverUrl}</span>
         </header>
+        {availableUpdate?.availableVersion && dismissedUpdateVersion !== availableUpdate.availableVersion ? (
+          <Alert
+            action={availableUpdate.installMode !== 'disabled' ? (
+              <Button
+                loading={installMutation.isPending}
+                onClick={() => {
+                  if (availableUpdate.installMode === 'external') {
+                    if (availableUpdate.releaseURL) {
+                      void openBrowserURL(availableUpdate.releaseURL).catch((error) => {
+                        message.error(error instanceof Error ? error.message : text.updateFailed)
+                      })
+                    }
+                    return
+                  }
+                  if (availableUpdate.installMode === 'self') installMutation.mutate()
+                }}
+                size="small"
+                type="primary"
+              >
+                {availableUpdate.installMode === 'external' ? text.openRelease : text.installUpdate}
+              </Button>
+            ) : undefined}
+            className="update-banner"
+            closable={{
+              closeIcon: true,
+              onClose: () => setDismissedUpdateVersion(availableUpdate.availableVersion || ''),
+            }}
+            showIcon
+            title={`${text.updateAvailable} ${availableUpdate.availableVersion}`}
+            type="info"
+          />
+        ) : null}
         <div className="workspace-scroll">
+          {deviceRegistration.isError ? (
+            <Alert className="endpoint-registration-alert" showIcon title={text.networkDeviceRegistrationFailed} type="warning" />
+          ) : null}
           <Outlet />
         </div>
       </main>

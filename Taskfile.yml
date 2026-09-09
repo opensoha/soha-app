@@ -4,10 +4,11 @@ vars:
   APP_NAME: "soha-app"
   BIN_DIR: "bin"
   PACKAGE_MANAGER: '{{.PACKAGE_MANAGER | default "npm"}}'
+  RELEASE_LDFLAGS: '{{.RELEASE_LDFLAGS | default ""}}'
+  SERVICE_LDFLAGS: '{{.SERVICE_LDFLAGS | default ""}}'
   VITE_PORT: '{{.WAILS_VITE_PORT | default 9245}}'
-  # Target OS for build/package/run. Defaults to the host OS, and is overridden
-  # by `wails3 build GOOS=...` (or the GOOS env var) for cross-compilation. The
-  # tasks below dispatch to the matching platform Taskfile via this variable.
+  # Target OS for build/package/run. Defaults to the host OS. Cross-builds must
+  # use the task runner form: `wails3 task build GOOS=... ARCH=...`.
   GOOS: '{{.GOOS | default OS}}'
 
 env:
@@ -26,6 +27,9 @@ tasks:
     summary: Builds the application
     cmds:
       - task: "{{.GOOS}}:build"
+        vars:
+          RELEASE_LDFLAGS: '{{.RELEASE_LDFLAGS}}'
+          SERVICE_LDFLAGS: '{{.SERVICE_LDFLAGS}}'
 
   package:
     summary: Packages a production build of the application

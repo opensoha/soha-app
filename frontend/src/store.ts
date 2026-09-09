@@ -5,6 +5,19 @@ import type { Bootstrap, ConnectionCheck, HostState, Principal, Session, UserPro
 
 export type ThemeMode = 'system' | 'light' | 'dark'
 export type LocaleCode = 'zh_CN' | 'en_US'
+export type PortalCardSize = 'standard' | 'compact'
+
+export interface NetworkConnectionPreferences {
+  selectedWifiKey: string
+  wifiAutoConnect: boolean
+  wiredAutoConnect: boolean
+}
+
+const defaultNetworkConnectionPreferences: NetworkConnectionPreferences = {
+  selectedWifiKey: '',
+  wifiAutoConnect: false,
+  wiredAutoConnect: false,
+}
 
 interface AppState {
   host: HostState | null
@@ -13,6 +26,8 @@ interface AppState {
   bootstrap: Bootstrap | null
   themeMode: ThemeMode
   locale: LocaleCode
+  portalCardSize: PortalCardSize
+  networkConnection: NetworkConnectionPreferences
   setHost: (host: HostState) => void
   setConnection: (connection: ConnectionCheck) => void
   commitSession: (session: Session, bootstrap?: Bootstrap | null) => void
@@ -21,6 +36,8 @@ interface AppState {
   clearSession: () => void
   setThemeMode: (themeMode: ThemeMode) => void
   setLocale: (locale: LocaleCode) => void
+  setPortalCardSize: (portalCardSize: PortalCardSize) => void
+  setNetworkConnection: (preferences: Partial<NetworkConnectionPreferences>) => void
 }
 
 export const useAppStore = create<AppState>()(
@@ -32,6 +49,8 @@ export const useAppStore = create<AppState>()(
       bootstrap: null,
       themeMode: 'system',
       locale: 'zh_CN',
+      portalCardSize: 'standard',
+      networkConnection: defaultNetworkConnectionPreferences,
       setHost: (host) => set({ host }),
       setConnection: (connection) => set({ connection }),
       commitSession: (session, bootstrap = null) => {
@@ -54,15 +73,23 @@ export const useAppStore = create<AppState>()(
         }),
       clearSession: () => {
         setAccessToken(null)
-        set({ session: null, bootstrap: null })
+        set({ session: null, bootstrap: null, networkConnection: defaultNetworkConnectionPreferences })
       },
       setThemeMode: (themeMode) => set({ themeMode }),
       setLocale: (locale) => set({ locale }),
+      setPortalCardSize: (portalCardSize) => set({ portalCardSize }),
+      setNetworkConnection: (preferences) =>
+        set((state) => ({ networkConnection: { ...state.networkConnection, ...preferences } })),
     }),
     {
       name: 'soha-app-preferences',
       version: 1,
-      partialize: (state) => ({ themeMode: state.themeMode, locale: state.locale }),
+      partialize: (state) => ({
+        themeMode: state.themeMode,
+        locale: state.locale,
+        portalCardSize: state.portalCardSize,
+        networkConnection: state.networkConnection,
+      }),
       merge: (persisted, current) => {
         const preferences =
           typeof persisted === 'object' && persisted !== null ? (persisted as Partial<AppState>) : {}
@@ -73,11 +100,25 @@ export const useAppStore = create<AppState>()(
               ? preferences.themeMode
               : 'system',
           locale: preferences.locale === 'en_US' ? 'en_US' : 'zh_CN',
+          portalCardSize: preferences.portalCardSize === 'compact' ? 'compact' : 'standard',
+          networkConnection: normalizeNetworkConnectionPreferences(preferences.networkConnection),
         }
       },
     },
   ),
 )
+
+function normalizeNetworkConnectionPreferences(value: unknown): NetworkConnectionPreferences {
+  if (typeof value !== 'object' || value === null) return defaultNetworkConnectionPreferences
+  const preferences = value as Partial<NetworkConnectionPreferences>
+  return {
+    selectedWifiKey: typeof preferences.selectedWifiKey === 'string' && preferences.selectedWifiKey.length <= 512
+      ? preferences.selectedWifiKey
+      : '',
+    wifiAutoConnect: preferences.wifiAutoConnect === true,
+    wiredAutoConnect: preferences.wiredAutoConnect === true,
+  }
+}
 
 function patchPrincipal(user: Principal, profile: UserProfile): Principal {
   return {

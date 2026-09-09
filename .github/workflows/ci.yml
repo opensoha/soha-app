@@ -69,9 +69,10 @@ jobs:
           - platform: windows
             os: windows-latest
             race: false
-            package_command: wails3 task windows:create:nsis:installer INSTALL_SCOPE=user
+            package_command: wails3 task windows:create:nsis:installer INSTALL_SCOPE=machine
             artifact_path: |
               bin/soha-app.exe
+              bin/soha-app-service.exe
               bin/*-installer.exe
               bin/SHA256SUMS-windows.txt
           - platform: macos
@@ -121,14 +122,14 @@ jobs:
         run: npm run build
       - name: Audit Go dependencies
         if: runner.os == 'Linux'
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 . ./build/...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
       - name: Test host
-        run: go test . ./build/...
+        run: go test ./...
       - name: Race test host
         if: matrix.race
-        run: go test -race . ./build/...
+        run: go test -race ./...
       - name: Vet host
-        run: go vet . ./build/...
+        run: go vet ./...
       - name: Install Wails
         run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.16
       - name: Build desktop artifact
@@ -175,12 +176,13 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $binary = Get-Item -LiteralPath 'bin/soha-app.exe'
+          $serviceBinary = Get-Item -LiteralPath 'bin/soha-app-service.exe'
           $installers = @(Get-ChildItem -Path 'bin/*-installer.exe' -File)
           if ($installers.Count -ne 1) {
             throw "Expected exactly one NSIS installer, found $($installers.Count)"
           }
 
-          foreach ($artifact in @($binary) + $installers) {
+          foreach ($artifact in @($binary, $serviceBinary) + $installers) {
             if ($artifact.Length -le 0) {
               throw "$($artifact.FullName) is empty"
             }
@@ -198,7 +200,7 @@ jobs:
             }
           }
 
-          $checksums = foreach ($artifact in @($binary) + $installers) {
+          $checksums = foreach ($artifact in @($binary, $serviceBinary) + $installers) {
             $relativePath = [System.IO.Path]::GetRelativePath((Get-Location).Path, $artifact.FullName).Replace([System.IO.Path]::DirectorySeparatorChar, [char]'/')
             [PSCustomObject]@{ Path = $artifact.FullName; RelativePath = $relativePath; Hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $artifact.FullName).Hash.ToLowerInvariant() }
           }
@@ -209,8 +211,9 @@ jobs:
             }
           }
 
-          $installDirectory = Join-Path $env:LOCALAPPDATA 'Programs\Soha'
+          $installDirectory = Join-Path $env:ProgramFiles 'OpenSoha\Soha'
           $installedBinary = Join-Path $installDirectory 'soha-app.exe'
+          $installedServiceBinary = Join-Path $installDirectory 'soha-app-service.exe'
           $uninstaller = Join-Path $installDirectory 'uninstall.exe'
           $rendererLog = Join-Path $env:LOCALAPPDATA 'OpenSoha\Soha\logs\soha.log'
           $appProcess = $null
@@ -219,8 +222,12 @@ jobs:
             if ($install.ExitCode -ne 0) {
               throw "NSIS installer exited with $($install.ExitCode)"
             }
-            if (-not (Test-Path -LiteralPath $installedBinary) -or -not (Test-Path -LiteralPath $uninstaller)) {
-              throw 'Per-user install did not create the expected application and uninstaller'
+            if (-not (Test-Path -LiteralPath $installedBinary) -or -not (Test-Path -LiteralPath $installedServiceBinary) -or -not (Test-Path -LiteralPath $uninstaller)) {
+              throw 'Machine install did not create the expected application, network service, and uninstaller'
+            }
+            $registeredService = Get-CimInstance Win32_Service -Filter "Name='SohaNetworkService'"
+            if ($null -eq $registeredService -or $registeredService.StartMode -ne 'Manual' -or $registeredService.State -ne 'Stopped') {
+              throw 'Unconfigured Soha Network Service was not registered in a fail-closed stopped state'
             }
 
             Remove-Item -LiteralPath $rendererLog -Force -ErrorAction SilentlyContinue
@@ -262,6 +269,9 @@ jobs:
             $uninstall = Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait -PassThru
             if ($uninstall.ExitCode -ne 0 -or (Test-Path -LiteralPath $installedBinary)) {
               throw "NSIS uninstaller failed with exit code $($uninstall.ExitCode)"
+            }
+            if ($null -ne (Get-CimInstance Win32_Service -Filter "Name='SohaNetworkService'" -ErrorAction SilentlyContinue)) {
+              throw 'NSIS uninstaller left SohaNetworkService registered'
             }
           } finally {
             if ($null -ne $appProcess) {

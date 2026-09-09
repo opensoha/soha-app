@@ -11,6 +11,8 @@ describe('app preferences persistence', () => {
       bootstrap: null,
       themeMode: 'system',
       locale: 'zh_CN',
+      portalCardSize: 'standard',
+      networkConnection: { selectedWifiKey: '', wifiAutoConnect: false, wiredAutoConnect: false },
     })
   })
 
@@ -29,10 +31,14 @@ describe('app preferences persistence', () => {
     })
     useAppStore.getState().setThemeMode('dark')
     useAppStore.getState().setLocale('en_US')
+    useAppStore.getState().setPortalCardSize('compact')
+    useAppStore.getState().setNetworkConnection({ selectedWifiKey: '["site-1","Soha-Staff"]', wifiAutoConnect: true })
 
     const persisted = localStorage.getItem('soha-app-preferences') || ''
     expect(persisted).toContain('dark')
     expect(persisted).toContain('en_US')
+    expect(persisted).toContain('compact')
+    expect(persisted).toContain('Soha-Staff')
     expect(persisted).not.toContain('secret-access-token')
     expect(persisted).not.toContain('admin@soha.local')
   })
@@ -40,24 +46,28 @@ describe('app preferences persistence', () => {
   it('falls back when persisted preferences contain unsupported values', async () => {
     localStorage.setItem(
       'soha-app-preferences',
-      JSON.stringify({ state: { themeMode: 'sepia', locale: 'fr_FR' }, version: 1 }),
+      JSON.stringify({ state: { themeMode: 'sepia', locale: 'fr_FR', portalCardSize: 'dense' }, version: 1 }),
     )
 
     await useAppStore.persist.rehydrate()
 
     expect(useAppStore.getState().themeMode).toBe('system')
     expect(useAppStore.getState().locale).toBe('zh_CN')
+    expect(useAppStore.getState().portalCardSize).toBe('standard')
+    expect(useAppStore.getState().networkConnection).toEqual({ selectedWifiKey: '', wifiAutoConnect: false, wiredAutoConnect: false })
   })
 
   it('restores supported preferences from the persisted state envelope', async () => {
     localStorage.setItem(
       'soha-app-preferences',
-      JSON.stringify({ state: { themeMode: 'dark', locale: 'en_US' }, version: 1 }),
+      JSON.stringify({ state: { themeMode: 'dark', locale: 'en_US', portalCardSize: 'compact', networkConnection: { selectedWifiKey: '["site-1","Soha-Staff"]', wifiAutoConnect: true, wiredAutoConnect: true } }, version: 1 }),
     )
 
     await useAppStore.persist.rehydrate()
 
     expect(useAppStore.getState().themeMode).toBe('dark')
     expect(useAppStore.getState().locale).toBe('en_US')
+    expect(useAppStore.getState().portalCardSize).toBe('compact')
+    expect(useAppStore.getState().networkConnection).toEqual({ selectedWifiKey: '["site-1","Soha-Staff"]', wifiAutoConnect: true, wiredAutoConnect: true })
   })
 })

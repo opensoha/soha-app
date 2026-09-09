@@ -156,11 +156,49 @@ export interface ConnectionCheck {
   code?: string
 }
 
+export type EndpointDeviceType = 'desktop' | 'laptop' | 'server' | 'mobile' | 'tablet' | 'virtual' | 'unknown'
+
+export interface EndpointNetworkInterface {
+  name: string
+  displayName?: string
+  kind: 'physical' | 'virtual' | 'loopback' | 'unknown'
+  status: 'up' | 'down' | 'unknown'
+  macAddress?: string
+  ipv4Addresses: string[]
+  ipv6Addresses: string[]
+  dnsServers?: string[]
+}
+
+export interface EndpointDeviceReportedFacts {
+  osName?: string
+  osVersion?: string
+  osBuild?: string
+  architecture: string
+  manufacturer?: string
+  model?: string
+  serialNumber?: string
+  agentVersion: string
+  collectedAt: string
+  networkInterfaces: EndpointNetworkInterface[]
+}
+
+export interface EndpointDeviceRegistrationInput {
+  name: string
+  hostname?: string
+  platform: string
+  deviceType?: EndpointDeviceType
+  reportedFacts?: EndpointDeviceReportedFacts
+}
+
 export interface AppInfo {
   name: string
   version: string
   platform: string
   arch: string
+  deviceId?: string
+  hostname?: string
+  deviceType?: EndpointDeviceType
+  reportedFacts?: EndpointDeviceReportedFacts
   logDirectory: string
   updateSupported: boolean
   updateState?: string
@@ -171,6 +209,100 @@ export interface HostState {
   configurationSource: 'default' | 'saved' | 'environment' | 'runtime'
   managedByEnvironment: boolean
   app: AppInfo
+}
+
+export type NetworkAccessMode = 'internal_ztna' | 'external_vpn' | 'external_vpn_ztna' | 'external_direct_ztna'
+export type NetworkAccessGrantMode = Exclude<NetworkAccessMode, 'external_vpn'>
+
+export interface NetworkAccessGrantInput {
+  deviceId: string
+  siteId: string
+  networkSpaceId: string
+  mode: NetworkAccessGrantMode
+  resourceIds: string[]
+  ttlSeconds?: number
+}
+
+export interface NetworkAccessGrantSecret {
+  grant: { id: string }
+  token: string
+}
+
+export type NetworkAccessMedium = 'wifi' | 'wired'
+
+export interface NetworkConnectionOption {
+  siteId: string
+  siteName: string
+  accessMedium: NetworkAccessMedium
+  ssid?: string
+  authentication: 'radius_802_1x'
+  accessProfile: 'onboarding' | 'full' | 'restricted' | 'quarantine' | 'deny'
+  policyVersion: number
+}
+
+export interface NetworkLinkStatus {
+  connected: boolean
+  medium?: NetworkAccessMedium
+  interfaceName?: string
+  ipAddress?: string
+  gateway?: string
+  dnsServers: string[]
+}
+
+export interface NetworkConnectInput {
+	siteId: string
+	networkSpaceId: string
+	gatewayId?: string
+	mode: NetworkAccessMode
+  resourceIds: string[]
+  accessGrantId?: string
+  accessGrantToken?: string
+}
+
+export interface NetworkServiceStatus {
+  state: 'disconnected' | 'connecting' | 'connected' | 'degraded'
+  runtimeId: string
+  deviceId: string
+  siteId?: string
+  networkSpaceId?: string
+  mode?: NetworkAccessMode
+  resourceIds?: string[]
+  sessionId?: string
+  gatewayId?: string
+  configurationVersion: number
+  policyVersion: number
+  validUntil?: string
+  mihomoMode?: 'managed_follow' | 'app_subscription'
+  mihomoProfileId?: string
+  mihomoProfileRevision?: number
+  uptimeSeconds: number
+  diagnostic?: string
+}
+
+export interface MihomoAppInput {
+	subscriptionUrl?: string
+	selectedProxy?: string
+}
+
+export interface MihomoAppStatus {
+	mode: 'app_subscription'
+	profileId: string
+	profileRevision: number
+	configured: boolean
+	selectedProxy?: string
+	proxies: string[]
+}
+
+export interface UpdateStatus {
+  supported: boolean
+  installMode: 'self' | 'external' | 'disabled'
+  state: 'unconfigured' | 'idle' | 'checking' | 'up-to-date' | 'available' | 'downloading' | 'verifying' | 'installing' | 'ready' | 'error'
+  currentVersion: string
+  availableVersion?: string
+  downloadMode?: 'delta' | 'full'
+  lastCheckedAt?: string
+  releaseURL?: string
+  errorCode?: string
 }
 
 export interface SoftwarePackage {

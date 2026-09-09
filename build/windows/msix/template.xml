@@ -17,7 +17,7 @@
         PackageDisplayName="Soha"
         PublisherName="CN=OpenSoha"
         PublisherDisplayName="OpenSoha"
-        Version="0.1.0.0"
+        Version="0.2.0.0"
         PackageDescription="SohaCrossPlatformClient">
         <Capabilities>
             <Capability Name="runFullTrust" />

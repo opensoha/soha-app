@@ -145,7 +145,7 @@ func newCompanionWindow(app *application.App, positions *windowPositionStore) *a
 
 func configureSystemTray(app *application.App, mainWindow, companionWindow *application.WebviewWindow, icon []byte) {
 	tray := app.SystemTray.New()
-	tray.SetTooltip("Soha Companion")
+	tray.SetTooltip("Soha")
 	if runtime.GOOS == "darwin" {
 		tray.SetTemplateIcon(icon)
 	} else {
@@ -153,7 +153,7 @@ func configureSystemTray(app *application.App, mainWindow, companionWindow *appl
 	}
 	menu := app.NewMenu()
 	menu.Add("Show Soha").OnClick(func(_ *application.Context) {
-		mainWindow.Show().Focus()
+		activateMainWindow(mainWindow)
 	})
 	menu.Add("Show Companion").OnClick(func(_ *application.Context) {
 		companionWindow.Reload()
@@ -168,11 +168,6 @@ func configureSystemTray(app *application.App, mainWindow, companionWindow *appl
 	})
 	tray.SetMenu(menu)
 	tray.OnClick(func() {
-		if companionWindow.IsVisible() {
-			companionWindow.Hide()
-			return
-		}
-		companionWindow.Reload()
-		companionWindow.Show().Focus()
+		activateMainWindow(mainWindow)
 	})
 }

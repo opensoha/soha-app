@@ -1,8 +1,13 @@
 import type {
   ConnectionCheck,
   HostState,
+	MihomoAppStatus,
+  NetworkConnectInput,
+  NetworkLinkStatus,
+  NetworkServiceStatus,
   SoftwareListResponse,
   SoftwareTaskResponse,
+  UpdateStatus,
 } from '@/types'
 
 interface DataEnvelope<T> {
@@ -20,10 +25,6 @@ interface PreparedSwitch {
 
 export const wailsRequestBodyHeader = 'X-Soha-App-Body'
 
-export interface UpdateCheckResult {
-  message: string
-}
-
 export class HostError extends Error {
   constructor(
     readonly status: number,
@@ -38,6 +39,56 @@ export class HostError extends Error {
 
 export function getHostState(): Promise<HostState> {
   return hostRequest<HostState>('/app/v1/state')
+}
+
+export function getNetworkStatus(): Promise<NetworkServiceStatus> {
+  return hostRequest<NetworkServiceStatus>('/app/v1/network/status', {}, false)
+}
+
+export function getNetworkLinkStatus(): Promise<NetworkLinkStatus> {
+  return hostRequest<NetworkLinkStatus>('/app/v1/network/link', {}, false)
+}
+
+export function connectNetwork(input: NetworkConnectInput): Promise<NetworkServiceStatus> {
+  return hostRequest<NetworkServiceStatus>(
+    '/app/v1/network/connect',
+    jsonRequest(input),
+    false,
+  )
+}
+
+export function disconnectNetwork(): Promise<NetworkServiceStatus> {
+  return hostRequest<NetworkServiceStatus>(
+    '/app/v1/network/disconnect',
+    jsonRequest({}),
+    false,
+  )
+}
+
+export function getMihomoAppStatus(): Promise<MihomoAppStatus> {
+	return hostRequest<MihomoAppStatus>('/app/v1/network/mihomo', {}, false)
+}
+
+export function configureMihomoApp(subscriptionUrl: string): Promise<MihomoAppStatus> {
+	return hostRequest<MihomoAppStatus>('/app/v1/network/mihomo', {
+		...jsonRequest({ subscriptionUrl }),
+		method: 'PUT',
+	}, false)
+}
+
+export function selectMihomoApp(selectedProxy: string): Promise<MihomoAppStatus> {
+	return hostRequest<MihomoAppStatus>('/app/v1/network/mihomo/selection', {
+		...jsonRequest({ selectedProxy }),
+		method: 'PUT',
+	}, false)
+}
+
+export function refreshMihomoApp(): Promise<MihomoAppStatus> {
+	return hostRequest<MihomoAppStatus>('/app/v1/network/mihomo/refresh', jsonRequest({}), false)
+}
+
+export function clearMihomoApp(): Promise<MihomoAppStatus> {
+	return hostRequest<MihomoAppStatus>('/app/v1/network/mihomo', { method: 'DELETE' }, false)
 }
 
 export function checkServer(serverUrl: string): Promise<ConnectionCheck> {
@@ -68,9 +119,21 @@ export function openLogDirectory(): Promise<void> {
   return hostRequest('/app/v1/logs/open', jsonRequest({})).then(() => undefined)
 }
 
-export function checkForUpdates(): Promise<UpdateCheckResult> {
-  return hostRequest<UpdateCheckResult>(
+export function getUpdateStatus(): Promise<UpdateStatus> {
+  return hostRequest<UpdateStatus>('/app/v1/updates/status', {}, false)
+}
+
+export function checkForUpdates(): Promise<UpdateStatus> {
+  return hostRequest<UpdateStatus>(
     '/app/v1/updates/check',
+    jsonRequest({}),
+    false,
+  )
+}
+
+export function installUpdate(): Promise<UpdateStatus> {
+  return hostRequest<UpdateStatus>(
+    '/app/v1/updates/install',
     jsonRequest({}),
     false,
   )

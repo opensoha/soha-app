@@ -76,6 +76,21 @@ func TestConfigStoreSaveAndLoad(t *testing.T) {
 	}
 }
 
+func TestLoadOrCreateDeviceIDPersists(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "device-id")
+	first, err := loadOrCreateDeviceID(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := loadOrCreateDeviceID(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == "" || first != second {
+		t.Fatalf("device ids = %q and %q", first, second)
+	}
+}
+
 func TestConfigStoreRejectsUnknownFields(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, []byte(`{"version":1,"serverUrl":"https://soha.example.com","token":"secret"}`), 0o600); err != nil {

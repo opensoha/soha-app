@@ -4,20 +4,25 @@ import (
 	"embed"
 	"errors"
 	"os"
+	"path/filepath"
 	"runtime"
 	"runtime/debug"
 	"strings"
+	"time"
 
+	"github.com/opensoha/soha-app/internal/endpointservice"
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 )
 
-const fallbackAppVersion = "0.1.0"
+const fallbackAppVersion = "0.2.0"
+
+var appBuildVersion string
 
 //go:embed all:frontend/dist
 var assets embed.FS
 
-//go:embed build/appicon.png
+//go:embed build/trayicon.png
 var trayIcon []byte
 
 func main() {
@@ -36,6 +41,17 @@ func main() {
 	appLog.Info("application started", "component", "startup", "event", "app.started", "platform", runtime.GOOS, "arch", runtime.GOARCH)
 	config := newConfigStore(configPath)
 	serverURL, locked, source, credentialsBlocked := initialServerConfiguration(config)
+	deviceID, err := loadOrCreateDeviceID(filepath.Join(filepath.Dir(configPath), "device-id"))
+	if err != nil {
+		appLog.Error("device identity unavailable", "component", "startup", "event", "app.device.identity_unavailable", "error", err, "error_type", logErrorType(err))
+		os.Exit(1)
+	}
+	hostname, hostnameErr := os.Hostname()
+	if hostnameErr != nil {
+		appLog.Warn("device hostname unavailable", "component", "startup", "event", "app.device.hostname_unavailable", "error", hostnameErr, "error_type", logErrorType(hostnameErr))
+	}
+	hostname = strings.TrimSpace(hostname)
+	deviceType, reportedFacts := collectEndpointInventory(appVersion, time.Now())
 
 	host, err := newAppHost(
 		application.AssetFileServerFS(assets),
@@ -48,6 +64,10 @@ func main() {
 			Version:         appVersion,
 			Platform:        runtime.GOOS,
 			Arch:            runtime.GOARCH,
+			DeviceID:        deviceID,
+			Hostname:        hostname,
+			DeviceType:      deviceType,
+			ReportedFacts:   &reportedFacts,
 			LogDirectory:    logDirectory,
 			UpdateSupported: false,
 		},
@@ -67,8 +87,11 @@ func main() {
 		catalog = activeServerSoftwareCatalog{host: host}
 	}
 	runtimeAPI := &appRuntime{
-		version:  appVersion,
-		software: newSoftwareLibrary(catalog),
+		version:           appVersion,
+		software:          newSoftwareLibrary(catalog),
+		networkCall:       endpointservice.CallIPC,
+		networkMihomoCall: endpointservice.CallMihomoIPC,
+		networkLinkStatus: collectNetworkLinkStatus,
 	}
 	host.setRuntimeAPI(runtimeAPI)
 
@@ -83,8 +106,7 @@ func main() {
 				if window == nil {
 					return
 				}
-				window.Restore()
-				window.Focus()
+				activateMainWindow(window)
 			},
 		},
 		Assets: application.AssetOptions{
@@ -131,6 +153,12 @@ func main() {
 		window.Hide()
 		event.Cancel()
 	})
+	if runtime.GOOS == "darwin" {
+		app.Event.RegisterApplicationEventHook(events.Mac.ApplicationShouldHandleReopen, func(event *application.ApplicationEvent) {
+			activateMainWindow(window)
+			event.Cancel()
+		})
+	}
 	positions, err := defaultWindowPositionStore()
 	if err != nil {
 		appLog.Error("companion window state initialization failed", "component", "companion", "event", "app.companion.state_initialization_failed", "error", err, "error_type", logErrorType(err))
@@ -143,6 +171,16 @@ func main() {
 		appLog.Error("application runtime stopped with an error", "component", "runtime", "event", "app.runtime.failed", "error", err, "error_type", logErrorType(err))
 		os.Exit(1)
 	}
+}
+
+func activateMainWindow(window interface {
+	Restore()
+	Show() application.Window
+	Focus()
+}) {
+	window.Restore()
+	window.Show()
+	window.Focus()
 }
 
 func initialServerConfiguration(store *configStore) (serverURL string, locked bool, source string, credentialsBlocked bool) {
@@ -163,6 +201,9 @@ func initialServerConfiguration(store *configStore) (serverURL string, locked bo
 }
 
 func resolvedAppVersion() string {
+	if version := strings.TrimSpace(appBuildVersion); version != "" {
+		return version
+	}
 	build, ok := debug.ReadBuildInfo()
 	if ok && build.Main.Version != "" && build.Main.Version != "(devel)" {
 		return build.Main.Version

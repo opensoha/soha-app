@@ -22,7 +22,7 @@ Unicode true
 ## !define INFO_PROJECTNAME    "my-project" # Default "soha-app"
 ## !define INFO_COMPANYNAME    "My Company" # Default "OpenSoha"
 ## !define INFO_PRODUCTNAME    "My Product Name" # Default "Soha"
-## !define INFO_PRODUCTVERSION "1.0.0"     # Default "0.1.0"
+## !define INFO_PRODUCTVERSION "1.0.0"     # Default "0.2.0"
 ## !define INFO_COPYRIGHT      "(c) Now, My Company" # Default "© 2026, My Company"
 ###
 ## !define PRODUCT_EXECUTABLE  "Application.exe"      # Default "${INFO_PROJECTNAME}.exe"
@@ -34,6 +34,10 @@ Unicode true
 ## Include the wails tools
 ####
 !include "wails_tools.nsh"
+
+!ifndef ARG_SOHA_SERVICE_BINARY
+    !error "ARG_SOHA_SERVICE_BINARY must point to soha-app-service.exe"
+!endif
 
 # The version information for this two must consist of 4 parts
 VIProductVersion "${INFO_PRODUCTVERSION}.0"
@@ -92,6 +96,12 @@ Section
     SetOutPath $INSTDIR
     
     !insertmacro wails.files
+    File "/oname=soha-app-service.exe" "${ARG_SOHA_SERVICE_BINARY}"
+
+    ExecWait '"$INSTDIR\soha-app-service.exe" install' $0
+    IntCmp $0 0 service_installed
+    Abort "Soha Network Service registration failed with exit code $0"
+service_installed:
 
     CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
     CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
@@ -104,6 +114,12 @@ SectionEnd
 
 Section "uninstall" 
     !insertmacro wails.setShellContext
+
+    IfFileExists "$INSTDIR\soha-app-service.exe" 0 service_removed
+    ExecWait '"$INSTDIR\soha-app-service.exe" uninstall' $0
+    IntCmp $0 0 service_removed
+    Abort "Soha Network Service removal failed with exit code $0"
+service_removed:
 
     RMDir /r "$AppData\${PRODUCT_EXECUTABLE}" # Remove the WebView2 DataPath
 

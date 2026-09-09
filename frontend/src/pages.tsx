@@ -1,15 +1,17 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   CheckOutlined,
   CloudServerOutlined,
   DownloadOutlined,
   FolderOpenOutlined,
   LockOutlined,
+  PoweroffOutlined,
   ReloadOutlined,
   SafetyCertificateOutlined,
   SyncOutlined,
   UserOutlined,
-} from '@ant-design/icons'
+  WifiOutlined,
+} from "@ant-design/icons";
 import {
   Alert,
   App,
@@ -28,114 +30,146 @@ import {
   Space,
   Spin,
   Tag,
-} from 'antd'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useNavigate } from 'react-router-dom'
+} from "antd";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
 import {
   ApiError,
   changePassword,
+  createNetworkAccessGrant,
   getAnnouncementInbox,
   getAuthProviders,
   getBootstrap,
   getLoginOptions,
+  getNetworkConnectionOptions,
   getProfile,
   loginWithProvider,
   loginWithPassword,
   markAnnouncementRead,
   updateProfile,
-} from '@/api'
-import { applyBranding } from '@/branding'
-import { type Text, useText } from '@/i18n'
+} from "@/api";
+import { applyBranding } from "@/branding";
+import { type Text, useText } from "@/i18n";
 import {
   HostError,
   activateServerSwitch,
   checkForUpdates,
   checkServer,
+  clearMihomoApp,
+  configureMihomoApp,
+  connectNetwork,
+  disconnectNetwork,
   getHostState,
+  getMihomoAppStatus,
+  getNetworkLinkStatus,
+  getNetworkStatus,
+  getUpdateStatus,
   getSoftwareTask,
+  installUpdate,
   installSoftware,
   listSoftware,
+  openBrowserURL,
   openLogDirectory,
   prepareServerSwitch,
-} from '@/native/host'
-import { type LocaleCode, type ThemeMode, useAppStore } from '@/store'
+  refreshMihomoApp,
+  selectMihomoApp,
+} from "@/native/host";
+import {
+  type LocaleCode,
+  type PortalCardSize,
+  type ThemeMode,
+  useAppStore,
+} from "@/store";
 import {
   avatarURL,
   displayName,
   type AuthProvider,
   type ConnectionCheck,
   type HostState,
+  type NetworkAccessMode,
+  type NetworkConnectionOption,
+  type NetworkConnectInput,
   type ProfileUpdate,
   type SoftwarePackage,
   type SoftwareTaskState,
-} from '@/types'
+} from "@/types";
 
 export function ConnectionPage() {
-  const navigate = useNavigate()
-  const queryClient = useQueryClient()
-  const text = useText()
-  const [form] = Form.useForm<{ serverUrl: string }>()
-  const [pending, setPending] = useState(false)
-  const [localError, setLocalError] = useState<string | null>(null)
-  const host = useAppStore((state) => state.host)
-  const connection = useAppStore((state) => state.connection)
-  const session = useAppStore((state) => state.session)
-  const setHost = useAppStore((state) => state.setHost)
-  const setConnection = useAppStore((state) => state.setConnection)
-  const clearSession = useAppStore((state) => state.clearSession)
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const text = useText();
+  const [form] = Form.useForm<{ serverUrl: string }>();
+  const [pending, setPending] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
+  const host = useAppStore((state) => state.host);
+  const connection = useAppStore((state) => state.connection);
+  const session = useAppStore((state) => state.session);
+  const setHost = useAppStore((state) => state.setHost);
+  const setConnection = useAppStore((state) => state.setConnection);
+  const clearSession = useAppStore((state) => state.clearSession);
 
   useEffect(() => {
     if (host) {
-      form.setFieldValue('serverUrl', host.serverUrl)
-      return
+      form.setFieldValue("serverUrl", host.serverUrl);
+      return;
     }
     void getHostState()
       .then((state) => {
-        setHost(state)
-        form.setFieldValue('serverUrl', state.serverUrl)
+        setHost(state);
+        form.setFieldValue("serverUrl", state.serverUrl);
       })
-      .catch(() => setLocalError(text.offlineHelp))
-  }, [form, host, setHost, text.offlineHelp])
+      .catch(() => setLocalError(text.offlineHelp));
+  }, [form, host, setHost, text.offlineHelp]);
 
   const connect = async ({ serverUrl }: { serverUrl: string }) => {
-    let preparedConnection: ConnectionCheck | null = null
-    setPending(true)
-    setLocalError(null)
-    setConnection({ status: 'checking', serverUrl })
+    let preparedConnection: ConnectionCheck | null = null;
+    setPending(true);
+    setLocalError(null);
+    setConnection({ status: "checking", serverUrl });
     try {
-      const checked = await checkServer(serverUrl)
-      setConnection(checked)
-      if (checked.status !== 'online') return
+      const checked = await checkServer(serverUrl);
+      setConnection(checked);
+      if (checked.status !== "online") return;
       if (host && checked.serverUrl === host.serverUrl) {
-        navigate('/', { replace: true })
-        return
+        navigate("/", { replace: true });
+        return;
       }
-      await queryClient.cancelQueries()
-      const prepared = await prepareServerSwitch(checked.serverUrl, session?.accessToken)
-      preparedConnection = prepared.connection
-      clearSession()
-      queryClient.clear()
-      const nextHost = await activateServerSwitch(prepared.activationToken)
-      setHost(nextHost)
-      setConnection(prepared.connection)
-      navigate('/login', { replace: true })
+      await queryClient.cancelQueries();
+      const prepared = await prepareServerSwitch(
+        checked.serverUrl,
+        session?.accessToken,
+      );
+      preparedConnection = prepared.connection;
+      clearSession();
+      queryClient.clear();
+      const nextHost = await activateServerSwitch(prepared.activationToken);
+      setHost(nextHost);
+      setConnection(prepared.connection);
+      navigate("/login", { replace: true });
     } catch (error) {
       const activated = preparedConnection
-        ? await recoverHostAfterSwitch(preparedConnection, setHost, setConnection).catch(() => false)
-        : false
+        ? await recoverHostAfterSwitch(
+            preparedConnection,
+            setHost,
+            setConnection,
+          ).catch(() => false)
+        : false;
       if (activated) {
-        navigate('/login', { replace: true })
+        navigate("/login", { replace: true });
       } else {
-        setLocalError(readableError(error, text))
+        setLocalError(readableError(error, text));
       }
     } finally {
-      setPending(false)
+      setPending(false);
     }
-  }
+  };
 
-  const connectionCopy = connection && connection.status !== 'online' && connection.status !== 'checking'
-    ? connectionMessage(connection, text)
-    : null
+  const connectionCopy =
+    connection &&
+    connection.status !== "online" &&
+    connection.status !== "checking"
+      ? connectionMessage(connection, text)
+      : null;
 
   return (
     <div className="connection-screen" data-platform={host?.app.platform}>
@@ -149,10 +183,22 @@ export function ConnectionPage() {
           <h1>{text.connectTitle}</h1>
           <p>{text.connectDescription}</p>
           {connectionCopy ? (
-            <Alert description={connectionCopy.description} showIcon title={connectionCopy.title} type="warning" />
+            <Alert
+              description={connectionCopy.description}
+              showIcon
+              title={connectionCopy.title}
+              type="warning"
+            />
           ) : null}
-          {localError ? <Alert showIcon title={localError} type="error" /> : null}
-          <Form form={form} layout="vertical" onFinish={connect} requiredMark={false}>
+          {localError ? (
+            <Alert showIcon title={localError} type="error" />
+          ) : null}
+          <Form
+            form={form}
+            layout="vertical"
+            onFinish={connect}
+            requiredMark={false}
+          >
             <Form.Item
               label={text.serverAddress}
               name="serverUrl"
@@ -167,115 +213,162 @@ export function ConnectionPage() {
                 spellCheck={false}
               />
             </Form.Item>
-            {host?.managedByEnvironment ? <p className="field-note">{text.managedAddress}</p> : null}
+            {host?.managedByEnvironment ? (
+              <p className="field-note">{text.managedAddress}</p>
+            ) : null}
             <Button block htmlType="submit" loading={pending} type="primary">
-              {connection && connection.status !== 'unconfigured' ? text.retry : text.connect}
+              {connection && connection.status !== "unconfigured"
+                ? text.retry
+                : text.connect}
             </Button>
           </Form>
         </section>
       </main>
     </div>
-  )
+  );
 }
 
 export function LoginPage() {
-  const navigate = useNavigate()
-  const { message } = App.useApp()
-  const text = useText()
-  const [pending, setPending] = useState(false)
-  const [providerPending, setProviderPending] = useState<AuthProvider | null>(null)
-  const authAttemptPending = useRef(false)
-  const providerController = useRef<AbortController | null>(null)
-  const host = useAppStore((state) => state.host)
-  const commitSession = useAppStore((state) => state.commitSession)
-  const optionsQuery = useQuery({ queryKey: ['auth', 'login-options'], queryFn: getLoginOptions })
-  const providersQuery = useQuery({ queryKey: ['auth', 'providers'], queryFn: getAuthProviders })
-  const options = optionsQuery.data
+  const navigate = useNavigate();
+  const { message } = App.useApp();
+  const text = useText();
+  const [pending, setPending] = useState(false);
+  const [providerPending, setProviderPending] = useState<AuthProvider | null>(
+    null,
+  );
+  const authAttemptPending = useRef(false);
+  const providerController = useRef<AbortController | null>(null);
+  const host = useAppStore((state) => state.host);
+  const commitSession = useAppStore((state) => state.commitSession);
+  const optionsQuery = useQuery({
+    queryKey: ["auth", "login-options"],
+    queryFn: getLoginOptions,
+  });
+  const providersQuery = useQuery({
+    queryKey: ["auth", "providers"],
+    queryFn: getAuthProviders,
+  });
+  const options = optionsQuery.data;
   const providers = (providersQuery.data || []).filter(
-    (provider) => provider.enabled && provider.type !== 'password' && typeof provider.id === 'string' && provider.id,
-  )
-  const passwordEnabled = options?.localPasswordLoginEnabled !== false
+    (provider) =>
+      provider.enabled &&
+      provider.type !== "password" &&
+      typeof provider.id === "string" &&
+      provider.id,
+  );
+  const passwordEnabled = options?.localPasswordLoginEnabled !== false;
 
   useEffect(() => {
-    if (options?.branding) applyBranding(options.branding)
-  }, [options?.branding])
+    if (options?.branding) applyBranding(options.branding);
+  }, [options?.branding]);
 
-  useEffect(() => () => providerController.current?.abort(), [])
+  useEffect(() => () => providerController.current?.abort(), []);
 
   const login = async (values: { login: string; password: string }) => {
     try {
-      const session = await loginWithPassword(values.login, values.password)
-      const bootstrap = await getBootstrap()
-      commitSession(session, bootstrap)
-      applyBranding(bootstrap.branding)
-      navigate('/home', { replace: true })
+      const session = await loginWithPassword(values.login, values.password);
+      const bootstrap = await getBootstrap();
+      commitSession(session, bootstrap);
+      applyBranding(bootstrap.branding);
+      navigate("/home", { replace: true });
     } catch (error) {
-      const isCredentialError = error instanceof ApiError && (error.status === 401 || error.status === 403)
-      message.error(isCredentialError ? text.loginFailed : readableError(error, text))
+      const isCredentialError =
+        error instanceof ApiError &&
+        (error.status === 401 || error.status === 403);
+      message.error(
+        isCredentialError ? text.loginFailed : readableError(error, text),
+      );
     } finally {
-      authAttemptPending.current = false
-      setPending(false)
+      authAttemptPending.current = false;
+      setPending(false);
     }
-  }
+  };
 
   const loginProvider = async (provider: AuthProvider) => {
-    if (!provider.id || authAttemptPending.current) return
-    authAttemptPending.current = true
-    const controller = new AbortController()
-    providerController.current = controller
-    setProviderPending(provider)
+    if (!provider.id || authAttemptPending.current) return;
+    authAttemptPending.current = true;
+    const controller = new AbortController();
+    providerController.current = controller;
+    setProviderPending(provider);
     try {
-      const session = await loginWithProvider(provider.id, controller.signal)
-      const bootstrap = await getBootstrap()
-      commitSession(session, bootstrap)
-      applyBranding(bootstrap.branding)
-      navigate('/home', { replace: true })
+      const session = await loginWithProvider(provider.id, controller.signal);
+      const bootstrap = await getBootstrap();
+      commitSession(session, bootstrap);
+      applyBranding(bootstrap.branding);
+      navigate("/home", { replace: true });
     } catch (error) {
-      if (!controller.signal.aborted) message.error(readableError(error, text))
+      if (!controller.signal.aborted) message.error(readableError(error, text));
     } finally {
       if (providerController.current === controller) {
-        providerController.current = null
-        setProviderPending(null)
+        providerController.current = null;
+        setProviderPending(null);
       }
-      authAttemptPending.current = false
+      authAttemptPending.current = false;
     }
-  }
+  };
 
   const cancelProviderLogin = () => {
-    providerController.current?.abort()
-    providerController.current = null
-    setProviderPending(null)
-  }
+    providerController.current?.abort();
+    providerController.current = null;
+    setProviderPending(null);
+  };
 
   if (optionsQuery.isLoading || providersQuery.isLoading) {
-    return <div className="startup-state"><Skeleton active paragraph={{ rows: 5 }} /></div>
+    return (
+      <div className="startup-state">
+        <Skeleton active paragraph={{ rows: 5 }} />
+      </div>
+    );
   }
   if (optionsQuery.isError || providersQuery.isError) {
     return (
       <Result
-        extra={<Button icon={<ReloadOutlined />} onClick={() => void Promise.all([optionsQuery.refetch(), providersQuery.refetch()])}>{text.retry}</Button>}
+        extra={
+          <Button
+            icon={<ReloadOutlined />}
+            onClick={() =>
+              void Promise.all([
+                optionsQuery.refetch(),
+                providersQuery.refetch(),
+              ])
+            }
+          >
+            {text.retry}
+          </Button>
+        }
         status="error"
         subTitle={text.offlineHelp}
         title={text.offlineTitle}
       />
-    )
+    );
   }
 
-  const logo = options?.branding?.loginLogoUrl
+  const logo = options?.branding?.loginLogoUrl;
   return (
     <div className="login-screen" data-platform={host?.app.platform}>
       <header className="login-titlebar">
         <div className="login-brand">
-          <img alt="" aria-hidden="true" className="brand-mark" src="/logo.svg" />
+          <img
+            alt=""
+            aria-hidden="true"
+            className="brand-mark"
+            src="/logo.svg"
+          />
           <strong>{options?.branding?.appTitle || text.appName}</strong>
         </div>
       </header>
       <main className="login-main">
         <section className="login-panel">
           {logo ? <img alt="" className="login-logo" src={logo} /> : null}
-          <h1>{providerPending ? text.organizationLoginWaiting : text.loginTitle}</h1>
-          <p>{providerPending ? providerPending.name : text.loginDescription}</p>
-          <div className="login-server"><i /> {host?.serverUrl}</div>
+          <h1>
+            {providerPending ? text.organizationLoginWaiting : text.loginTitle}
+          </h1>
+          <p>
+            {providerPending ? providerPending.name : text.loginDescription}
+          </p>
+          <div className="login-server">
+            <i /> {host?.serverUrl}
+          </div>
           {providerPending ? (
             <div aria-live="polite" className="provider-waiting" role="status">
               <Spin size="large" />
@@ -284,30 +377,43 @@ export function LoginPage() {
             </div>
           ) : (
             <>
-              {!passwordEnabled ? <Alert showIcon title={text.passwordDisabled} type="info" /> : null}
+              {!passwordEnabled ? (
+                <Alert showIcon title={text.passwordDisabled} type="info" />
+              ) : null}
               {passwordEnabled ? (
                 <Form
                   layout="vertical"
                   onFinish={login}
                   onFinishFailed={() => {
-                    authAttemptPending.current = false
-                    setPending(false)
+                    authAttemptPending.current = false;
+                    setPending(false);
                   }}
                   onSubmitCapture={(event) => {
                     if (authAttemptPending.current) {
-                      event.preventDefault()
-                      return
+                      event.preventDefault();
+                      return;
                     }
-                    authAttemptPending.current = true
-                    setPending(true)
+                    authAttemptPending.current = true;
+                    setPending(true);
                   }}
                   requiredMark={false}
                 >
-                  <Form.Item label={text.username} name="login" rules={[{ required: true, message: text.username }]}>
+                  <Form.Item
+                    label={text.username}
+                    name="login"
+                    rules={[{ required: true, message: text.username }]}
+                  >
                     <Input autoComplete="username" prefix={<UserOutlined />} />
                   </Form.Item>
-                  <Form.Item label={text.password} name="password" rules={[{ required: true, message: text.password }]}>
-                    <Input.Password autoComplete="current-password" prefix={<LockOutlined />} />
+                  <Form.Item
+                    label={text.password}
+                    name="password"
+                    rules={[{ required: true, message: text.password }]}
+                  >
+                    <Input.Password
+                      autoComplete="current-password"
+                      prefix={<LockOutlined />}
+                    />
                   </Form.Item>
                   <Button
                     block
@@ -320,7 +426,10 @@ export function LoginPage() {
                 </Form>
               ) : null}
               {providers.length ? (
-                <div aria-label={text.organizationLogin} className="provider-list">
+                <div
+                  aria-label={text.organizationLogin}
+                  className="provider-list"
+                >
                   <span>{text.organizationLogin}</span>
                   {providers.map((provider) => (
                     <Button
@@ -335,64 +444,121 @@ export function LoginPage() {
                   ))}
                 </div>
               ) : null}
-              <Button block disabled={pending} onClick={() => navigate('/connect')} type="link">{text.backToConnection}</Button>
+              <Button
+                block
+                disabled={pending}
+                onClick={() => navigate("/connect")}
+                type="link"
+              >
+                {text.backToConnection}
+              </Button>
             </>
           )}
         </section>
       </main>
     </div>
-  )
+  );
 }
 
 export function HomePage() {
-  const text = useText()
-  const queryClient = useQueryClient()
-  const host = useAppStore((state) => state.host)
-  const connection = useAppStore((state) => state.connection)
-  const session = useAppStore((state) => state.session)
-  const bootstrap = useAppStore((state) => state.bootstrap)
-  const user = bootstrap?.currentUser || session?.user
-  const permissions = bootstrap?.permissionSnapshot.permissionKeys || []
-  const canReadAnnouncements = permissions.includes('system.announcements.view') ||
-    permissions.includes('identity.portal.view')
+  const text = useText();
+  const queryClient = useQueryClient();
+  const host = useAppStore((state) => state.host);
+  const connection = useAppStore((state) => state.connection);
+  const session = useAppStore((state) => state.session);
+  const bootstrap = useAppStore((state) => state.bootstrap);
+  const user = bootstrap?.currentUser || session?.user;
+  const permissions = bootstrap?.permissionSnapshot.permissionKeys || [];
+  const canReadAnnouncements =
+    permissions.includes("system.announcements.view") ||
+    permissions.includes("identity.portal.view");
   const inboxQuery = useQuery({
-    queryKey: ['announcements', 'inbox'],
+    queryKey: ["announcements", "inbox"],
     queryFn: () => getAnnouncementInbox(5),
-    enabled: canReadAnnouncements && connection?.status === 'online',
-  })
+    enabled: canReadAnnouncements && connection?.status === "online",
+  });
   const readMutation = useMutation({
     mutationFn: markAnnouncementRead,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['announcements', 'inbox'] }),
-  })
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["announcements", "inbox"] }),
+  });
 
   return (
-    <Page title={`${text.greeting}, ${displayName(user)}`} description={text.homeDescription}>
+    <Page
+      title={`${text.greeting}, ${displayName(user)}`}
+      description={text.homeDescription}
+    >
       <section className="status-band" aria-label={text.sessionStatus}>
-        <div><CloudServerOutlined /><span><small>{text.currentServer}</small><strong title={host?.serverUrl}>{host?.serverUrl || '-'}</strong></span></div>
-        <div><SafetyCertificateOutlined /><span><small>{text.sessionStatus}</small><strong>{connection ? connectionMessage(connection, text).title : text.checking}</strong></span></div>
-        <div><UserOutlined /><span><small>{text.signedInAs}</small><strong>{user?.email || '-'}</strong></span></div>
+        <div>
+          <CloudServerOutlined />
+          <span>
+            <small>{text.currentServer}</small>
+            <strong title={host?.serverUrl}>{host?.serverUrl || "-"}</strong>
+          </span>
+        </div>
+        <div className={`connection-state ${connection?.status || "checking"}`}>
+          <SafetyCertificateOutlined />
+          <span>
+            <small>{text.sessionStatus}</small>
+            <strong>
+              {connection
+                ? connectionMessage(connection, text).title
+                : text.checking}
+            </strong>
+          </span>
+        </div>
+        <div>
+          <UserOutlined />
+          <span>
+            <small>{text.signedInAs}</small>
+            <strong>{user?.email || "-"}</strong>
+          </span>
+        </div>
       </section>
       <section className="page-section">
         <header className="section-heading">
           <h2>{text.announcements}</h2>
-          {inboxQuery.data?.unreadCount ? <Tag color="blue">{inboxQuery.data.unreadCount} {text.unread}</Tag> : null}
+          {inboxQuery.data?.unreadCount ? (
+            <Tag color="blue">
+              {inboxQuery.data.unreadCount} {text.unread}
+            </Tag>
+          ) : null}
         </header>
-        {!canReadAnnouncements ? <Empty description={text.announcementNoAccess} image={Empty.PRESENTED_IMAGE_SIMPLE} /> : null}
-        {inboxQuery.isLoading ? <Skeleton active paragraph={{ rows: 3 }} /> : null}
+        {!canReadAnnouncements ? (
+          <Empty
+            description={text.announcementNoAccess}
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+          />
+        ) : null}
+        {inboxQuery.isLoading ? (
+          <Skeleton active paragraph={{ rows: 3 }} />
+        ) : null}
         {inboxQuery.isError ? (
           <Alert
-            action={<Button onClick={() => void inboxQuery.refetch()} size="small">{text.retry}</Button>}
+            action={
+              <Button onClick={() => void inboxQuery.refetch()} size="small">
+                {text.retry}
+              </Button>
+            }
             description={readableError(inboxQuery.error, text)}
             showIcon
             title={text.announcementServiceUnavailable}
             type="warning"
           />
         ) : null}
-        {inboxQuery.data && !inboxQuery.data.items.length ? <Empty description={text.noAnnouncements} image={Empty.PRESENTED_IMAGE_SIMPLE} /> : null}
+        {inboxQuery.data && !inboxQuery.data.items.length ? (
+          <Empty
+            description={text.noAnnouncements}
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+          />
+        ) : null}
         {inboxQuery.data?.items.length ? (
           <div className="announcement-list">
             {inboxQuery.data.items.map((announcement) => (
-              <article className={announcement.isRead ? '' : 'unread'} key={announcement.id}>
+              <article
+                className={announcement.isRead ? "" : "unread"}
+                key={announcement.id}
+              >
                 <div>
                   <h3>{announcement.title}</h3>
                   <p>{announcement.summary}</p>
@@ -401,7 +567,10 @@ export function HomePage() {
                   <Button
                     aria-label={`${text.markRead}: ${announcement.title}`}
                     icon={<CheckOutlined />}
-                    loading={readMutation.isPending && readMutation.variables === announcement.id}
+                    loading={
+                      readMutation.isPending &&
+                      readMutation.variables === announcement.id
+                    }
                     onClick={() => readMutation.mutate(announcement.id)}
                     title={text.markRead}
                     type="text"
@@ -413,39 +582,46 @@ export function HomePage() {
         ) : null}
       </section>
     </Page>
-  )
+  );
 }
 
 export function SoftwarePage() {
-  const { message } = App.useApp()
-  const text = useText()
-  const session = useAppStore((state) => state.session)
-  const [selected, setSelected] = useState<SoftwarePackage | null>(null)
-  const [taskId, setTaskId] = useState<string | null>(null)
+  const { message } = App.useApp();
+  const text = useText();
+  const session = useAppStore((state) => state.session);
+  const [selected, setSelected] = useState<SoftwarePackage | null>(null);
+  const [taskId, setTaskId] = useState<string | null>(null);
   const catalogQuery = useQuery({
-    queryKey: ['software'],
+    queryKey: ["software"],
     queryFn: () => listSoftware(session!.accessToken),
     enabled: Boolean(session),
-  })
+  });
   const taskQuery = useQuery({
-    queryKey: ['software', 'task', taskId],
+    queryKey: ["software", "task", taskId],
     queryFn: () => getSoftwareTask(taskId!),
     enabled: Boolean(taskId),
     refetchInterval: (query) => {
-      const state = query.state.data?.task.state
-      return query.state.status === 'error' || state === 'completed' || state === 'failed' ? false : 250
+      const state = query.state.data?.task.state;
+      return query.state.status === "error" ||
+        state === "completed" ||
+        state === "failed"
+        ? false
+        : 250;
     },
-  })
+  });
   const installMutation = useMutation({
-    mutationFn: (software: SoftwarePackage) => installSoftware(software.id, session!.accessToken),
+    mutationFn: (software: SoftwarePackage) =>
+      installSoftware(software.id, session!.accessToken),
     onSuccess: (result) => {
-      setSelected(null)
-      setTaskId(result.task.id)
+      setSelected(null);
+      setTaskId(result.task.id);
     },
     onError: (error) => message.error(readableError(error, text)),
-  })
-  const task = taskQuery.data?.task || installMutation.data?.task
-  const taskActive = Boolean(task && task.state !== 'completed' && task.state !== 'failed')
+  });
+  const task = taskQuery.data?.task || installMutation.data?.task;
+  const taskActive = Boolean(
+    task && task.state !== "completed" && task.state !== "failed",
+  );
   const taskLabels: Record<SoftwareTaskState, string> = {
     queued: text.softwareQueued,
     downloading: text.softwareDownloading,
@@ -453,15 +629,21 @@ export function SoftwarePage() {
     opening: text.softwareOpening,
     completed: text.softwareCompleted,
     failed: text.softwareFailed,
-  }
+  };
 
   return (
     <Page title={text.software}>
       <section>
-        {catalogQuery.isLoading ? <Skeleton active paragraph={{ rows: 6 }} /> : null}
+        {catalogQuery.isLoading ? (
+          <Skeleton active paragraph={{ rows: 6 }} />
+        ) : null}
         {catalogQuery.isError ? (
           <Alert
-            action={<Button onClick={() => void catalogQuery.refetch()} size="small">{text.retry}</Button>}
+            action={
+              <Button onClick={() => void catalogQuery.refetch()} size="small">
+                {text.retry}
+              </Button>
+            }
             description={readableError(catalogQuery.error, text)}
             showIcon
             title={text.softwareLoadFailed}
@@ -469,7 +651,10 @@ export function SoftwarePage() {
           />
         ) : null}
         {catalogQuery.data && !catalogQuery.data.items.length ? (
-          <Empty description={text.noSoftware} image={Empty.PRESENTED_IMAGE_SIMPLE} />
+          <Empty
+            description={text.noSoftware}
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+          />
         ) : null}
         {catalogQuery.data?.items.length ? (
           <div role="list">
@@ -480,14 +665,25 @@ export function SoftwarePage() {
                   label={`${software.name} · ${software.version}`}
                 >
                   <Space wrap>
-                    <Tag>{text.publisher}: {software.publisher}</Tag>
-                    {software.category ? <Tag>{text.category}: {software.category}</Tag> : null}
-                    <Tag>{text.size}: {software.size.toLocaleString()} {text.bytes}</Tag>
+                    <Tag>
+                      {text.publisher}: {software.publisher}
+                    </Tag>
+                    {software.category ? (
+                      <Tag>
+                        {text.category}: {software.category}
+                      </Tag>
+                    ) : null}
+                    <Tag>
+                      {text.size}: {software.size.toLocaleString()} {text.bytes}
+                    </Tag>
                     <Tag color="green">{text.softwareCompatible}</Tag>
                     <Button
                       disabled={taskActive || installMutation.isPending}
                       icon={<DownloadOutlined />}
-                      loading={installMutation.isPending && installMutation.variables?.id === software.id}
+                      loading={
+                        installMutation.isPending &&
+                        installMutation.variables?.id === software.id
+                      }
                       onClick={() => setSelected(software)}
                       type="primary"
                     >
@@ -504,7 +700,15 @@ export function SoftwarePage() {
         <section aria-live="polite" className="page-section">
           <header className="section-heading">
             <h2>{text.installProgress}</h2>
-            <Tag color={task.state === 'failed' ? 'red' : task.state === 'completed' ? 'green' : 'blue'}>
+            <Tag
+              color={
+                task.state === "failed"
+                  ? "red"
+                  : task.state === "completed"
+                    ? "green"
+                    : "blue"
+              }
+            >
               {taskLabels[task.state]}
             </Tag>
           </header>
@@ -512,12 +716,22 @@ export function SoftwarePage() {
           <Progress
             aria-label={taskLabels[task.state]}
             percent={task.progress}
-            status={task.state === 'failed' ? 'exception' : task.state === 'completed' ? 'success' : 'active'}
+            status={
+              task.state === "failed"
+                ? "exception"
+                : task.state === "completed"
+                  ? "success"
+                  : "active"
+            }
           />
           <p>{task.message}</p>
           {taskQuery.isError ? (
             <Alert
-              action={<Button onClick={() => void taskQuery.refetch()} size="small">{text.retry}</Button>}
+              action={
+                <Button onClick={() => void taskQuery.refetch()} size="small">
+                  {text.retry}
+                </Button>
+              }
               description={readableError(taskQuery.error, text)}
               showIcon
               type="warning"
@@ -533,316 +747,1231 @@ export function SoftwarePage() {
         mask={{ closable: false }}
         okText={text.installAndOpen}
         onCancel={() => {
-          if (!installMutation.isPending) setSelected(null)
+          if (!installMutation.isPending) setSelected(null);
         }}
         onOk={() => {
-          if (selected) installMutation.mutate(selected)
+          if (selected) installMutation.mutate(selected);
         }}
         open={Boolean(selected)}
         title={text.installSoftware}
       >
         <Descriptions
           column={1}
-          items={selected ? [
-            { key: 'name', label: text.software, children: selected.name },
-            { key: 'publisher', label: text.publisher, children: selected.publisher },
-            { key: 'version', label: text.version, children: selected.version },
-            { key: 'size', label: text.size, children: `${selected.size.toLocaleString()} ${text.bytes}` },
-          ] : []}
+          items={
+            selected
+              ? [
+                  {
+                    key: "name",
+                    label: text.software,
+                    children: selected.name,
+                  },
+                  {
+                    key: "publisher",
+                    label: text.publisher,
+                    children: selected.publisher,
+                  },
+                  {
+                    key: "version",
+                    label: text.version,
+                    children: selected.version,
+                  },
+                  {
+                    key: "size",
+                    label: text.size,
+                    children: `${selected.size.toLocaleString()} ${text.bytes}`,
+                  },
+                ]
+              : []
+          }
           size="small"
         />
         <Alert description={text.installWarning} showIcon type="warning" />
       </Modal>
     </Page>
-  )
+  );
 }
 
 export function ProfilePage() {
-  const { message } = App.useApp()
-  const text = useText()
-  const [profileForm] = Form.useForm<ProfileUpdate>()
-  const [passwordForm] = Form.useForm<{ currentPassword: string; newPassword: string; confirmPassword: string }>()
-  const session = useAppStore((state) => state.session)
-  const updateSummary = useAppStore((state) => state.updateProfileSummary)
-  const profileQuery = useQuery({ queryKey: ['auth', 'profile'], queryFn: getProfile })
-  const profile = profileQuery.data
+  const { message } = App.useApp();
+  const text = useText();
+  const [profileForm] = Form.useForm<ProfileUpdate>();
+  const [passwordForm] = Form.useForm<{
+    currentPassword: string;
+    newPassword: string;
+    confirmPassword: string;
+  }>();
+  const session = useAppStore((state) => state.session);
+  const updateSummary = useAppStore((state) => state.updateProfileSummary);
+  const profileQuery = useQuery({
+    queryKey: ["auth", "profile"],
+    queryFn: getProfile,
+  });
+  const profile = profileQuery.data;
   const updateMutation = useMutation({
     mutationFn: updateProfile,
     onSuccess: (updated) => {
-      updateSummary(updated)
-      profileQuery.refetch()
-      message.success(text.profileSaved)
+      updateSummary(updated);
+      profileQuery.refetch();
+      message.success(text.profileSaved);
     },
     onError: (error) => message.error(readableError(error, text)),
-  })
+  });
   const passwordMutation = useMutation({
     mutationFn: (input: { currentPassword: string; newPassword: string }) =>
       changePassword(input.currentPassword, input.newPassword),
     onSuccess: () => {
-      passwordForm.resetFields()
-      message.success(text.passwordChanged)
+      passwordForm.resetFields();
+      message.success(text.passwordChanged);
     },
     onError: (error) => message.error(readableError(error, text)),
-  })
+  });
 
   useEffect(() => {
-    if (!profile) return
+    if (!profile) return;
     profileForm.setFieldsValue({
       displayName: profile.displayName,
       email: profile.email,
       phone: profile.phone,
       avatarUrl: profile.avatarUrl,
-      avatarFit: profile.avatarFit || 'cover',
-    })
-  }, [profile, profileForm])
+      avatarFit: profile.avatarFit || "cover",
+    });
+  }, [profile, profileForm]);
 
-  if (profileQuery.isLoading) return <Page title={text.profile}><Skeleton active paragraph={{ rows: 8 }} /></Page>
+  if (profileQuery.isLoading)
+    return (
+      <Page title={text.profile}>
+        <Skeleton active paragraph={{ rows: 8 }} />
+      </Page>
+    );
   if (profileQuery.isError || !profile) {
-    return <Page title={text.profile}><Result extra={<Button onClick={() => void profileQuery.refetch()}>{text.retry}</Button>} status="error" title={text.offlineTitle} /></Page>
+    return (
+      <Page title={text.profile}>
+        <Result
+          extra={
+            <Button onClick={() => void profileQuery.refetch()}>
+              {text.retry}
+            </Button>
+          }
+          status="error"
+          title={text.offlineTitle}
+        />
+      </Page>
+    );
   }
-  const hasPasswordIdentity = profile.identities.some((identity) => identity.providerType === 'password')
+  const hasPasswordIdentity = profile.identities.some(
+    (identity) => identity.providerType === "password",
+  );
 
   return (
     <Page title={text.profile}>
       <section className="profile-summary">
-        <Avatar icon={<UserOutlined />} size={72} src={profile.avatarUrl || avatarURL(session?.user)} />
-        <div><h2>{profile.displayName || profile.username}</h2><p>{profile.email}</p><Tag color="success">{profile.status}</Tag></div>
+        <Avatar
+          icon={<UserOutlined />}
+          size={72}
+          src={profile.avatarUrl || avatarURL(session?.user)}
+        />
+        <div>
+          <h2>{profile.displayName || profile.username}</h2>
+          <p>{profile.email}</p>
+          <Tag color="success">{profile.status}</Tag>
+        </div>
       </section>
       <section className="page-section">
         <h2>{text.account}</h2>
         <Descriptions
           column={2}
           items={[
-            { key: 'username', label: text.username, children: profile.username },
-            { key: 'roles', label: text.roles, children: profile.roles.join(', ') || text.noValue },
-            { key: 'teams', label: text.teams, children: profile.teams.join(', ') || text.noValue },
-            { key: 'projects', label: text.projects, children: profile.projects.join(', ') || text.noValue },
-            { key: 'identities', label: text.identities, span: 2, children: profile.identities.map((identity) => identity.displayName || identity.providerId || identity.providerType).join(', ') || text.noValue },
+            {
+              key: "username",
+              label: text.username,
+              children: profile.username,
+            },
+            {
+              key: "roles",
+              label: text.roles,
+              children: profile.roles.join(", ") || text.noValue,
+            },
+            {
+              key: "teams",
+              label: text.teams,
+              children: profile.teams.join(", ") || text.noValue,
+            },
+            {
+              key: "projects",
+              label: text.projects,
+              children: profile.projects.join(", ") || text.noValue,
+            },
+            {
+              key: "identities",
+              label: text.identities,
+              span: 2,
+              children:
+                profile.identities
+                  .map(
+                    (identity) =>
+                      identity.displayName ||
+                      identity.providerId ||
+                      identity.providerType,
+                  )
+                  .join(", ") || text.noValue,
+            },
           ]}
         />
       </section>
       <section className="page-section form-section">
         <h2>{text.edit}</h2>
-        <Form form={profileForm} layout="vertical" onFinish={(values) => updateMutation.mutate(values)} requiredMark={false}>
+        <Form
+          form={profileForm}
+          layout="vertical"
+          onFinish={(values) => updateMutation.mutate(values)}
+          requiredMark={false}
+        >
           <div className="form-grid">
-            <Form.Item label={text.displayName} name="displayName" rules={[{ required: true, message: text.displayName }]}><Input autoComplete="name" /></Form.Item>
-            <Form.Item label={text.email} name="email" rules={[{ required: true, type: 'email', message: text.email }]}><Input autoComplete="email" type="email" /></Form.Item>
-            <Form.Item label={text.phone} name="phone"><Input autoComplete="tel" /></Form.Item>
-            <Form.Item label={text.avatarFit} name="avatarFit"><Select options={[{ label: text.avatarCover, value: 'cover' }, { label: text.avatarContain, value: 'contain' }]} /></Form.Item>
-            <Form.Item className="span-two" label={text.avatarUrl} name="avatarUrl"><Input autoComplete="photo" type="url" /></Form.Item>
+            <Form.Item
+              label={text.displayName}
+              name="displayName"
+              rules={[{ required: true, message: text.displayName }]}
+            >
+              <Input autoComplete="name" />
+            </Form.Item>
+            <Form.Item
+              label={text.email}
+              name="email"
+              rules={[{ required: true, type: "email", message: text.email }]}
+            >
+              <Input autoComplete="email" type="email" />
+            </Form.Item>
+            <Form.Item label={text.phone} name="phone">
+              <Input autoComplete="tel" />
+            </Form.Item>
+            <Form.Item label={text.avatarFit} name="avatarFit">
+              <Select
+                options={[
+                  { label: text.avatarCover, value: "cover" },
+                  { label: text.avatarContain, value: "contain" },
+                ]}
+              />
+            </Form.Item>
+            <Form.Item
+              className="span-two"
+              label={text.avatarUrl}
+              name="avatarUrl"
+            >
+              <Input autoComplete="photo" type="url" />
+            </Form.Item>
           </div>
-          <Button htmlType="submit" loading={updateMutation.isPending} type="primary">{text.save}</Button>
+          <Button
+            htmlType="submit"
+            loading={updateMutation.isPending}
+            type="primary"
+          >
+            {text.save}
+          </Button>
         </Form>
       </section>
       <section className="page-section form-section">
         <h2>{text.changePassword}</h2>
-        {!hasPasswordIdentity ? <Alert showIcon title={text.externalPassword} type="info" /> : (
+        {!hasPasswordIdentity ? (
+          <Alert showIcon title={text.externalPassword} type="info" />
+        ) : (
           <Form
             form={passwordForm}
             layout="vertical"
-            onFinish={(values) => passwordMutation.mutate({ currentPassword: values.currentPassword, newPassword: values.newPassword })}
+            onFinish={(values) =>
+              passwordMutation.mutate({
+                currentPassword: values.currentPassword,
+                newPassword: values.newPassword,
+              })
+            }
             requiredMark={false}
           >
-            <input autoComplete="username" hidden name="username" readOnly type="text" value={profile.username} />
+            <input
+              autoComplete="username"
+              hidden
+              name="username"
+              readOnly
+              type="text"
+              value={profile.username}
+            />
             <div className="form-grid">
-              <Form.Item label={text.currentPassword} name="currentPassword" rules={[{ required: true, message: text.currentPassword }]}><Input.Password autoComplete="current-password" /></Form.Item>
-              <span />
-              <Form.Item label={text.newPassword} name="newPassword" rules={[{ required: true, min: 8, message: text.newPassword }]}><Input.Password autoComplete="new-password" /></Form.Item>
               <Form.Item
-                dependencies={['newPassword']}
+                label={text.currentPassword}
+                name="currentPassword"
+                rules={[{ required: true, message: text.currentPassword }]}
+              >
+                <Input.Password autoComplete="current-password" />
+              </Form.Item>
+              <span />
+              <Form.Item
+                label={text.newPassword}
+                name="newPassword"
+                rules={[{ required: true, min: 8, message: text.newPassword }]}
+              >
+                <Input.Password autoComplete="new-password" />
+              </Form.Item>
+              <Form.Item
+                dependencies={["newPassword"]}
                 label={text.confirmPassword}
                 name="confirmPassword"
                 rules={[
                   { required: true, message: text.confirmPassword },
-                  ({ getFieldValue }) => ({ validator: (_, value) => !value || getFieldValue('newPassword') === value ? Promise.resolve() : Promise.reject(new Error(text.passwordMismatch)) }),
+                  ({ getFieldValue }) => ({
+                    validator: (_, value) =>
+                      !value || getFieldValue("newPassword") === value
+                        ? Promise.resolve()
+                        : Promise.reject(new Error(text.passwordMismatch)),
+                  }),
                 ]}
-              ><Input.Password autoComplete="new-password" /></Form.Item>
+              >
+                <Input.Password autoComplete="new-password" />
+              </Form.Item>
             </div>
-            <Button htmlType="submit" loading={passwordMutation.isPending} type="primary">{text.changePassword}</Button>
+            <Button
+              htmlType="submit"
+              loading={passwordMutation.isPending}
+              type="primary"
+            >
+              {text.changePassword}
+            </Button>
           </Form>
         )}
       </section>
     </Page>
-  )
+  );
 }
 
-export function SettingsPage() {
-  const navigate = useNavigate()
-  const queryClient = useQueryClient()
-  const { message } = App.useApp()
-  const text = useText()
-  const [serverForm] = Form.useForm<{ serverUrl: string }>()
-  const pendingServerURL = Form.useWatch('serverUrl', serverForm)
-  const [serverModalOpen, setServerModalOpen] = useState(false)
-  const [switching, setSwitching] = useState(false)
-  const [switchError, setSwitchError] = useState<string | null>(null)
-  const host = useAppStore((state) => state.host)
-  const session = useAppStore((state) => state.session)
-  const themeMode = useAppStore((state) => state.themeMode)
-  const locale = useAppStore((state) => state.locale)
-  const setThemeMode = useAppStore((state) => state.setThemeMode)
-  const setLocale = useAppStore((state) => state.setLocale)
-  const setHost = useAppStore((state) => state.setHost)
-  const setConnection = useAppStore((state) => state.setConnection)
-  const clearSession = useAppStore((state) => state.clearSession)
+type NetworkConnectionMedium = "wifi" | "wired";
+
+function networkConnectionOptionKey(option: NetworkConnectionOption): string {
+  return JSON.stringify([option.siteId, option.ssid || ""]);
+}
+
+export function NetworkPage() {
+  const text = useText();
+  const host = useAppStore((state) => state.host);
+  const preferences = useAppStore((state) => state.networkConnection);
+  const setNetworkConnection = useAppStore((state) => state.setNetworkConnection);
+  const [medium, setMedium] = useState<NetworkConnectionMedium>("wifi");
+  const deviceId = host?.app.deviceId || "";
+  const optionsQuery = useQuery({
+    queryKey: ["network-connection-options", deviceId],
+    queryFn: () => getNetworkConnectionOptions(deviceId),
+    enabled: Boolean(deviceId),
+    retry: 1,
+  });
+  const linkQuery = useQuery({
+    queryKey: ["native-network-link"],
+    queryFn: getNetworkLinkStatus,
+    refetchInterval: 10_000,
+    retry: false,
+  });
+  const options = optionsQuery.data || [];
+  const wifiOptions = options.filter((option) => option.accessMedium === "wifi");
+  const wiredOptions = options.filter((option) => option.accessMedium === "wired");
+  const selectedWifi = wifiOptions.find(
+    (option) => networkConnectionOptionKey(option) === preferences.selectedWifiKey,
+  );
+
+  useEffect(() => {
+    if (optionsQuery.isSuccess && preferences.selectedWifiKey && !selectedWifi) {
+      setNetworkConnection({ selectedWifiKey: "", wifiAutoConnect: false });
+    }
+  }, [optionsQuery.isSuccess, preferences.selectedWifiKey, selectedWifi, setNetworkConnection]);
+
+  const activeLink = linkQuery.data?.connected && linkQuery.data.medium === medium
+    ? linkQuery.data
+    : null;
+
+  return (
+    <Page title={text.network}>
+      <section className="network-connection-panel">
+        <div className="network-medium-switch">
+          <Segmented
+            block
+            className="network-mode-segmented"
+            onChange={(value) => setMedium(value as NetworkConnectionMedium)}
+            options={[
+              { icon: <WifiOutlined />, label: text.networkWifi, value: "wifi" },
+              { icon: <CloudServerOutlined />, label: text.networkWired, value: "wired" },
+            ]}
+            shape="round"
+            size="large"
+            value={medium}
+          />
+        </div>
+        <div className="network-connect-control">
+          <Button
+            aria-label={text.networkAutoConnectUnavailable}
+            aria-pressed={false}
+            className="network-connect-button"
+            disabled
+            icon={<PoweroffOutlined />}
+            shape="circle"
+            type="default"
+          />
+          <strong>{text.networkAutoConnectUnavailable}</strong>
+        </div>
+        {optionsQuery.isError ? (
+          <Alert
+            action={<Button onClick={() => optionsQuery.refetch()} size="small">{text.retry}</Button>}
+            description={readableError(optionsQuery.error, text)}
+            showIcon
+            title={text.networkOptionsLoadFailed}
+            type="warning"
+          />
+        ) : medium === "wifi" ? (
+          <Select
+            aria-label={text.networkChooseWifi}
+            className="network-wifi-select"
+            disabled={!wifiOptions.length}
+            loading={optionsQuery.isPending}
+            onChange={(value) => setNetworkConnection({ selectedWifiKey: value })}
+            options={wifiOptions.map((option) => ({
+              label: `${option.ssid} · ${option.siteName}`,
+              value: networkConnectionOptionKey(option),
+            }))}
+            placeholder={wifiOptions.length ? text.networkChooseWifiFirst : text.networkNoAuthorizedWifi}
+            showSearch={{ optionFilterProp: "label" }}
+            size="large"
+            value={preferences.selectedWifiKey || undefined}
+          />
+        ) : wiredOptions.length > 0 ? (
+          <div className="network-wired-target">
+            <strong>{text.networkWiredAuthentication}</strong>
+            <span>{wiredOptions.map((option) => option.siteName).join(" · ")} · {text.networkRadius8021X}</span>
+          </div>
+        ) : (
+          <Empty description={text.networkNoAuthorizedWired} image={Empty.PRESENTED_IMAGE_SIMPLE} />
+        )}
+        {activeLink ? (
+          <dl aria-label={text.networkLinkDetails} className="network-link-details">
+            <div><dt>{text.networkIPAddress}</dt><dd>{activeLink.ipAddress || "-"}</dd></div>
+            <div><dt>{text.networkGatewayAddress}</dt><dd>{activeLink.gateway || "-"}</dd></div>
+            <div><dt>{text.networkDNSServers}</dt><dd>{activeLink.dnsServers.join(", ") || "-"}</dd></div>
+          </dl>
+        ) : null}
+        <Alert description={text.networkManagedProfileHelp} showIcon type="info" />
+      </section>
+    </Page>
+  );
+}
+
+type SettingsView = "settings" | "vpn" | "proxy";
+
+export function VPNPage() {
+  return <SettingsPage view="vpn" />;
+}
+
+export function ProxyPage() {
+  return <SettingsPage view="proxy" />;
+}
+
+export function SettingsPage({ view = "settings" }: { view?: SettingsView }) {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const { message } = App.useApp();
+  const text = useText();
+  const [serverForm] = Form.useForm<{ serverUrl: string }>();
+  const [networkForm] = Form.useForm<{
+    siteId: string;
+    networkSpaceId: string;
+    gatewayId?: string;
+    mode: NetworkAccessMode;
+    resourceIds?: string;
+  }>();
+  const [mihomoForm] = Form.useForm<{ subscriptionUrl: string }>();
+  const pendingServerURL = Form.useWatch("serverUrl", serverForm);
+  const networkMode = Form.useWatch("mode", networkForm) || "external_vpn";
+  const [serverModalOpen, setServerModalOpen] = useState(false);
+  const [switching, setSwitching] = useState(false);
+  const [switchError, setSwitchError] = useState<string | null>(null);
+  const host = useAppStore((state) => state.host);
+  const session = useAppStore((state) => state.session);
+  const themeMode = useAppStore((state) => state.themeMode);
+  const locale = useAppStore((state) => state.locale);
+  const portalCardSize = useAppStore((state) => state.portalCardSize);
+  const setThemeMode = useAppStore((state) => state.setThemeMode);
+  const setLocale = useAppStore((state) => state.setLocale);
+  const setPortalCardSize = useAppStore((state) => state.setPortalCardSize);
+  const setHost = useAppStore((state) => state.setHost);
+  const setConnection = useAppStore((state) => state.setConnection);
+  const clearSession = useAppStore((state) => state.clearSession);
+  const updateQuery = useQuery({
+    queryKey: ["update-status"],
+    queryFn: getUpdateStatus,
+    enabled: view === "settings" && Boolean(host?.app.updateSupported),
+    retry: false,
+  });
+  const networkQuery = useQuery({
+    queryKey: ["network-status"],
+    queryFn: getNetworkStatus,
+    enabled: view !== "settings" && host?.app.platform === "windows",
+    refetchInterval: 10_000,
+    retry: false,
+  });
+  const mihomoQuery = useQuery({
+    queryKey: ["mihomo-app-status"],
+    queryFn: getMihomoAppStatus,
+    enabled:
+      view === "proxy" &&
+      host?.app.platform === "windows" &&
+      networkQuery.data?.mihomoMode === "app_subscription",
+    refetchInterval: 10_000,
+    retry: false,
+  });
+  const connectNetworkMutation = useMutation({
+    mutationFn: async (input: {
+      siteId: string;
+      networkSpaceId: string;
+      gatewayId?: string;
+      mode: NetworkAccessMode;
+      resourceIds?: string;
+    }) => {
+      const resourceIds =
+        input.resourceIds?.split(/[\s,]+/).filter(Boolean) || [];
+      const gatewayId = input.gatewayId?.trim();
+      const request: NetworkConnectInput = {
+        siteId: input.siteId,
+        networkSpaceId: input.networkSpaceId,
+        ...(gatewayId ? { gatewayId } : {}),
+        mode: input.mode,
+        resourceIds,
+      };
+      if (input.mode !== "external_vpn") {
+        const deviceId = networkQuery.data?.deviceId;
+        if (!deviceId)
+          throw new ApiError(
+            409,
+            "network_device_unavailable",
+            text.networkServiceUnavailable,
+          );
+        const secret = await createNetworkAccessGrant({
+          deviceId,
+          siteId: input.siteId,
+          networkSpaceId: input.networkSpaceId,
+          mode: input.mode,
+          resourceIds,
+          ttlSeconds: 300,
+        });
+        request.accessGrantId = secret.grant.id;
+        request.accessGrantToken = secret.token;
+      }
+      return connectNetwork(request);
+    },
+    onSuccess: (result) => {
+      queryClient.setQueryData(["network-status"], result);
+      message.success(text.networkConnected);
+    },
+    onError: (error) => message.error(readableError(error, text)),
+  });
+  const disconnectNetworkMutation = useMutation({
+    mutationFn: disconnectNetwork,
+    onSuccess: (result) => {
+      queryClient.setQueryData(["network-status"], result);
+      message.success(text.networkDisconnected);
+    },
+    onError: (error) => message.error(readableError(error, text)),
+  });
+  const configureMihomoMutation = useMutation({
+    mutationFn: ({ subscriptionUrl }: { subscriptionUrl: string }) =>
+      configureMihomoApp(subscriptionUrl),
+    onSuccess: (result) => {
+      queryClient.setQueryData(["mihomo-app-status"], result);
+      message.success(text.networkMihomoSaved);
+    },
+    onError: (error) => message.error(readableError(error, text)),
+    onSettled: () => mihomoForm.resetFields(),
+  });
+  const selectMihomoMutation = useMutation({
+    mutationFn: selectMihomoApp,
+    onSuccess: (result) =>
+      queryClient.setQueryData(["mihomo-app-status"], result),
+    onError: (error) => message.error(readableError(error, text)),
+  });
+  const refreshMihomoMutation = useMutation({
+    mutationFn: refreshMihomoApp,
+    onSuccess: (result) =>
+      queryClient.setQueryData(["mihomo-app-status"], result),
+    onError: (error) => message.error(readableError(error, text)),
+  });
+  const clearMihomoMutation = useMutation({
+    mutationFn: clearMihomoApp,
+    onSuccess: (result) => {
+      queryClient.setQueryData(["mihomo-app-status"], result);
+      message.success(text.networkMihomoCleared);
+    },
+    onError: (error) => message.error(readableError(error, text)),
+  });
   const updateMutation = useMutation({
     mutationFn: checkForUpdates,
-    onSuccess: (result) => message.success(result.message),
+    onSuccess: (result) => {
+      queryClient.setQueryData(["update-status"], result);
+      message.success(
+        result.state === "available" && result.availableVersion
+          ? `${text.updateAvailable} ${result.availableVersion}`
+          : text.upToDate,
+      );
+    },
     onError: (error) => message.error(readableError(error, text)),
-  })
+  });
+  const installMutation = useMutation({
+    mutationFn: installUpdate,
+    onSuccess: (result) => queryClient.setQueryData(["update-status"], result),
+    onError: (error) => message.error(readableError(error, text)),
+  });
 
   const openServerModal = () => {
-    serverForm.setFieldValue('serverUrl', host?.serverUrl || '')
-    setSwitchError(null)
-    setServerModalOpen(true)
-  }
+    serverForm.setFieldValue("serverUrl", host?.serverUrl || "");
+    setSwitchError(null);
+    setServerModalOpen(true);
+  };
   const switchServer = async () => {
-    const { serverUrl } = await serverForm.validateFields()
-    let preparedConnection: ConnectionCheck | null = null
-    let sessionCleared = false
-    setSwitching(true)
-    setSwitchError(null)
+    const { serverUrl } = await serverForm.validateFields();
+    let preparedConnection: ConnectionCheck | null = null;
+    let sessionCleared = false;
+    setSwitching(true);
+    setSwitchError(null);
     try {
-      const checked = await checkServer(serverUrl)
-      if (checked.status !== 'online') {
-        const copy = connectionMessage(checked, text)
-        setSwitchError(`${copy.title}: ${copy.description}`)
-        return
+      const checked = await checkServer(serverUrl);
+      if (checked.status !== "online") {
+        const copy = connectionMessage(checked, text);
+        setSwitchError(`${copy.title}: ${copy.description}`);
+        return;
       }
       if (checked.serverUrl === host?.serverUrl) {
-        setServerModalOpen(false)
-        return
+        setServerModalOpen(false);
+        return;
       }
-      await queryClient.cancelQueries()
-      const prepared = await prepareServerSwitch(checked.serverUrl, session?.accessToken)
-      preparedConnection = prepared.connection
-      clearSession()
-      sessionCleared = true
-      queryClient.clear()
-      const nextHost = await activateServerSwitch(prepared.activationToken)
-      setHost(nextHost)
-      setConnection(prepared.connection)
-      setServerModalOpen(false)
-      navigate('/login', { replace: true })
+      await queryClient.cancelQueries();
+      const prepared = await prepareServerSwitch(
+        checked.serverUrl,
+        session?.accessToken,
+      );
+      preparedConnection = prepared.connection;
+      clearSession();
+      sessionCleared = true;
+      queryClient.clear();
+      const nextHost = await activateServerSwitch(prepared.activationToken);
+      setHost(nextHost);
+      setConnection(prepared.connection);
+      setServerModalOpen(false);
+      navigate("/login", { replace: true });
     } catch (error) {
       const activated = preparedConnection
-        ? await recoverHostAfterSwitch(preparedConnection, setHost, setConnection).catch(() => false)
-        : false
-      const errorMessage = readableError(error, text)
+        ? await recoverHostAfterSwitch(
+            preparedConnection,
+            setHost,
+            setConnection,
+          ).catch(() => false)
+        : false;
+      const errorMessage = readableError(error, text);
       if (sessionCleared) {
-        if (!activated) message.error(errorMessage)
-        navigate('/login', { replace: true })
+        if (!activated) message.error(errorMessage);
+        navigate("/login", { replace: true });
       } else {
-        setSwitchError(errorMessage)
+        setSwitchError(errorMessage);
       }
     } finally {
-      setSwitching(false)
+      setSwitching(false);
     }
-  }
+  };
 
-  const app = host?.app
+  const app = host?.app;
+  const updateStatus = updateQuery.data;
+  const networkStatus = networkQuery.data;
+  const networkStatusText =
+    networkStatus?.state === "connected"
+      ? text.networkConnected
+      : networkStatus?.state === "connecting"
+        ? text.networkConnecting
+        : networkStatus?.state === "degraded"
+          ? text.networkDegraded
+          : text.networkDisconnected;
+  const networkModeText =
+    networkStatus?.mode === "external_vpn_ztna"
+      ? text.networkModeVPNZTNA
+      : networkStatus?.mode === "internal_ztna"
+        ? text.networkModeInternalZTNA
+        : networkStatus?.mode === "external_direct_ztna"
+          ? text.networkModeDirectZTNA
+          : networkStatus?.mode === "external_vpn"
+            ? text.networkModeVPN
+            : "-";
+  const networkMihomoText =
+    networkStatus?.mihomoMode === "managed_follow"
+      ? `${text.networkMihomoManaged} · ${networkStatus.mihomoProfileId} · r${networkStatus.mihomoProfileRevision}`
+      : networkStatus?.mihomoMode === "app_subscription"
+        ? `${text.networkMihomoApp} · ${networkStatus.mihomoProfileId} · r${networkStatus.mihomoProfileRevision}`
+        : "-";
+  const updateAvailable =
+    updateStatus?.state === "available" && updateStatus.availableVersion;
+  const updateSummary = !app?.updateSupported
+    ? text.updateUnavailable
+    : updateAvailable
+      ? `${text.updateAvailable} ${updateStatus.availableVersion}`
+      : updateStatus?.state === "up-to-date"
+        ? text.upToDate
+        : updateStatus?.state === "error"
+          ? text.updateFailed
+          : text.updateReady;
+  const pageTitle = view === "vpn" ? text.vpn : view === "proxy" ? text.proxy : text.settings;
   return (
-    <Page title={text.settings}>
-      <section className="settings-section">
-        <h2>{text.appearance}</h2>
-        <SettingRow label={text.theme}>
-          <Segmented
-            onChange={(value) => setThemeMode(value as ThemeMode)}
-            options={[
-              { label: text.themeSystem, value: 'system' },
-              { label: text.themeLight, value: 'light' },
-              { label: text.themeDark, value: 'dark' },
-            ]}
-            value={themeMode}
-          />
-        </SettingRow>
-        <SettingRow label={text.language}>
-          <Segmented
-            onChange={(value) => setLocale(value as LocaleCode)}
-            options={[{ label: '简体中文', value: 'zh_CN' }, { label: 'English', value: 'en_US' }]}
-            value={locale}
-          />
-        </SettingRow>
-      </section>
-      <section className="settings-section">
-        <h2>{text.connection}</h2>
-        <SettingRow description={host?.serverUrl} label={text.currentServer}>
-          {host?.managedByEnvironment ? <Tag>{text.environmentManaged}</Tag> : (
-            <Button onClick={openServerModal}>{text.changeServer}</Button>
+    <Page title={pageTitle}>
+      {view === "settings" ? (
+        <>
+          <section className="settings-section">
+            <h2>{text.appearance}</h2>
+            <SettingRow label={text.theme}>
+              <Segmented
+                onChange={(value) => setThemeMode(value as ThemeMode)}
+                options={[
+                  { label: text.themeSystem, value: "system" },
+                  { label: text.themeLight, value: "light" },
+                  { label: text.themeDark, value: "dark" },
+                ]}
+                value={themeMode}
+              />
+            </SettingRow>
+            <SettingRow label={text.language}>
+              <Segmented
+                onChange={(value) => setLocale(value as LocaleCode)}
+                options={[
+                  { label: "简体中文", value: "zh_CN" },
+                  { label: "English", value: "en_US" },
+                ]}
+                value={locale}
+              />
+            </SettingRow>
+            <SettingRow label={text.portalCardSize}>
+              <Segmented
+                aria-label={text.portalCardSize}
+                onChange={(value) => setPortalCardSize(value as PortalCardSize)}
+                options={[
+                  { label: text.portalCardStandard, value: "standard" },
+                  { label: text.portalCardCompact, value: "compact" },
+                ]}
+                value={portalCardSize}
+              />
+            </SettingRow>
+          </section>
+          <section className="settings-section">
+            <h2>{text.connection}</h2>
+            <SettingRow
+              description={host?.serverUrl}
+              label={text.currentServer}
+            >
+              {host?.managedByEnvironment ? (
+                <Tag>{text.environmentManaged}</Tag>
+              ) : (
+                <Button onClick={openServerModal}>{text.changeServer}</Button>
+              )}
+            </SettingRow>
+          </section>
+        </>
+      ) : null}
+      {view !== "settings" ? (
+        <section className="settings-section">
+          <h2>{pageTitle}</h2>
+          {app?.platform !== "windows" ? (
+            <Alert
+              description={
+                app?.platform === "darwin"
+                  ? view === "vpn"
+                    ? text.networkMacVPNPending
+                    : text.networkMacProxyPending
+                  : text.networkWindowsOnly
+              }
+              showIcon
+              type="info"
+            />
+          ) : (
+            <>
+              {networkQuery.isError ? (
+                <Alert
+                  description={readableError(networkQuery.error, text)}
+                  showIcon
+                  title={text.networkServiceUnavailable}
+                  type="warning"
+                />
+              ) : (
+                <Descriptions
+                  column={1}
+                  items={[
+                    {
+                      key: "status",
+                      label: text.networkStatus,
+                      children: (
+                        <Tag
+                          color={
+                            networkStatus?.state === "connected"
+                              ? "success"
+                              : networkStatus?.state === "degraded"
+                                ? "error"
+                                : undefined
+                          }
+                        >
+                          {networkQuery.isPending
+                            ? text.checking
+                            : networkStatusText}
+                        </Tag>
+                      ),
+                    },
+                    {
+                      key: "site",
+                      label: text.networkSite,
+                      children: networkStatus?.siteId || "-",
+                    },
+                    {
+                      key: "space",
+                      label: text.networkSpace,
+                      children: networkStatus?.networkSpaceId || "-",
+                    },
+                    {
+                      key: "gateway",
+                      label: text.networkGateway,
+                      children: networkStatus?.gatewayId || "-",
+                    },
+                    {
+                      key: "mode",
+                      label: text.networkMode,
+                      children: networkModeText,
+                    },
+                    {
+                      key: "resources",
+                      label: text.networkResources,
+                      children: networkStatus?.resourceIds?.join(", ") || "-",
+                    },
+                    {
+                      key: "mihomo",
+                      label: text.networkMihomo,
+                      children: networkMihomoText,
+                    },
+                    {
+                      key: "valid-until",
+                      label: text.networkValidUntil,
+                      children: networkStatus?.validUntil || "-",
+                    },
+                    {
+                      key: "diagnostic",
+                      label: text.networkDiagnostic,
+                      children: networkStatus?.diagnostic || "-",
+                    },
+                  ]}
+                  size="small"
+                />
+              )}
+              {view === "vpn" ? (
+                <Form
+                  form={networkForm}
+                  initialValues={{ mode: "external_vpn" }}
+                  layout="vertical"
+                  onFinish={(input) => connectNetworkMutation.mutate(input)}
+                  requiredMark={false}
+                >
+                  <div className="form-grid">
+                    <Form.Item
+                      label={text.networkSite}
+                      name="siteId"
+                      rules={[
+                        { required: true, message: text.networkSiteRequired },
+                      ]}
+                    >
+                      <Input
+                        autoCapitalize="none"
+                        autoComplete="off"
+                        spellCheck={false}
+                      />
+                    </Form.Item>
+                    <Form.Item
+                      label={text.networkSpace}
+                      name="networkSpaceId"
+                      rules={[
+                        { required: true, message: text.networkSpaceRequired },
+                      ]}
+                    >
+                      <Input
+                        autoCapitalize="none"
+                        autoComplete="off"
+                        spellCheck={false}
+                      />
+                    </Form.Item>
+                    <Form.Item
+                      extra={text.networkGatewayHint}
+                      label={text.networkGateway}
+                      name="gatewayId"
+                    >
+                      <Input
+                        autoCapitalize="none"
+                        autoComplete="off"
+                        spellCheck={false}
+                      />
+                    </Form.Item>
+                    <Form.Item
+                      label={text.networkMode}
+                      name="mode"
+                      rules={[{ required: true }]}
+                    >
+                      <Select
+                        options={[
+                          {
+                            label: text.networkModeInternalZTNA,
+                            value: "internal_ztna",
+                          },
+                          { label: text.networkModeVPN, value: "external_vpn" },
+                          {
+                            label: text.networkModeVPNZTNA,
+                            value: "external_vpn_ztna",
+                          },
+                          {
+                            label: text.networkModeDirectZTNA,
+                            value: "external_direct_ztna",
+                          },
+                        ]}
+                      />
+                    </Form.Item>
+                    {networkMode !== "external_vpn" ? (
+                      <Form.Item
+                        extra={text.networkResourcesHint}
+                        label={text.networkResources}
+                        name="resourceIds"
+                        rules={[
+                          {
+                            required: true,
+                            whitespace: true,
+                            message: text.networkResourcesRequired,
+                          },
+                        ]}
+                      >
+                        <Input.TextArea
+                          autoCapitalize="none"
+                          autoComplete="off"
+                          rows={2}
+                          spellCheck={false}
+                        />
+                      </Form.Item>
+                    ) : null}
+                  </div>
+                  <Space wrap>
+                    <Button
+                      disabled={
+                        networkQuery.isError ||
+                        networkQuery.isPending ||
+                        networkStatus?.state !== "disconnected"
+                      }
+                      htmlType="submit"
+                      loading={connectNetworkMutation.isPending}
+                      type="primary"
+                    >
+                      {text.networkConnect}
+                    </Button>
+                    <Button
+                      disabled={
+                        networkQuery.isError ||
+                        networkQuery.isPending ||
+                        networkStatus?.state === "disconnected"
+                      }
+                      loading={disconnectNetworkMutation.isPending}
+                      onClick={() => disconnectNetworkMutation.mutate()}
+                    >
+                      {text.networkDisconnect}
+                    </Button>
+                  </Space>
+                </Form>
+              ) : null}
+              {view === "proxy" &&
+              networkStatus?.mihomoMode === "app_subscription" ? (
+                <div className="settings-subsection">
+                  {mihomoQuery.isError ? (
+                    <Alert
+                      description={readableError(mihomoQuery.error, text)}
+                      showIcon
+                      type="warning"
+                    />
+                  ) : (
+                    <Descriptions
+                      column={1}
+                      items={[
+                        {
+                          key: "configured",
+                          label: text.networkMihomoApp,
+                          children: mihomoQuery.data?.configured
+                            ? text.networkMihomoConfigured
+                            : text.networkMihomoNotConfigured,
+                        },
+                        {
+                          key: "node",
+                          label: text.networkMihomoNode,
+                          children: mihomoQuery.data?.selectedProxy || "-",
+                        },
+                      ]}
+                      size="small"
+                    />
+                  )}
+                  <Form
+                    form={mihomoForm}
+                    layout="vertical"
+                    onFinish={(input) => configureMihomoMutation.mutate(input)}
+                    requiredMark={false}
+                  >
+                    <Form.Item
+                      label={text.networkMihomoSubscription}
+                      name="subscriptionUrl"
+                      rules={[
+                        {
+                          required: true,
+                          message: text.networkMihomoSubscriptionRequired,
+                        },
+                        {
+                          pattern: /^https:\/\//,
+                          message: text.networkMihomoSubscriptionRequired,
+                        },
+                      ]}
+                    >
+                      <Input.Password
+                        autoCapitalize="none"
+                        autoComplete="off"
+                        spellCheck={false}
+                      />
+                    </Form.Item>
+                    <Space wrap>
+                      <Button
+                        htmlType="submit"
+                        loading={configureMihomoMutation.isPending}
+                        type="primary"
+                      >
+                        {text.networkMihomoConfigure}
+                      </Button>
+                      <Select
+                        aria-label={text.networkMihomoNode}
+                        disabled={!mihomoQuery.data?.configured}
+                        loading={
+                          mihomoQuery.isPending ||
+                          selectMihomoMutation.isPending
+                        }
+                        onChange={(value) => selectMihomoMutation.mutate(value)}
+                        options={(mihomoQuery.data?.proxies || []).map(
+                          (proxy) => ({ label: proxy, value: proxy }),
+                        )}
+                        showSearch
+                        value={mihomoQuery.data?.selectedProxy}
+                      />
+                      <Button
+                        disabled={!mihomoQuery.data?.configured}
+                        loading={refreshMihomoMutation.isPending}
+                        onClick={() => refreshMihomoMutation.mutate()}
+                      >
+                        {text.networkMihomoRefresh}
+                      </Button>
+                      <Button
+                        danger
+                        disabled={!mihomoQuery.data?.configured}
+                        loading={clearMihomoMutation.isPending}
+                        onClick={() => clearMihomoMutation.mutate()}
+                      >
+                        {text.networkMihomoClear}
+                      </Button>
+                    </Space>
+                  </Form>
+                </div>
+              ) : null}
+            </>
           )}
-        </SettingRow>
-      </section>
-      <section className="settings-section">
-        <h2>{text.about}</h2>
-        <Descriptions
-          column={1}
-          items={[
-            { key: 'version', label: text.version, children: app?.version || '-' },
-            { key: 'platform', label: text.platform, children: app ? `${app.platform} / ${app.arch}` : '-' },
-            { key: 'logs', label: text.logDirectory, children: app?.logDirectory || '-' },
-            {
-              key: 'updates',
-              label: text.updateStatus,
-              children: app?.updateSupported ? text.updateReady : text.updateUnavailable,
-            },
-          ]}
-        />
-        <Space wrap>
-          <Button
-            disabled={!app?.updateSupported || updateMutation.isPending}
-            icon={<ReloadOutlined />}
-            loading={updateMutation.isPending}
-            onClick={() => updateMutation.mutate()}
+        </section>
+      ) : null}
+      {view === "settings" ? (
+        <>
+          <section className="settings-section">
+            <h2>{text.about}</h2>
+            <Descriptions
+              column={1}
+              items={[
+                {
+                  key: "version",
+                  label: text.version,
+                  children: app?.version || "-",
+                },
+                {
+                  key: "platform",
+                  label: text.platform,
+                  children: app ? `${app.platform} / ${app.arch}` : "-",
+                },
+                {
+                  key: "logs",
+                  label: text.logDirectory,
+                  children: app?.logDirectory || "-",
+                },
+                {
+                  key: "updates",
+                  label: text.updateStatus,
+                  children: updateSummary,
+                },
+                {
+                  key: "available-version",
+                  label: text.updateVersion,
+                  children: updateStatus?.availableVersion || "-",
+                },
+                {
+                  key: "download-mode",
+                  label: text.updateMethod,
+                  children:
+                    updateStatus?.downloadMode === "delta"
+                      ? text.deltaUpdate
+                      : updateStatus?.downloadMode === "full"
+                        ? text.fullUpdate
+                        : "-",
+                },
+                {
+                  key: "last-checked",
+                  label: text.lastChecked,
+                  children: updateStatus?.lastCheckedAt || "-",
+                },
+              ]}
+            />
+            <Space wrap>
+              <Button
+                disabled={!app?.updateSupported || updateMutation.isPending}
+                icon={<ReloadOutlined />}
+                loading={updateMutation.isPending}
+                onClick={() => updateMutation.mutate()}
+              >
+                {text.checkUpdates}
+              </Button>
+              {updateAvailable && updateStatus.installMode !== "disabled" ? (
+                <Button
+                  loading={installMutation.isPending}
+                  onClick={() => {
+                    if (updateStatus.installMode === "external") {
+                      if (updateStatus.releaseURL) {
+                        void openBrowserURL(updateStatus.releaseURL).catch(
+                          (error) => message.error(readableError(error, text)),
+                        );
+                      }
+                      return;
+                    }
+                    if (updateStatus.installMode === "self")
+                      installMutation.mutate();
+                  }}
+                  type="primary"
+                >
+                  {updateStatus.installMode === "external"
+                    ? text.openRelease
+                    : text.installUpdate}
+                </Button>
+              ) : null}
+              <Button
+                icon={<FolderOpenOutlined />}
+                onClick={() =>
+                  void openLogDirectory().catch((error) =>
+                    message.error(readableError(error, text)),
+                  )
+                }
+              >
+                {text.openLogs}
+              </Button>
+              <Button disabled icon={<SyncOutlined />}>
+                {text.syncConfiguration}
+              </Button>
+            </Space>
+          </section>
+          <Modal
+            cancelText={text.cancel}
+            confirmLoading={switching}
+            destroyOnHidden
+            mask={{ closable: false }}
+            okText={text.changeServer}
+            onCancel={() => setServerModalOpen(false)}
+            onOk={() => void switchServer()}
+            open={serverModalOpen}
+            title={text.changeServer}
           >
-            {text.checkUpdates}
-          </Button>
-          <Button
-            icon={<FolderOpenOutlined />}
-            onClick={() => void openLogDirectory().catch((error) => message.error(readableError(error, text)))}
-          >
-            {text.openLogs}
-          </Button>
-          <Button disabled icon={<SyncOutlined />}>{text.syncConfiguration}</Button>
-        </Space>
-      </section>
-      <Modal
-        cancelText={text.cancel}
-        confirmLoading={switching}
-        destroyOnHidden
-        mask={{ closable: false }}
-        okText={text.changeServer}
-        onCancel={() => setServerModalOpen(false)}
-        onOk={() => void switchServer()}
-        open={serverModalOpen}
-        title={text.changeServer}
-      >
-        <Descriptions
-          className="server-switch-addresses"
-          column={1}
-          items={[
-            { key: 'current', label: text.currentServer, children: host?.serverUrl || '-' },
-            { key: 'next', label: text.newServer, children: pendingServerURL || '-' },
-          ]}
-          size="small"
-        />
-        <Alert description={text.changeServerWarning} showIcon type="warning" />
-        <Form form={serverForm} layout="vertical" requiredMark={false}>
-          <Form.Item label={text.serverAddress} name="serverUrl" rules={[{ required: true, message: text.invalidAddress }]}>
-            <Input autoCapitalize="none" autoComplete="url" autoCorrect="off" spellCheck={false} />
-          </Form.Item>
-        </Form>
-        {switchError ? <Alert showIcon title={switchError} type="error" /> : null}
-      </Modal>
+            <Descriptions
+              className="server-switch-addresses"
+              column={1}
+              items={[
+                {
+                  key: "current",
+                  label: text.currentServer,
+                  children: host?.serverUrl || "-",
+                },
+                {
+                  key: "next",
+                  label: text.newServer,
+                  children: pendingServerURL || "-",
+                },
+              ]}
+              size="small"
+            />
+            <Alert
+              description={text.changeServerWarning}
+              showIcon
+              type="warning"
+            />
+            <Form form={serverForm} layout="vertical" requiredMark={false}>
+              <Form.Item
+                label={text.serverAddress}
+                name="serverUrl"
+                rules={[{ required: true, message: text.invalidAddress }]}
+              >
+                <Input
+                  autoCapitalize="none"
+                  autoComplete="url"
+                  autoCorrect="off"
+                  spellCheck={false}
+                />
+              </Form.Item>
+            </Form>
+            {switchError ? (
+              <Alert showIcon title={switchError} type="error" />
+            ) : null}
+          </Modal>
+        </>
+      ) : null}
     </Page>
-  )
+  );
 }
 
-export function Page({ title, description, children }: { title: string; description?: string; children: ReactNode }) {
-  return <div className="page">{description ? <header className="page-heading"><h1>{title}</h1><p>{description}</p></header> : <h1 className="visually-hidden">{title}</h1>}{children}</div>
+export function Page({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="page">
+      {description ? (
+        <header className="page-heading">
+          <h1>{title}</h1>
+          <p>{description}</p>
+        </header>
+      ) : (
+        <h1 className="visually-hidden">{title}</h1>
+      )}
+      {children}
+    </div>
+  );
 }
 
-function SettingRow({ label, description, children }: { label: string; description?: string; children: ReactNode }) {
-  return <div className="setting-row"><span><strong>{label}</strong>{description ? <small title={description}>{description}</small> : null}</span><div>{children}</div></div>
+function SettingRow({
+  label,
+  description,
+  children,
+}: {
+  label: string;
+  description?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="setting-row">
+      <span>
+        <strong>{label}</strong>
+        {description ? <small title={description}>{description}</small> : null}
+      </span>
+      <div>{children}</div>
+    </div>
+  );
 }
 
 async function recoverHostAfterSwitch(
@@ -850,31 +1979,49 @@ async function recoverHostAfterSwitch(
   setHost: (host: HostState) => void,
   setConnection: (connection: ConnectionCheck) => void,
 ) {
-  const currentHost = await getHostState()
-  setHost(currentHost)
-  const activated = currentHost.serverUrl === attemptedConnection.serverUrl
-  setConnection(activated ? attemptedConnection : await checkServer(currentHost.serverUrl))
-  return activated
+  const currentHost = await getHostState();
+  setHost(currentHost);
+  const activated = currentHost.serverUrl === attemptedConnection.serverUrl;
+  setConnection(
+    activated ? attemptedConnection : await checkServer(currentHost.serverUrl),
+  );
+  return activated;
 }
 
 export function connectionMessage(connection: ConnectionCheck, text: Text) {
   switch (connection.status) {
-    case 'unconfigured': return { title: text.unconfiguredTitle, description: text.unconfiguredHelp }
-    case 'checking': return { title: text.checking, description: connection.serverUrl }
-    case 'not_ready': return { title: text.notReadyTitle, description: text.notReadyHelp }
-    case 'tls_error': return { title: text.tlsTitle, description: text.tlsHelp }
-    case 'incompatible': return { title: text.incompatibleTitle, description: text.incompatibleHelp }
-    case 'offline': return { title: text.offlineTitle, description: text.offlineHelp }
-    case 'online': return { title: text.connected, description: connection.serverUrl }
+    case "unconfigured":
+      return {
+        title: text.unconfiguredTitle,
+        description: text.unconfiguredHelp,
+      };
+    case "checking":
+      return { title: text.checking, description: connection.serverUrl };
+    case "not_ready":
+      return { title: text.notReadyTitle, description: text.notReadyHelp };
+    case "tls_error":
+      return { title: text.tlsTitle, description: text.tlsHelp };
+    case "incompatible":
+      return {
+        title: text.incompatibleTitle,
+        description: text.incompatibleHelp,
+      };
+    case "offline":
+      return { title: text.offlineTitle, description: text.offlineHelp };
+    case "online":
+      return { title: text.connected, description: connection.serverUrl };
   }
 }
 
 function readableError(error: unknown, text: Text): string {
   if (error instanceof HostError || error instanceof ApiError) {
-    let message = error.message
-    if (error.code === 'network_error' || error.code === 'host_unavailable') message = text.offlineHelp
-    if (error.code === 'configuration_managed') message = text.managedAddress
-    return error.requestId ? `${message} (${text.requestId}: ${error.requestId})` : message
+    let message = error.message;
+    if (error.code === "network_error" || error.code === "host_unavailable")
+      message = text.offlineHelp;
+    if (error.code === "configuration_managed") message = text.managedAddress;
+    return error.requestId
+      ? `${message} (${text.requestId}: ${error.requestId})`
+      : message;
   }
-  return text.offlineHelp
+  return text.offlineHelp;
 }

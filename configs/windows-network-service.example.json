@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "runtimeId": "endpoint-runtime-1",
+  "deviceId": "device-1",
+  "allowedUserSid": "S-1-5-21-1000",
+  "controlUrl": "https://network-control.example.com",
+  "controlCaFile": "C:\\ProgramData\\OpenSoha\\Soha\\pki\\control-ca.pem",
+  "controlCertFile": "C:\\ProgramData\\OpenSoha\\Soha\\pki\\endpoint-control.pem",
+  "controlKeyFile": "C:\\ProgramData\\OpenSoha\\Soha\\pki\\endpoint-control-key.pem",
+  "controlServerName": "network-control.example.com",
+  "ingestUrl": "https://network-ingest.example.com",
+  "ingestCaFile": "C:\\ProgramData\\OpenSoha\\Soha\\pki\\ingest-ca.pem",
+  "ingestCertFile": "C:\\ProgramData\\OpenSoha\\Soha\\pki\\endpoint-ingest.pem",
+  "ingestKeyFile": "C:\\ProgramData\\OpenSoha\\Soha\\pki\\endpoint-ingest-key.pem",
+  "ingestServerName": "network-ingest.example.com",
+  "stateDirectory": "C:\\ProgramData\\OpenSoha\\Soha\\state",
+  "wireGuardExecutable": "C:\\Program Files\\WireGuard\\wireguard.exe",
+  "mihomoControllerUrl": "http://127.0.0.1:9090",
+  "mihomoControllerSecretFile": "C:\\ProgramData\\OpenSoha\\Soha\\state\\mihomo-controller.secret",
+  "enrollmentId": "enrollment-1",
+  "enrollmentChallengeId": "challenge-1",
+  "enrollmentTokenFile": "C:\\ProgramData\\OpenSoha\\Soha\\state\\enrollment.token"
+}

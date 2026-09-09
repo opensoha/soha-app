@@ -4,9 +4,13 @@ import type {
   AuthProvider,
   Bootstrap,
   Branding,
+  EndpointDeviceRegistrationInput,
   IdentityApplication,
   LinkedIdentity,
   LoginOptions,
+  NetworkAccessGrantInput,
+  NetworkAccessGrantSecret,
+  NetworkConnectionOption,
   PortalBootstrap,
   PortalLaunchDecision,
   Principal,
@@ -106,6 +110,21 @@ export async function getBootstrap(): Promise<Bootstrap> {
   }
 }
 
+export function registerEndpointDevice(deviceId: string, input: EndpointDeviceRegistrationInput): Promise<void> {
+  return request(`/network-access/devices/${encodeURIComponent(deviceId)}/registration`, {
+    method: 'PUT',
+    body: JSON.stringify(input),
+  }).then(() => undefined)
+}
+
+export async function getNetworkConnectionOptions(deviceId: string): Promise<NetworkConnectionOption[]> {
+  const payload = await request(`/network-access/connection-options?deviceId=${encodeURIComponent(deviceId)}`)
+  if (!isRecord(payload) || !Array.isArray(payload.items) || !payload.items.every(isNetworkConnectionOption)) {
+    throw contractError()
+  }
+  return payload.items as NetworkConnectionOption[]
+}
+
 export async function getProfile(): Promise<UserProfile> {
   const payload = await request('/auth/profile')
   const data = envelopeData(payload)
@@ -171,6 +190,18 @@ export function markAnnouncementRead(id: string): Promise<void> {
   return request(`/announcements/${encodeURIComponent(id)}/read`, { method: 'POST', body: '{}' }).then(
     () => undefined,
   )
+}
+
+export async function createNetworkAccessGrant(input: NetworkAccessGrantInput): Promise<NetworkAccessGrantSecret> {
+  const data = envelopeData(await request('/network-access/access-grants', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  }))
+  if (!isRecord(data) || !isRecord(data.grant) || typeof data.grant.id !== 'string' ||
+    typeof data.token !== 'string' || data.token.length < 32 || data.token.length > 256) {
+    throw contractError()
+  }
+  return { grant: { id: data.grant.id }, token: data.token }
 }
 
 export async function getPortalBootstrap(): Promise<PortalBootstrap> {
@@ -378,6 +409,14 @@ function normalizePrincipal(value: Record<string, unknown>): Principal {
 
 function isAnnouncement(value: unknown): boolean {
   return isRecord(value) && hasStrings(value, ['id', 'title', 'summary', 'level']) && typeof value.isRead === 'boolean'
+}
+
+function isNetworkConnectionOption(value: unknown): value is NetworkConnectionOption {
+  if (!isRecord(value) || !hasStrings(value, ['siteId', 'siteName', 'accessMedium', 'authentication', 'accessProfile']) ||
+    typeof value.policyVersion !== 'number' || value.policyVersion < 1 ||
+    !['wifi', 'wired'].includes(value.accessMedium as string) || value.authentication !== 'radius_802_1x' ||
+    !['onboarding', 'full', 'restricted', 'quarantine', 'deny'].includes(value.accessProfile as string)) return false
+  return value.accessMedium === 'wired' ? value.ssid === undefined : typeof value.ssid === 'string' && value.ssid.length > 0
 }
 
 function isIdentityApplication(value: unknown): value is Record<string, unknown> {

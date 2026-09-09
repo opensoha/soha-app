@@ -48,6 +48,70 @@ func newConfigStore(path string) *configStore {
 	return &configStore{path: path}
 }
 
+func loadOrCreateDeviceID(path string) (string, error) {
+	contents, err := os.ReadFile(path)
+	if err == nil {
+		id := strings.TrimSpace(string(contents))
+		if validDeviceID(id) {
+			return id, nil
+		}
+		return "", errors.New("saved device id is invalid")
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("read device id: %w", err)
+	}
+
+	token, err := randomToken(18)
+	if err != nil {
+		return "", fmt.Errorf("generate device id: %w", err)
+	}
+	id := "endpoint-" + strings.ReplaceAll(token, "_", "-")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", fmt.Errorf("create device id directory: %w", err)
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		return loadOrCreateDeviceID(path)
+	}
+	if err != nil {
+		return "", fmt.Errorf("create device id: %w", err)
+	}
+	cleanup := true
+	defer func() {
+		_ = file.Close()
+		if cleanup {
+			_ = os.Remove(path)
+		}
+	}()
+	if _, err := file.WriteString(id + "\n"); err != nil {
+		return "", fmt.Errorf("write device id: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		return "", fmt.Errorf("sync device id: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return "", fmt.Errorf("close device id: %w", err)
+	}
+	if err := syncDirectory(filepath.Dir(path)); err != nil {
+		return "", fmt.Errorf("sync device id directory: %w", err)
+	}
+	cleanup = false
+	return id, nil
+}
+
+func validDeviceID(id string) bool {
+	if len(id) == 0 || len(id) > 128 {
+		return false
+	}
+	for index, character := range id {
+		alphanumeric := character >= '0' && character <= '9' || character >= 'A' && character <= 'Z' || character >= 'a' && character <= 'z'
+		if (!alphanumeric && character != '.' && character != ':' && character != '-') || index == 0 && !alphanumeric {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *configStore) Load() (storedConfig, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

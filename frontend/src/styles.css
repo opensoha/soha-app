@@ -10,15 +10,19 @@
   --primary: #1677ff;
   --primary-muted: #e6f4ff;
   --success: #22c55e;
+  --warning: #f97316;
+  --error: #ef4444;
   --shadow: 0 14px 34px rgb(22 119 255 / 8%);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Noto Sans CJK SC", sans-serif;
   color: var(--text);
   background: var(--app-bg);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
 }
 
-:root[data-theme='dark'] {
+:root[data-theme="dark"] {
   --app-bg: #07111f;
   --surface: #0d1726;
   --surface-muted: #122238;
@@ -30,6 +34,8 @@
   --primary: #4096ff;
   --primary-muted: rgb(64 150 255 / 16%);
   --success: #4ade80;
+  --warning: #fb923c;
+  --error: #f87171;
   --shadow: 0 18px 42px rgb(0 0 0 / 34%);
 }
 
@@ -103,8 +109,8 @@ input {
   gap: 10px;
 }
 
-.connection-screen[data-platform='darwin'] .connection-header,
-.login-screen[data-platform='darwin'] .login-titlebar {
+.connection-screen[data-platform="darwin"] .connection-header,
+.login-screen[data-platform="darwin"] .login-titlebar {
   padding-left: 86px;
 }
 
@@ -218,6 +224,16 @@ input {
   background: var(--text-muted);
 }
 
+.connection-indicator.offline i,
+.connection-indicator.tls_error i,
+.connection-indicator.incompatible i {
+  background: var(--error);
+}
+
+.connection-indicator.not_ready i {
+  background: var(--warning);
+}
+
 .provider-list {
   display: grid;
   max-height: 150px;
@@ -252,7 +268,7 @@ input {
   background: var(--app-bg);
 }
 
-.desktop-shell[data-platform='darwin'] {
+.desktop-shell[data-platform="darwin"] {
   grid-template-columns: 232px minmax(0, 1fr);
 }
 
@@ -290,7 +306,7 @@ input {
   flex: 0 0 46px;
 }
 
-.desktop-shell[data-platform='darwin'] .skip-link {
+.desktop-shell[data-platform="darwin"] .skip-link {
   left: 86px;
 }
 
@@ -385,7 +401,10 @@ input {
 }
 
 .workspace {
+  display: flex;
+  height: 100vh;
   min-width: 0;
+  flex-direction: column;
 }
 
 .workspace:focus {
@@ -427,8 +446,14 @@ input {
 }
 
 .workspace-scroll {
-  height: calc(100vh - 52px);
+  min-height: 0;
+  flex: 1;
   overflow: auto;
+}
+
+.update-banner {
+  flex: 0 0 auto;
+  border-radius: 0;
 }
 
 .page {
@@ -493,6 +518,20 @@ input {
 .status-band svg {
   color: var(--success);
   font-size: 18px;
+}
+
+.status-band .connection-state.offline svg,
+.status-band .connection-state.offline strong,
+.status-band .connection-state.tls_error svg,
+.status-band .connection-state.tls_error strong,
+.status-band .connection-state.incompatible svg,
+.status-band .connection-state.incompatible strong {
+  color: var(--error);
+}
+
+.status-band .connection-state.not_ready svg,
+.status-band .connection-state.not_ready strong {
+  color: var(--warning);
 }
 
 .status-band span,
@@ -637,6 +676,110 @@ input {
   margin-bottom: 16px;
 }
 
+.network-connection-panel {
+  display: grid;
+  max-width: 760px;
+  gap: 24px;
+  margin: 4px auto 0;
+}
+
+.network-medium-switch {
+  width: 360px;
+  justify-self: center;
+}
+
+.network-mode-segmented {
+  box-shadow: 0 4px 14px rgb(15 23 42 / 8%);
+}
+
+.network-connect-control {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding-top: 16px;
+}
+
+.network-connect-button.ant-btn {
+  width: 136px;
+  height: 136px;
+  border-width: 2px;
+  box-shadow: 0 12px 30px rgb(15 23 42 / 12%);
+  font-size: 44px;
+}
+
+.network-connect-button[aria-pressed="true"] {
+  box-shadow: 0 14px 34px color-mix(in srgb, var(--primary) 30%, transparent);
+}
+
+.network-wifi-select {
+  width: min(420px, 100%);
+  justify-self: center;
+}
+
+.network-wired-target {
+  width: min(420px, 100%);
+  justify-self: center;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  text-align: center;
+}
+
+.network-wired-target strong,
+.network-wired-target span {
+  display: block;
+}
+
+.network-wired-target span {
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.network-link-details {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.network-link-details > div {
+  min-width: 0;
+  padding: 14px 18px;
+}
+
+.network-link-details > div + div {
+  border-left: 1px solid var(--border);
+}
+
+.network-link-details dt {
+  margin-bottom: 4px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.network-link-details dd {
+  margin: 0;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-subsection {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+
+.settings-subsection .ant-select {
+  min-width: 220px;
+}
+
 .ant-modal-body > .ant-alert {
   margin-bottom: 18px;
 }
@@ -650,7 +793,14 @@ input {
   gap: 10px;
 }
 
-.portal-toolbar > .ant-input-affix-wrapper {
+.portal-toolbar-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.portal-toolbar-main > .ant-input-affix-wrapper {
   max-width: 360px;
 }
 
@@ -664,15 +814,15 @@ input {
   margin-top: 28px;
 }
 
-.portal-section > h2 {
-  margin: 0 0 14px;
-  font-size: 16px;
-}
-
 .portal-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: 14px;
+}
+
+.portal-grid.compact {
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 10px;
 }
 
 .portal-card {
@@ -686,11 +836,23 @@ input {
   background: var(--surface);
 }
 
+.portal-card.compact {
+  min-height: 112px;
+  grid-template-rows: auto auto;
+  gap: 10px;
+  padding: 12px;
+}
+
 .portal-card header {
   display: grid;
   grid-template-columns: 40px minmax(0, 1fr) 32px;
   align-items: center;
   gap: 10px;
+}
+
+.portal-card.compact header {
+  grid-template-columns: 32px minmax(0, 1fr) 32px;
+  gap: 8px;
 }
 
 .portal-card header span,
@@ -707,8 +869,7 @@ input {
 }
 
 .portal-card header small,
-.portal-card p,
-.portal-recent-list small {
+.portal-card p {
   color: var(--text-muted);
 }
 
@@ -725,30 +886,6 @@ input {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-}
-
-.portal-summary-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(260px, .65fr);
-  gap: 28px;
-}
-
-.portal-recent-list {
-  border-top: 1px solid var(--border);
-}
-
-.portal-recent-list button {
-  display: flex;
-  width: 100%;
-  min-height: 48px;
-  align-items: center;
-  justify-content: space-between;
-  border: 0;
-  border-bottom: 1px solid var(--border);
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  text-align: left;
 }
 
 .portal-detail {
@@ -780,11 +917,6 @@ input {
 
   .page {
     width: calc(100% - 40px);
-  }
-
-  .portal-summary-grid {
-    grid-template-columns: 1fr;
-    gap: 0;
   }
 }
 

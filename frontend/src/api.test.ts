@@ -1,13 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   changePassword,
+  createNetworkAccessGrant,
   getBootstrap,
+  getNetworkConnectionOptions,
   getPortalApplication,
   getPortalBootstrap,
   launchPortalApplication,
   loginWithProvider,
   loginWithPassword,
   logoutServer,
+  registerEndpointDevice,
   setAccessToken,
   setPortalFavorite,
   setSessionListener,
@@ -15,9 +18,14 @@ import {
 } from '@/api'
 import {
   checkForUpdates,
+  connectNetwork,
+  disconnectNetwork,
+  getUpdateStatus,
   getHostState,
+  getNetworkStatus,
   getSoftwareTask,
   installSoftware,
+  installUpdate,
   listSoftware,
   openBrowserURL,
   wailsRequestBodyHeader,
@@ -67,6 +75,77 @@ describe('API transport', () => {
     expect(path).toBe('/api/v1/auth/login')
     expect(decodedRequestBody(init)).toBe('{"login":"opensoha","password":"secret-password"}')
     expect(new Headers(init.headers).get('Content-Type')).toBe('application/json')
+  })
+
+  it('registers the local endpoint with the authenticated session', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ data: {} }))
+    vi.stubGlobal('fetch', fetchMock)
+    setAccessToken('device-access')
+
+    await registerEndpointDevice('endpoint-mac-1', {
+      name: 'MacBook Pro',
+      hostname: 'macbook.local',
+      platform: 'darwin',
+      deviceType: 'laptop',
+      reportedFacts: {
+        osName: 'macOS',
+        osVersion: '15.6.1',
+        architecture: 'arm64',
+        agentVersion: '0.2.0',
+        collectedAt: '2026-09-03T09:00:00Z',
+        networkInterfaces: [],
+      },
+    })
+
+    const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(path).toBe('/api/v1/network-access/devices/endpoint-mac-1/registration')
+    expect(init.method).toBe('PUT')
+    expect(new Headers(init.headers).get('Authorization')).toBe('Bearer device-access')
+    expect(JSON.parse(decodedRequestBody(init))).toEqual({
+      name: 'MacBook Pro',
+      hostname: 'macbook.local',
+      platform: 'darwin',
+      deviceType: 'laptop',
+      reportedFacts: {
+        osName: 'macOS',
+        osVersion: '15.6.1',
+        architecture: 'arm64',
+        agentVersion: '0.2.0',
+        collectedAt: '2026-09-03T09:00:00Z',
+        networkInterfaces: [],
+      },
+    })
+  })
+
+  it('loads only typed Wi-Fi and wired connection options for the local endpoint', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({
+      items: [
+        {
+          siteId: 'site-1',
+          siteName: 'Shanghai HQ',
+          accessMedium: 'wifi',
+          ssid: 'Soha-Staff',
+          authentication: 'radius_802_1x',
+          accessProfile: 'full',
+          policyVersion: 7,
+        },
+        {
+          siteId: 'site-1',
+          siteName: 'Shanghai HQ',
+          accessMedium: 'wired',
+          authentication: 'radius_802_1x',
+          accessProfile: 'restricted',
+          policyVersion: 7,
+        },
+      ],
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    setAccessToken('device-access')
+
+    await expect(getNetworkConnectionOptions('endpoint-mac-1')).resolves.toHaveLength(2)
+    const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(path).toBe('/api/v1/network-access/connection-options?deviceId=endpoint-mac-1')
+    expect(new Headers(init.headers).get('Authorization')).toBe('Bearer device-access')
   })
 
   it('keeps password login JSON in the standard HTTP request body', async () => {
@@ -240,6 +319,78 @@ describe('API transport', () => {
     })
   })
 
+  it('uses direct host contracts for network status and actions', async () => {
+    const disconnected = {
+      state: 'disconnected' as const,
+      runtimeId: 'endpoint-1',
+      deviceId: 'device-1',
+      configurationVersion: 0,
+      policyVersion: 0,
+      uptimeSeconds: 10,
+    }
+    const connected = {
+      ...disconnected,
+      state: 'connected' as const,
+      siteId: 'site-1',
+      networkSpaceId: 'space-1',
+      sessionId: 'session-1',
+    }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(disconnected))
+      .mockResolvedValueOnce(jsonResponse(connected))
+      .mockResolvedValueOnce(jsonResponse(disconnected))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(getNetworkStatus()).resolves.toEqual(disconnected)
+		await expect(connectNetwork({ siteId: 'site-1', networkSpaceId: 'space-1', gatewayId: 'gateway-b', mode: 'internal_ztna', resourceIds: ['resource-db'], accessGrantId: 'grant-1', accessGrantToken: 'grant-token' })).resolves.toEqual(connected)
+    await expect(disconnectNetwork()).resolves.toEqual(disconnected)
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/app/v1/network/status')
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('/app/v1/network/connect')
+    expect(decodedRequestBody(fetchMock.mock.calls[1]?.[1] as RequestInit))
+			.toBe('{"siteId":"site-1","networkSpaceId":"space-1","gatewayId":"gateway-b","mode":"internal_ztna","resourceIds":["resource-db"],"accessGrantId":"grant-1","accessGrantToken":"grant-token"}')
+    expect(fetchMock.mock.calls[2]?.[0]).toBe('/app/v1/network/disconnect')
+    expect(decodedRequestBody(fetchMock.mock.calls[2]?.[1] as RequestInit)).toBe('{}')
+  })
+
+  it('creates a short-lived network access grant through the authenticated management API', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({
+      data: {
+        grant: {
+          id: 'grant-1',
+          subjectId: 'user-1',
+          deviceId: 'device-1',
+          siteId: 'site-1',
+          networkSpaceId: 'space-1',
+          mode: 'internal_ztna',
+          resourceIds: ['resource-db'],
+          policyVersion: 7,
+          status: 'issued',
+          createdBy: 'user-1',
+          createdAt: '2026-09-03T00:00:00Z',
+          expiresAt: '2026-09-03T00:05:00Z',
+        },
+        token: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+      },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    setAccessToken('access-token')
+
+    await expect(createNetworkAccessGrant({
+      deviceId: 'device-1',
+      siteId: 'site-1',
+      networkSpaceId: 'space-1',
+      mode: 'internal_ztna',
+      resourceIds: ['resource-db'],
+      ttlSeconds: 300,
+    })).resolves.toMatchObject({ token: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', grant: { id: 'grant-1' } })
+
+    const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(path).toBe('/api/v1/network-access/access-grants')
+    expect(new Headers(init.headers).get('Authorization')).toBe('Bearer access-token')
+    expect(decodedRequestBody(init)).toBe('{"deviceId":"device-1","siteId":"site-1","networkSpaceId":"space-1","mode":"internal_ztna","resourceIds":["resource-db"],"ttlSeconds":300}')
+  })
+
   it('uses the authenticated profile, password, and logout contracts', async () => {
     const profile = {
       userId: 'user-1',
@@ -308,19 +459,38 @@ describe('API transport', () => {
     }
   })
 
-  it('checks for desktop updates through the runtime endpoint', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ message: '更新检查已完成' }))
+  it('reads, checks, and explicitly installs desktop updates through separate runtime endpoints', async () => {
+    const status = {
+      supported: true,
+      installMode: 'self' as const,
+      state: 'available',
+      currentVersion: '0.2.0',
+      availableVersion: '0.2.1',
+      downloadMode: 'delta' as const,
+    }
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse(status)))
     vi.stubGlobal('fetch', fetchMock)
 
-    await expect(checkForUpdates()).resolves.toEqual({ message: '更新检查已完成' })
+    await expect(getUpdateStatus()).resolves.toEqual(status)
+    await expect(checkForUpdates()).resolves.toEqual(status)
+    await expect(installUpdate()).resolves.toEqual(status)
 
-    expect(fetchMock).toHaveBeenCalledOnce()
-    expect(fetchMock).toHaveBeenCalledWith('/app/v1/updates/check', expect.objectContaining({
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/app/v1/updates/status', expect.objectContaining({
+      credentials: 'include',
+    }))
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/app/v1/updates/check', expect.objectContaining({
       credentials: 'include',
       method: 'POST',
     }))
-    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(decodedRequestBody(init)).toBe('{}')
+    expect(fetchMock).toHaveBeenNthCalledWith(3, '/app/v1/updates/install', expect.objectContaining({
+      credentials: 'include',
+      method: 'POST',
+    }))
+    for (const call of fetchMock.mock.calls.slice(1)) {
+      const [, init] = call as [string, RequestInit]
+      expect(decodedRequestBody(init)).toBe('{}')
+    }
   })
 
   it('preserves runtime update errors and request IDs', async () => {

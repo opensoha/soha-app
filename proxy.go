@@ -54,13 +54,17 @@ type connectionCheck struct {
 }
 
 type AppInfo struct {
-	Name            string `json:"name"`
-	Version         string `json:"version"`
-	Platform        string `json:"platform"`
-	Arch            string `json:"arch"`
-	LogDirectory    string `json:"logDirectory"`
-	UpdateSupported bool   `json:"updateSupported"`
-	UpdateState     string `json:"updateState,omitempty"`
+	Name            string                       `json:"name"`
+	Version         string                       `json:"version"`
+	Platform        string                       `json:"platform"`
+	Arch            string                       `json:"arch"`
+	DeviceID        string                       `json:"deviceId,omitempty"`
+	Hostname        string                       `json:"hostname,omitempty"`
+	DeviceType      string                       `json:"deviceType,omitempty"`
+	ReportedFacts   *EndpointDeviceReportedFacts `json:"reportedFacts,omitempty"`
+	LogDirectory    string                       `json:"logDirectory"`
+	UpdateSupported bool                         `json:"updateSupported"`
+	UpdateState     string                       `json:"updateState,omitempty"`
 }
 
 type hostState struct {
@@ -910,7 +914,7 @@ func setStaticSecurityHeaders(header http.Header) {
 		"default-src 'self'",
 		scriptSource,
 		"style-src 'self' 'unsafe-inline'",
-		"img-src 'self' data: https:",
+		"img-src 'self' data: https: http://127.0.0.1:* http://[::1]:*",
 		"font-src 'self' data:",
 		connectSource,
 		"frame-src 'none'",

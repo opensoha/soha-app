@@ -8,6 +8,7 @@ import { App as AntApp } from 'antd'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PortalApplicationPage, PortalPage } from '@/portal-pages'
 import {
+  ApiError,
   getPortalApplication,
   getPortalBootstrap,
   launchPortalApplication,
@@ -17,6 +18,16 @@ import { openBrowserURL } from '@/native/host'
 import { useAppStore } from '@/store'
 
 vi.mock('@/api', () => ({
+  ApiError: class ApiError extends Error {
+    constructor(
+      readonly status: number,
+      readonly code: string,
+      message: string,
+      readonly requestId?: string,
+    ) {
+      super(message)
+    }
+  },
   getPortalApplication: vi.fn(),
   getPortalBootstrap: vi.fn(),
   launchPortalApplication: vi.fn(),
@@ -40,6 +51,13 @@ const application = {
   createdAt: '2026-08-31T01:00:00Z',
   updatedAt: '2026-08-31T01:00:00Z',
 }
+const favoriteApplication = {
+  ...application,
+  id: 'app-2',
+  slug: 'favorite-console',
+  name: 'Favorite Console',
+  favorite: true,
+}
 const bootstrap = {
   principal: {
     userId: 'user-1',
@@ -50,8 +68,8 @@ const bootstrap = {
     projects: [],
     tags: [],
   },
-  applications: [application],
-  favorites: [],
+  applications: [application, favoriteApplication],
+  favorites: [favoriteApplication],
   recent: [],
   categories: ['console', 'oidc'],
   security: {
@@ -135,6 +153,7 @@ beforeEach(() => {
       },
     },
     locale: 'zh_CN',
+    portalCardSize: 'standard',
   })
 })
 
@@ -150,6 +169,8 @@ describe('desktop provider portal', () => {
     const container = await renderPortal()
     expect(getPortalBootstrap).toHaveBeenCalledOnce()
     await waitForText(container, 'Soha Console')
+    expect(container.querySelector('.page-heading')).toBeNull()
+    expect(container.querySelector('h1.visually-hidden')?.textContent).toBe('应用门户')
 
     const search = container.querySelector<HTMLInputElement>('input[placeholder="搜索应用"]')
     await act(async () => {
@@ -176,6 +197,71 @@ describe('desktop provider portal', () => {
     expect(container.textContent).not.toContain('Operations console')
   })
 
+  it('fills missing provider groups and resolves application image links safely', async () => {
+    const platformApplication = {
+      ...application,
+      category: 'Platform',
+      iconUrl: '/assets/console.png',
+      providerType: 'link' as const,
+    }
+    const oidcApplication = {
+      ...favoriteApplication,
+      category: '',
+      iconUrl: 'data:image/png;base64,iVBORw==',
+      name: 'OIDC Application',
+      providerType: 'oidc' as const,
+    }
+    const proxyApplication = {
+      ...application,
+      id: 'app-3',
+      category: '',
+      iconUrl: 'javascript:alert(1)',
+      name: 'Proxy Application',
+      providerType: 'proxy' as const,
+    }
+    vi.mocked(getPortalBootstrap).mockResolvedValueOnce({
+      ...bootstrap,
+      applications: [platformApplication, oidcApplication, proxyApplication],
+      categories: ['Platform'],
+      favorites: [oidcApplication],
+    })
+
+    const container = await renderPortal()
+    await waitForText(container, 'Proxy Application')
+
+    const group = container.querySelector<HTMLElement>('[role="group"][aria-label="分组"]')
+    const labels = [...(group?.querySelectorAll('button') || [])]
+      .map((button) => button.textContent?.replace(/ /g, ''))
+    expect(labels).toEqual(expect.arrayContaining(['全部', 'Platform', 'oidc', 'proxy']))
+    expect(container.querySelector<HTMLImageElement>('img[alt="Soha Console"]')?.src)
+      .toBe('https://soha.example.com/assets/console.png')
+    expect(container.querySelector<HTMLImageElement>('img[alt="OIDC Application"]')?.src)
+      .toBe('data:image/png;base64,iVBORw==')
+    expect(container.querySelector('img[alt="Proxy Application"]')).toBeNull()
+
+    const oidc = [...(group?.querySelectorAll('button') || [])]
+      .find((button) => button.textContent === 'oidc')
+    await act(async () => oidc?.click())
+
+    const cards = [...container.querySelectorAll<HTMLElement>('.portal-card')]
+    expect(cards).toHaveLength(1)
+    expect(cards[0]?.textContent).toContain('OIDC Application')
+  })
+
+  it('shows a localized error state when the Server is unreachable', async () => {
+    vi.mocked(getPortalBootstrap).mockRejectedValueOnce(
+      new ApiError(0, 'network_error', 'Soha server is unavailable'),
+    )
+
+    const container = await renderPortal()
+    await waitForText(container, '无法连接服务')
+
+    expect(container.textContent).toContain('确认服务已启动且网络可达后重试。')
+    expect(container.textContent).not.toContain('暂无应用')
+    expect(container.querySelector('.ant-alert-error')).not.toBeNull()
+    expect(container.querySelector('.page-heading')).toBeNull()
+  })
+
   it('persists favorites through the Server', async () => {
     const container = await renderPortal()
     await waitForText(container, 'Soha Console')
@@ -184,6 +270,33 @@ describe('desktop provider portal', () => {
     await act(async () => favorite?.click())
 
     expect(setPortalFavorite).toHaveBeenCalledWith('app-1', true)
+  })
+
+  it('switches between all applications and favorites without secondary summaries', async () => {
+    const container = await renderPortal()
+    await waitForText(container, 'Favorite Console')
+
+    expect(container.textContent).toContain('Soha Console')
+    expect(container.textContent).not.toContain('最近访问')
+    expect(container.textContent).not.toContain('账号安全')
+
+    const favorites = [...container.querySelectorAll<HTMLElement>('.ant-segmented-item')]
+      .find((item) => item.textContent?.includes('收藏'))
+    await act(async () => favorites?.click())
+
+    expect(container.textContent).toContain('Favorite Console')
+    expect(container.textContent).not.toContain('Soha Console')
+  })
+
+  it('uses the card size selected in Settings without showing a portal control', async () => {
+    useAppStore.setState({ portalCardSize: 'compact' })
+    const container = await renderPortal()
+    await waitForText(container, 'Soha Console')
+
+    const grid = container.querySelector<HTMLElement>('.portal-grid')
+    expect(container.querySelector('[aria-label="卡片尺寸"]')).toBeNull()
+    expect(grid?.classList.contains('compact')).toBe(true)
+    expect(container.textContent).not.toContain('Operations console')
   })
 
   it('launches desktop surface and opens only the returned same-origin handoff URL', async () => {

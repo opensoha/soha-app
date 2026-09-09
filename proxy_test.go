@@ -171,6 +171,11 @@ func TestStaticSecurityHeadersOnlyRelaxForFrontendDevServer(t *testing.T) {
 		strings.Contains(productionCSP, "script-src 'self' 'unsafe-eval'") {
 		t.Fatalf("production CSP permits unsafe scripts: %q", productionCSP)
 	}
+	for _, required := range []string{"http://127.0.0.1:*", "http://[::1]:*"} {
+		if !strings.Contains(productionCSP, required) {
+			t.Fatalf("production CSP %q is missing local image source %q", productionCSP, required)
+		}
+	}
 
 	t.Setenv("FRONTEND_DEVSERVER_URL", "http://localhost:9245")
 	development := make(http.Header)

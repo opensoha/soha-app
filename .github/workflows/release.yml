@@ -1,0 +1,575 @@
+name: app-release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Internal test version, for example 0.2.0-test.2'
+        required: true
+        default: '0.2.0-test.2'
+      previous_run_id:
+        description: 'Optional successful test run containing the previous release-bundle artifact'
+        required: false
+        default: ''
+
+concurrency:
+  group: soha-app-release-${{ github.ref }}-${{ inputs.version || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  prepare:
+    name: Verify release input and create draft
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      channel: ${{ steps.release.outputs.channel }}
+      mode: ${{ steps.release.outputs.mode }}
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.26.6'
+          cache: true
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Resolve and validate release input
+        id: release
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE}" == 'tag' ]]; then
+            [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+            version="${GITHUB_REF_NAME#v}"
+            tag="${GITHUB_REF_NAME}"
+            channel='stable'
+            mode='production'
+          else
+            version="${INPUT_VERSION}"
+            [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+-test\.[0-9]+$ ]] || exit 1
+            tag="v${version}"
+            channel='test'
+            mode='test'
+          fi
+          base_version="${version%%-*}"
+          go run ./tools/updaterelease check-version --root . --version "${base_version}"
+          {
+            echo "version=${version}"
+            echo "tag=${tag}"
+            echo "channel=${channel}"
+            echo "mode=${mode}"
+          } >> "${GITHUB_OUTPUT}"
+      - name: Require channel signing credentials
+        shell: bash
+        env:
+          PROD_PRIVATE_KEY: ${{ steps.release.outputs.channel == 'stable' && secrets.SOHA_UPDATE_ED25519_PRIVATE_KEY_BASE64 || '' }}
+          PROD_PUBLIC_KEY: ${{ steps.release.outputs.channel == 'stable' && secrets.SOHA_UPDATE_ED25519_PUBLIC_KEY_BASE64 || '' }}
+          TEST_PRIVATE_KEY: ${{ steps.release.outputs.channel == 'test' && secrets.SOHA_TEST_UPDATE_ED25519_PRIVATE_KEY_BASE64 || '' }}
+          TEST_PUBLIC_KEY: ${{ steps.release.outputs.channel == 'test' && secrets.SOHA_TEST_UPDATE_ED25519_PUBLIC_KEY_BASE64 || '' }}
+          WINDOWS_PFX: ${{ steps.release.outputs.channel == 'stable' && secrets.SOHA_WINDOWS_CERTIFICATE_PFX_BASE64 || '' }}
+          WINDOWS_PFX_PASSWORD: ${{ steps.release.outputs.channel == 'stable' && secrets.SOHA_WINDOWS_CERTIFICATE_PASSWORD || '' }}
+          MACOS_P12: ${{ steps.release.outputs.channel == 'stable' && secrets.SOHA_MACOS_CERTIFICATE_P12_BASE64 || '' }}
+          MACOS_P12_PASSWORD: ${{ steps.release.outputs.channel == 'stable' && secrets.SOHA_MACOS_CERTIFICATE_PASSWORD || '' }}
+          MACOS_IDENTITY: ${{ steps.release.outputs.channel == 'stable' && secrets.SOHA_MACOS_SIGNING_IDENTITY || '' }}
+          MACOS_NOTARY_KEY: ${{ steps.release.outputs.channel == 'stable' && secrets.SOHA_MACOS_NOTARY_KEY_P8_BASE64 || '' }}
+          MACOS_NOTARY_KEY_ID: ${{ steps.release.outputs.channel == 'stable' && secrets.SOHA_MACOS_NOTARY_KEY_ID || '' }}
+          MACOS_NOTARY_ISSUER: ${{ steps.release.outputs.channel == 'stable' && secrets.SOHA_MACOS_NOTARY_ISSUER_ID || '' }}
+        run: |
+          set -euo pipefail
+          if [[ '${{ steps.release.outputs.channel }}' == 'stable' ]]; then
+            required=(
+              PROD_PRIVATE_KEY PROD_PUBLIC_KEY WINDOWS_PFX WINDOWS_PFX_PASSWORD
+              MACOS_P12 MACOS_P12_PASSWORD MACOS_IDENTITY MACOS_NOTARY_KEY
+              MACOS_NOTARY_KEY_ID MACOS_NOTARY_ISSUER
+            )
+          else
+            required=(TEST_PRIVATE_KEY TEST_PUBLIC_KEY)
+          fi
+          for variable in "${required[@]}"; do
+            if [[ -z "${!variable:-}" ]]; then
+              echo "::error::Required release credential ${variable} is not configured"
+              exit 1
+            fi
+          done
+          private_key="${PROD_PRIVATE_KEY}"
+          public_key="${PROD_PUBLIC_KEY}"
+          if [[ '${{ steps.release.outputs.channel }}' == 'test' ]]; then
+            private_key="${TEST_PRIVATE_KEY}"
+            public_key="${TEST_PUBLIC_KEY}"
+          fi
+          private_size="$(printf '%s' "${private_key}" | base64 --decode | wc -c | tr -d ' ')"
+          public_size="$(printf '%s' "${public_key}" | base64 --decode | wc -c | tr -d ' ')"
+          [[ "${private_size}" == '32' || "${private_size}" == '64' ]]
+          [[ "${public_size}" == '32' ]]
+      - name: Verify source and frontend
+        env:
+          GOWORK: 'off'
+        run: |
+          go mod verify
+          go test ./...
+          go vet ./...
+          cd frontend
+          npm ci
+          npm run lint
+          npm test
+          npm run build
+      - name: Create stable draft release
+        if: steps.release.outputs.channel == 'stable'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag='${{ steps.release.outputs.tag }}'
+          if gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            state="$(gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" --json isDraft --jq .isDraft)"
+            [[ "${state}" == 'true' ]]
+          else
+            gh release create "${tag}" --repo "${GITHUB_REPOSITORY}" --verify-tag --draft --title "${tag}" --generate-notes
+          fi
+
+  windows:
+    name: Windows amd64 release assets
+    needs: prepare
+    runs-on: windows-latest
+    env:
+      GOWORK: 'off'
+      MODE: ${{ needs.prepare.outputs.mode }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      PROD_PUBLIC_KEY: ${{ secrets.SOHA_UPDATE_ED25519_PUBLIC_KEY_BASE64 }}
+      TEST_PUBLIC_KEY: ${{ secrets.SOHA_TEST_UPDATE_ED25519_PUBLIC_KEY_BASE64 }}
+      WINDOWS_PFX: ${{ secrets.SOHA_WINDOWS_CERTIFICATE_PFX_BASE64 }}
+      WINDOWS_PFX_PASSWORD: ${{ secrets.SOHA_WINDOWS_CERTIFICATE_PASSWORD }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.26.6'
+          cache: true
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install build tools
+        shell: pwsh
+        run: |
+          choco install nsis --no-progress --yes
+          go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.16
+          npm ci --prefix frontend
+      - name: Build, sign, and package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $publicKey = $env:PROD_PUBLIC_KEY
+          if ($env:MODE -eq 'test') { $publicKey = $env:TEST_PUBLIC_KEY }
+          $ldflags = "-X main.appBuildVersion=$env:VERSION -X main.appUpdateMode=$env:MODE -X main.appUpdatePublicKey=$publicKey"
+          wails3 task build GOOS=windows ARCH=amd64 "RELEASE_LDFLAGS=$ldflags" "SERVICE_LDFLAGS=-X main.serviceVersion=$env:VERSION"
+
+          $certificate = $null
+          try {
+            if ($env:MODE -eq 'production') {
+              $pfxPath = Join-Path $env:RUNNER_TEMP 'soha-release.pfx'
+              [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:WINDOWS_PFX))
+              $password = ConvertTo-SecureString $env:WINDOWS_PFX_PASSWORD -AsPlainText -Force
+              $certificate = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $password
+              $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName | Select-Object -Last 1
+              if ($null -eq $signtool) { throw 'signtool.exe was not found' }
+              & $signtool.FullName sign /sha1 $certificate.Thumbprint /fd SHA256 /tr 'http://timestamp.digicert.com' /td SHA256 'bin/soha-app.exe'
+              & $signtool.FullName sign /sha1 $certificate.Thumbprint /fd SHA256 /tr 'http://timestamp.digicert.com' /td SHA256 'bin/soha-app-service.exe'
+            }
+
+            wails3 generate webview2bootstrapper -dir build/windows/nsis
+            Push-Location build/windows/nsis
+            try {
+              makensis "-DARG_WAILS_AMD64_BINARY=$((Resolve-Path '../../../bin/soha-app.exe').Path)" "-DARG_SOHA_SERVICE_BINARY=$((Resolve-Path '../../../bin/soha-app-service.exe').Path)" project.nsi
+            } finally {
+              Pop-Location
+            }
+
+            if ($env:MODE -eq 'production') {
+              & $signtool.FullName sign /sha1 $certificate.Thumbprint /fd SHA256 /tr 'http://timestamp.digicert.com' /td SHA256 'bin/soha-app-amd64-installer.exe'
+            }
+          } finally {
+            Remove-Item (Join-Path $env:RUNNER_TEMP 'soha-release.pfx') -Force -ErrorAction SilentlyContinue
+            if ($null -ne $certificate) { Remove-Item "Cert:\CurrentUser\My\$($certificate.Thumbprint)" -Force }
+          }
+
+          New-Item -ItemType Directory -Path release | Out-Null
+          Copy-Item 'bin/soha-app.exe' "release/soha-app-v$env:VERSION-windows-amd64.exe"
+          Copy-Item 'bin/soha-app-service.exe' "release/soha-app-service-v$env:VERSION-windows-amd64.exe"
+          Copy-Item 'bin/soha-app-amd64-installer.exe' "release/soha-app-v$env:VERSION-windows-amd64-installer.exe"
+          foreach ($asset in Get-ChildItem release/*.exe) {
+            if ($asset.Length -le 0) { throw "$($asset.Name) is empty" }
+            $status = (Get-AuthenticodeSignature $asset.FullName).Status
+            if ($env:MODE -eq 'production' -and $status -ne 'Valid') { throw "$($asset.Name) signature is $status" }
+            if ($env:MODE -eq 'test' -and $status -ne 'NotSigned') { throw "$($asset.Name) unexpectedly has signature status $status" }
+          }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-windows
+          path: release/*
+          if-no-files-found: error
+          retention-days: 14
+
+  macos:
+    name: macOS arm64 release assets
+    needs: prepare
+    runs-on: macos-latest
+    env:
+      GOWORK: 'off'
+      MODE: ${{ needs.prepare.outputs.mode }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      PROD_PUBLIC_KEY: ${{ secrets.SOHA_UPDATE_ED25519_PUBLIC_KEY_BASE64 }}
+      TEST_PUBLIC_KEY: ${{ secrets.SOHA_TEST_UPDATE_ED25519_PUBLIC_KEY_BASE64 }}
+      MACOS_P12: ${{ secrets.SOHA_MACOS_CERTIFICATE_P12_BASE64 }}
+      MACOS_P12_PASSWORD: ${{ secrets.SOHA_MACOS_CERTIFICATE_PASSWORD }}
+      MACOS_IDENTITY: ${{ secrets.SOHA_MACOS_SIGNING_IDENTITY }}
+      MACOS_NOTARY_KEY: ${{ secrets.SOHA_MACOS_NOTARY_KEY_P8_BASE64 }}
+      MACOS_NOTARY_KEY_ID: ${{ secrets.SOHA_MACOS_NOTARY_KEY_ID }}
+      MACOS_NOTARY_ISSUER: ${{ secrets.SOHA_MACOS_NOTARY_ISSUER_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.26.6'
+          cache: true
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install build tools
+        run: |
+          go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.16
+          npm ci --prefix frontend
+      - name: Build, sign, notarize, and package
+        shell: bash
+        run: |
+          set -euo pipefail
+          public_key="${PROD_PUBLIC_KEY}"
+          if [[ "${MODE}" == 'test' ]]; then public_key="${TEST_PUBLIC_KEY}"; fi
+          ldflags="-X main.appBuildVersion=${VERSION} -X main.appUpdateMode=${MODE} -X main.appUpdatePublicKey=${public_key}"
+          wails3 task darwin:package ARCH=arm64 RELEASE_LDFLAGS="${ldflags}"
+          mkdir -p release
+          zip_path="release/soha-app-v${VERSION}-darwin-arm64.zip"
+
+          keychain=''
+          cleanup() {
+            rm -f "${RUNNER_TEMP}/soha-release.p12" "${RUNNER_TEMP}/AuthKey.p8"
+            if [[ -n "${keychain}" ]]; then security delete-keychain "${keychain}" || true; fi
+          }
+          trap cleanup EXIT
+          if [[ "${MODE}" == 'production' ]]; then
+            keychain="${RUNNER_TEMP}/soha-release.keychain-db"
+            printf '%s' "${MACOS_P12}" | base64 --decode > "${RUNNER_TEMP}/soha-release.p12"
+            printf '%s' "${MACOS_NOTARY_KEY}" | base64 --decode > "${RUNNER_TEMP}/AuthKey.p8"
+            security create-keychain -p temporary "${keychain}"
+            security set-keychain-settings -lut 21600 "${keychain}"
+            security unlock-keychain -p temporary "${keychain}"
+            security import "${RUNNER_TEMP}/soha-release.p12" -k "${keychain}" -P "${MACOS_P12_PASSWORD}" -T /usr/bin/codesign
+            security list-keychains -d user -s "${keychain}" login.keychain-db
+            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k temporary "${keychain}"
+            codesign --force --deep --options runtime --timestamp --sign "${MACOS_IDENTITY}" bin/soha-app.app
+          fi
+
+          ditto -c -k --keepParent bin/soha-app.app "${zip_path}"
+          if [[ "${MODE}" == 'production' ]]; then
+            xcrun notarytool submit "${zip_path}" --key "${RUNNER_TEMP}/AuthKey.p8" --key-id "${MACOS_NOTARY_KEY_ID}" --issuer "${MACOS_NOTARY_ISSUER}" --wait
+            xcrun stapler staple bin/soha-app.app
+            rm "${zip_path}"
+            ditto -c -k --keepParent bin/soha-app.app "${zip_path}"
+          fi
+
+          wails3 task darwin:create:dmg
+          dmg_source="$(find bin -maxdepth 1 -type f -name '*.dmg' -print -quit)"
+          test -n "${dmg_source}"
+          dmg_path="release/soha-app-v${VERSION}-darwin-arm64.dmg"
+          mv "${dmg_source}" "${dmg_path}"
+          if [[ "${MODE}" == 'production' ]]; then
+            xcrun notarytool submit "${dmg_path}" --key "${RUNNER_TEMP}/AuthKey.p8" --key-id "${MACOS_NOTARY_KEY_ID}" --issuer "${MACOS_NOTARY_ISSUER}" --wait
+            xcrun stapler staple "${dmg_path}"
+            xcrun stapler validate bin/soha-app.app
+            xcrun stapler validate "${dmg_path}"
+            spctl --assess --type execute --verbose=4 bin/soha-app.app
+          fi
+          codesign --verify --deep --strict bin/soha-app.app
+          hdiutil verify "${dmg_path}"
+          rm -rf "${RUNNER_TEMP}/zip-check"
+          mkdir -p "${RUNNER_TEMP}/zip-check"
+          ditto -x -k "${zip_path}" "${RUNNER_TEMP}/zip-check"
+          test -x "${RUNNER_TEMP}/zip-check/soha-app.app/Contents/MacOS/soha-app"
+          codesign --verify --deep --strict "${RUNNER_TEMP}/zip-check/soha-app.app"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-macos
+          path: release/*
+          if-no-files-found: error
+          retention-days: 14
+
+  linux:
+    name: Linux amd64 release asset
+    needs: prepare
+    runs-on: ubuntu-24.04
+    env:
+      GOWORK: 'off'
+      MODE: ${{ needs.prepare.outputs.mode }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      PROD_PUBLIC_KEY: ${{ secrets.SOHA_UPDATE_ED25519_PUBLIC_KEY_BASE64 }}
+      TEST_PUBLIC_KEY: ${{ secrets.SOHA_TEST_UPDATE_ED25519_PUBLIC_KEY_BASE64 }}
+      GIT_COMMITTER_NAME: OpenSoha
+      GIT_COMMITTER_EMAIL: maintainers@opensoha.dev
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.26.6'
+          cache: true
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libgtk-4-dev libwebkitgtk-6.0-dev
+          go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.16
+          npm ci --prefix frontend
+      - name: Build and package
+        shell: bash
+        run: |
+          set -euo pipefail
+          public_key="${PROD_PUBLIC_KEY}"
+          if [[ "${MODE}" == 'test' ]]; then public_key="${TEST_PUBLIC_KEY}"; fi
+          sed -E -i "s/^version: \"[^\"]+\"/version: \"${VERSION}\"/" build/linux/nfpm/nfpm.yaml
+          ldflags="-X main.appBuildVersion=${VERSION} -X main.appUpdateMode=${MODE} -X main.appUpdatePublicKey=${public_key}"
+          wails3 task linux:create:deb ARCH=amd64 RELEASE_LDFLAGS="${ldflags}"
+          deb="$(find bin -maxdepth 1 -type f -name '*.deb' -print -quit)"
+          test -n "${deb}"
+          test "$(dpkg-deb --field "${deb}" Version)" = "${VERSION}"
+          test "$(dpkg-deb --field "${deb}" Architecture)" = 'amd64'
+          mkdir -p release
+          cp "${deb}" "release/soha-app-v${VERSION}-linux-amd64.deb"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-linux
+          path: release/*
+          if-no-files-found: error
+          retention-days: 14
+
+  assemble:
+    name: Sign manifest and assemble release
+    needs: [prepare, windows, macos, linux]
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: write
+    env:
+      CHANNEL: ${{ needs.prepare.outputs.channel }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      PREVIOUS_RUN_ID: ${{ inputs.previous_run_id }}
+      PROD_PRIVATE_KEY: ${{ secrets.SOHA_UPDATE_ED25519_PRIVATE_KEY_BASE64 }}
+      PROD_PUBLIC_KEY: ${{ secrets.SOHA_UPDATE_ED25519_PUBLIC_KEY_BASE64 }}
+      TEST_PRIVATE_KEY: ${{ secrets.SOHA_TEST_UPDATE_ED25519_PRIVATE_KEY_BASE64 }}
+      TEST_PUBLIC_KEY: ${{ secrets.SOHA_TEST_UPDATE_ED25519_PUBLIC_KEY_BASE64 }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.26.6'
+          cache: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: release-*
+          path: release
+          merge-multiple: true
+      - name: Resolve previous release and signing keys
+        id: previous
+        shell: bash
+        run: |
+          set -euo pipefail
+          private_key="${PROD_PRIVATE_KEY}"
+          public_key="${PROD_PUBLIC_KEY}"
+          if [[ "${CHANNEL}" == 'test' ]]; then
+            private_key="${TEST_PRIVATE_KEY}"
+            public_key="${TEST_PUBLIC_KEY}"
+          fi
+          printf '%s' "${private_key}" | base64 --decode > "${RUNNER_TEMP}/update-private.key"
+          printf '%s' "${public_key}" | base64 --decode > "${RUNNER_TEMP}/update-public.key"
+          chmod 600 "${RUNNER_TEMP}/update-private.key" "${RUNNER_TEMP}/update-public.key"
+
+          has_previous='false'
+          mkdir -p previous
+          if [[ "${CHANNEL}" == 'stable' && "${VERSION}" != '0.2.0' ]]; then
+            previous_tag="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)"
+            test -n "${previous_tag}"
+            gh release download "${previous_tag}" --repo "${GITHUB_REPOSITORY}" --dir previous \
+              --pattern update-manifest-v1.json \
+              --pattern update-manifest-v1.json.sig \
+              --pattern 'soha-app-v*-windows-amd64.exe'
+            has_previous='true'
+          elif [[ "${CHANNEL}" == 'test' && -n "${PREVIOUS_RUN_ID}" ]]; then
+            gh run download "${PREVIOUS_RUN_ID}" --repo "${GITHUB_REPOSITORY}" --name release-bundle --dir previous
+            has_previous='true'
+          fi
+          echo "has_previous=${has_previous}" >> "${GITHUB_OUTPUT}"
+      - name: Build signed update manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${CHANNEL}" == 'stable' ]]; then
+            gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json body --jq .body > "${RUNNER_TEMP}/release-notes.md"
+          else
+            printf 'Internal Soha App updater validation build %s.\n' "${VERSION}" > "${RUNNER_TEMP}/release-notes.md"
+          fi
+          args=(
+            build --dir release --version "${VERSION}" --channel "${CHANNEL}"
+            --notes-file "${RUNNER_TEMP}/release-notes.md"
+            --published-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            --private-key "${RUNNER_TEMP}/update-private.key"
+          )
+          if [[ '${{ steps.previous.outputs.has_previous }}' == 'true' ]]; then
+            previous_exe="$(find previous -maxdepth 1 -type f -name 'soha-app-v*-windows-amd64.exe' -print -quit)"
+            test -n "${previous_exe}"
+            args+=(
+              --previous-manifest previous/update-manifest-v1.json
+              --previous-signature previous/update-manifest-v1.json.sig
+              --previous-exe "${previous_exe}"
+              --previous-public-key "${RUNNER_TEMP}/update-public.key"
+            )
+          fi
+          go run ./tools/updaterelease "${args[@]}"
+      - name: Upload assets to stable draft
+        if: needs.prepare.outputs.channel == 'stable'
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' file; do
+            gh release upload "${TAG}" "${file}" --repo "${GITHUB_REPOSITORY}" --clobber
+          done < <(find release -maxdepth 1 -type f -print0 | sort -z)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-bundle
+          path: release/*
+          if-no-files-found: error
+          retention-days: 14
+
+  verify-draft:
+    name: Re-download and verify draft assets
+    if: needs.prepare.outputs.channel == 'stable'
+    needs: [prepare, assemble]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      PROD_PUBLIC_KEY: ${{ secrets.SOHA_UPDATE_ED25519_PUBLIC_KEY_BASE64 }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.26.6'
+          cache: true
+      - name: Download and verify every draft asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p downloaded previous
+          gh release download "${TAG}" --repo "${GITHUB_REPOSITORY}" --dir downloaded
+          printf '%s' "${PROD_PUBLIC_KEY}" | base64 --decode > "${RUNNER_TEMP}/update-public.key"
+          args=(verify --dir downloaded --public-key "${RUNNER_TEMP}/update-public.key")
+          if find downloaded -maxdepth 1 -type f -name '*.bsdiff' -print -quit | grep -q .; then
+            previous_tag="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)"
+            gh release download "${previous_tag}" --repo "${GITHUB_REPOSITORY}" --dir previous --pattern 'soha-app-v*-windows-amd64.exe'
+            previous_exe="$(find previous -maxdepth 1 -type f -name '*.exe' -print -quit)"
+            args+=(--previous-exe "${previous_exe}")
+          fi
+          go run ./tools/updaterelease "${args[@]}"
+
+  verify-windows-signatures:
+    name: Re-download and verify Windows signatures
+    if: needs.prepare.outputs.channel == 'stable'
+    needs: [prepare, assemble]
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Download and verify Authenticode assets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path downloaded | Out-Null
+          gh release download $env:TAG --repo $env:GITHUB_REPOSITORY --dir downloaded --pattern "soha-app-v$env:VERSION-windows-amd64*.exe"
+          $assets = @(Get-ChildItem downloaded/*.exe)
+          if ($assets.Count -ne 3) { throw "Expected three Windows executables, found $($assets.Count)" }
+          foreach ($asset in $assets) {
+            $signature = Get-AuthenticodeSignature $asset.FullName
+            if ($signature.Status -ne 'Valid') { throw "$($asset.Name) signature is $($signature.Status)" }
+          }
+
+  verify-macos-signatures:
+    name: Re-download and verify macOS signatures
+    if: needs.prepare.outputs.channel == 'stable'
+    needs: [prepare, assemble]
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Download and verify notarized assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p downloaded extracted
+          gh release download "${TAG}" --repo "${GITHUB_REPOSITORY}" --dir downloaded --pattern "soha-app-v${VERSION}-darwin-arm64.*"
+          ditto -x -k "downloaded/soha-app-v${VERSION}-darwin-arm64.zip" extracted
+          codesign --verify --deep --strict extracted/soha-app.app
+          spctl --assess --type execute --verbose=4 extracted/soha-app.app
+          xcrun stapler validate extracted/soha-app.app
+          hdiutil verify "downloaded/soha-app-v${VERSION}-darwin-arm64.dmg"
+          xcrun stapler validate "downloaded/soha-app-v${VERSION}-darwin-arm64.dmg"
+
+  publish:
+    name: Publish verified stable release
+    if: needs.prepare.outputs.channel == 'stable'
+    needs: [prepare, verify-draft, verify-windows-signatures, verify-macos-signatures]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Publish only after every gate passes
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false --prerelease=false --latest
+          state="$(gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json isDraft,isPrerelease --jq '[.isDraft,.isPrerelease] | @tsv')"
+          [[ "${state}" == $'false\tfalse' ]]
