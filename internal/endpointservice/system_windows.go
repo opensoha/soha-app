@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
-	"strconv"
 	"syscall"
 	"time"
 	"unsafe"
@@ -54,7 +53,7 @@ func NewWindowsSystem(executable, configPath string) (*WindowsSystem, error) {
 }
 
 func (system *WindowsSystem) Apply(ctx context.Context, plan TunnelPlan) error {
-	operationCtx, cancel := context.WithTimeout(ctx, wireGuardTimeout)
+	operationCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 	if err := system.Disable(operationCtx); err != nil {
 		return fmt.Errorf("remove previous WireGuard tunnel: %w", err)
@@ -117,6 +116,9 @@ func (system *WindowsSystem) Readback(ctx context.Context) (TunnelReadback, erro
 		return TunnelReadback{}, err
 	}
 	peer := device.Peers[0]
+	if !validVPNHandshake(peer.LastHandshakeTime, time.Now()) {
+		return TunnelReadback{}, errors.New("WireGuard handshake is missing or stale")
+	}
 	allowedIPs, err := allowedIPv4Prefixes(peer.AllowedIPs)
 	if err != nil || peer.Endpoint == nil || peer.PersistentKeepaliveInterval%time.Second != 0 {
 		return TunnelReadback{}, errors.New("WireGuard peer state is invalid")
@@ -311,35 +313,6 @@ func verifyInterfaceRoutes(interfaceIndex int, expected, allowedExtras []string)
 	return verifyRouteSet(actual, expected, allowedExtras)
 }
 
-func interfaceIPv4Addresses(adapter *net.Interface) ([]string, error) {
-	values, err := adapter.Addrs()
-	if err != nil {
-		return nil, fmt.Errorf("read WireGuard addresses: %w", err)
-	}
-	addresses := make([]string, 0, len(values))
-	for _, value := range values {
-		prefix, err := netip.ParsePrefix(value.String())
-		if err == nil && prefix.Addr().Is4() {
-			addresses = append(addresses, prefix.Masked().String())
-		}
-	}
-	slices.Sort(addresses)
-	return slices.Compact(addresses), nil
-}
-
-func allowedIPv4Prefixes(values []net.IPNet) ([]string, error) {
-	result := make([]string, 0, len(values))
-	for _, value := range values {
-		prefix, err := netip.ParsePrefix(value.String())
-		if err != nil || !prefix.Addr().Is4() || prefix.Bits() == 0 {
-			return nil, errors.New("WireGuard AllowedIPs contain an unsafe route")
-		}
-		result = append(result, prefix.Masked().String())
-	}
-	slices.Sort(result)
-	return slices.Compact(result), nil
-}
-
 func interfaceDNSServers(interfaceIndex uint32) ([]string, error) {
 	size := uint32(15_000)
 	for {
@@ -369,38 +342,7 @@ func interfaceDNSServers(interfaceIndex uint32) ([]string, error) {
 	}
 }
 
-func endpointMatches(ctx context.Context, expected string, actual *net.UDPAddr) bool {
-	host, portRaw, err := net.SplitHostPort(expected)
-	if err != nil || actual == nil {
-		return false
-	}
-	port, err := strconv.Atoi(portRaw)
-	if err != nil || actual.Port != port {
-		return false
-	}
-	if address, err := netip.ParseAddr(host); err == nil {
-		return address.Unmap() == netip.MustParseAddr(actual.IP.String()).Unmap()
-	}
-	addresses, err := net.DefaultResolver.LookupNetIP(ctx, "ip4", host)
-	if err != nil {
-		return false
-	}
-	actualAddress, ok := netip.AddrFromSlice(actual.IP)
-	if !ok {
-		return false
-	}
-	for _, address := range addresses {
-		if address.Unmap() == actualAddress.Unmap() {
-			return true
-		}
-	}
-	return false
-}
-
-func cloneTunnelPlan(plan TunnelPlan) TunnelPlan {
-	plan.Addresses = slices.Clone(plan.Addresses)
-	plan.Routes = slices.Clone(plan.Routes)
-	plan.DNSServers = slices.Clone(plan.DNSServers)
-	plan.Peer.AllowedIPs = slices.Clone(plan.Peer.AllowedIPs)
-	return plan
+func (system *WindowsSystem) CheckVPNHealth(ctx context.Context) error {
+	_, err := system.Readback(ctx)
+	return err
 }

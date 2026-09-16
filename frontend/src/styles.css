@@ -684,12 +684,35 @@ input {
 }
 
 .network-medium-switch {
-  width: 360px;
+  width: min(360px, 100%);
   justify-self: center;
 }
 
 .network-mode-segmented {
-  box-shadow: 0 4px 14px rgb(15 23 42 / 8%);
+  border: 1px solid var(--border);
+}
+
+.network-mode-segmented .ant-segmented-item-selected {
+  font-weight: 600;
+}
+
+.vpn-content {
+  display: grid;
+  gap: 24px;
+}
+
+.vpn-policy-summary {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+}
+
+.vpn-connect-hint {
+  max-width: 480px;
+  color: var(--text-secondary);
+  text-align: center;
 }
 
 .network-connect-control {
@@ -936,3 +959,6 @@ input {
     padding-top: 24px;
   }
 }
+
+.vpn-entrance-picker { display: flex; align-items: center; gap: 12px; width: min(100%, 480px); margin-inline: auto; }
+.vpn-entrance-picker .ant-select { flex: 1; min-width: 0; }

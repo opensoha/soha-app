@@ -249,7 +249,9 @@ export interface NetworkLinkStatus {
   dnsServers: string[]
 }
 
-export interface NetworkConnectInput {
+export type NetworkConnectInput = { intentId: string; intentToken: string; requestId: string } | LegacyNetworkConnectInput
+
+export interface LegacyNetworkConnectInput {
 	siteId: string
 	networkSpaceId: string
 	gatewayId?: string
@@ -260,6 +262,20 @@ export interface NetworkConnectInput {
 }
 
 export interface NetworkServiceStatus {
+  profileId?: string
+  profileRevision?: number
+  selection?: 'auto' | 'manual'
+  selectionReason?: string
+  decisionId?: string
+  phase?: string
+  probeResults?: { gatewayId: string; sentCount: number; rttSamplesMs: number[] }[]
+  probeMeasuredAt?: string
+  failoverOnDisconnect?: boolean
+  retryCooldownSeconds?: number
+  maxAttempts?: number
+  connectedAt?: string
+  tunnelIP?: string
+
   state: 'disconnected' | 'connecting' | 'connected' | 'degraded'
   runtimeId: string
   deviceId: string

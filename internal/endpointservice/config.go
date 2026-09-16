@@ -28,27 +28,28 @@ const (
 )
 
 type Config struct {
-	Version                    int    `json:"version"`
-	RuntimeID                  string `json:"runtimeId"`
-	DeviceID                   string `json:"deviceId"`
-	AllowedUserSID             string `json:"allowedUserSid"`
-	ControlURL                 string `json:"controlUrl"`
-	ControlCAFile              string `json:"controlCaFile"`
-	ControlCertFile            string `json:"controlCertFile"`
-	ControlKeyFile             string `json:"controlKeyFile"`
-	ControlServerName          string `json:"controlServerName,omitempty"`
-	IngestURL                  string `json:"ingestUrl,omitempty"`
-	IngestCAFile               string `json:"ingestCaFile,omitempty"`
-	IngestCertFile             string `json:"ingestCertFile,omitempty"`
-	IngestKeyFile              string `json:"ingestKeyFile,omitempty"`
-	IngestServerName           string `json:"ingestServerName,omitempty"`
-	StateDirectory             string `json:"stateDirectory"`
-	WireGuardExecutable        string `json:"wireGuardExecutable"`
-	MihomoControllerURL        string `json:"mihomoControllerUrl,omitempty"`
-	MihomoControllerSecretFile string `json:"mihomoControllerSecretFile,omitempty"`
-	EnrollmentID               string `json:"enrollmentId,omitempty"`
-	EnrollmentChallengeID      string `json:"enrollmentChallengeId,omitempty"`
-	EnrollmentTokenFile        string `json:"enrollmentTokenFile,omitempty"`
+	Version                    int     `json:"version"`
+	RuntimeID                  string  `json:"runtimeId"`
+	DeviceID                   string  `json:"deviceId"`
+	AllowedUserSID             string  `json:"allowedUserSid,omitempty"`
+	AllowedUserUID             *uint32 `json:"allowedUserUid,omitempty"`
+	ControlURL                 string  `json:"controlUrl"`
+	ControlCAFile              string  `json:"controlCaFile"`
+	ControlCertFile            string  `json:"controlCertFile"`
+	ControlKeyFile             string  `json:"controlKeyFile"`
+	ControlServerName          string  `json:"controlServerName,omitempty"`
+	IngestURL                  string  `json:"ingestUrl,omitempty"`
+	IngestCAFile               string  `json:"ingestCaFile,omitempty"`
+	IngestCertFile             string  `json:"ingestCertFile,omitempty"`
+	IngestKeyFile              string  `json:"ingestKeyFile,omitempty"`
+	IngestServerName           string  `json:"ingestServerName,omitempty"`
+	StateDirectory             string  `json:"stateDirectory"`
+	WireGuardExecutable        string  `json:"wireGuardExecutable"`
+	MihomoControllerURL        string  `json:"mihomoControllerUrl,omitempty"`
+	MihomoControllerSecretFile string  `json:"mihomoControllerSecretFile,omitempty"`
+	EnrollmentID               string  `json:"enrollmentId,omitempty"`
+	EnrollmentChallengeID      string  `json:"enrollmentChallengeId,omitempty"`
+	EnrollmentTokenFile        string  `json:"enrollmentTokenFile,omitempty"`
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -70,16 +71,23 @@ func LoadConfig(path string) (Config, error) {
 }
 
 func (config Config) Validate() error {
-	if config.Version != serviceConfigVersion || !identifierPattern.MatchString(config.RuntimeID) || !identifierPattern.MatchString(config.DeviceID) || !validSID(config.AllowedUserSID) {
+	if config.Version != serviceConfigVersion || !identifierPattern.MatchString(config.RuntimeID) || !identifierPattern.MatchString(config.DeviceID) || !validServiceIdentity(config) {
 		return errors.New("endpoint service version or identity is invalid")
 	}
 	if _, err := runtimeOrigin(config.ControlURL); err != nil {
 		return err
 	}
-	for name, path := range map[string]string{"control CA": config.ControlCAFile, "control certificate": config.ControlCertFile, "control key": config.ControlKeyFile, "WireGuard executable": config.WireGuardExecutable} {
+	for name, path := range map[string]string{"control CA": config.ControlCAFile, "control certificate": config.ControlCertFile, "control key": config.ControlKeyFile} {
 		if err := regularFile(path); err != nil {
 			return fmt.Errorf("%s: %w", name, err)
 		}
+	}
+	if config.AllowedUserUID == nil {
+		if err := regularFile(config.WireGuardExecutable); err != nil {
+			return fmt.Errorf("WireGuard executable: %w", err)
+		}
+	} else if config.WireGuardExecutable != "" {
+		return errors.New("macOS service uses the bundled WireGuard runtime")
 	}
 	if !filepath.IsAbs(config.StateDirectory) {
 		return errors.New("endpoint state directory must be absolute")
@@ -152,6 +160,9 @@ func validSID(value string) bool {
 }
 
 func (config Config) PrivateKeyPath() string {
+	if config.AllowedUserUID != nil {
+		return filepath.Join(config.StateDirectory, "wireguard.key")
+	}
 	return filepath.Join(config.StateDirectory, "wireguard.key.dpapi")
 }
 
@@ -164,6 +175,9 @@ func (config Config) EnrollmentMarkerPath() string {
 }
 
 func (config Config) MihomoAppStatePath() string {
+	if config.AllowedUserUID != nil {
+		return filepath.Join(config.StateDirectory, "mihomo-app.json")
+	}
 	return filepath.Join(config.StateDirectory, "mihomo-app.dpapi")
 }
 
@@ -340,4 +354,18 @@ func regularFile(path string) error {
 		return errors.New("path must be a regular file and not a symlink")
 	}
 	return nil
+}
+
+func validServiceIdentity(config Config) bool {
+	if config.AllowedUserUID != nil {
+		return *config.AllowedUserUID > 0 && *config.AllowedUserUID <= 2147483647 && config.AllowedUserSID == ""
+	}
+	return validSID(config.AllowedUserSID)
+}
+
+func (config Config) IPCIdentity() string {
+	if config.AllowedUserUID != nil {
+		return strconv.FormatUint(uint64(*config.AllowedUserUID), 10)
+	}
+	return config.AllowedUserSID
 }

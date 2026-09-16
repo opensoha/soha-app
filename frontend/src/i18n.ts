@@ -180,7 +180,12 @@ const zh = {
   networkMacAddress: "MAC 地址",
   networkNoInterfaces: "未采集到网卡信息",
   networkMacVPNPending:
-    "macOS VPN 需要签名的 Network Extension；当前本地临时签名构建无法启动系统隧道。",
+    "当前版本尚未包含 macOS VPN 组件，暂时无法连接。",
+  networkVPNUnavailable: "VPN 组件未就绪",
+  networkVPNManaged: "连接方案由组织统一管理",
+  networkVPNWaitingPolicy: "等待组织连接配置",
+  networkVPNHelp: "访问模式、接入网络与资源权限由 Soha 内网中心统一配置。",
+  networkDisconnecting: "正在断开",
   networkMacProxyPending:
     "macOS 代理执行服务尚未随当前构建交付；设备身份与自动上报已可用。",
   networkServiceUnavailable: "Soha 网络服务不可用",
@@ -444,7 +449,12 @@ const en: Record<keyof typeof zh, string> = {
   networkMacAddress: "MAC address",
   networkNoInterfaces: "No network interfaces collected",
   networkMacVPNPending:
-    "macOS VPN requires a signed Network Extension; this locally ad-hoc signed build cannot start a system tunnel.",
+    "This build does not include the macOS VPN component yet. Connections are unavailable.",
+  networkVPNUnavailable: "VPN component not ready",
+  networkVPNManaged: "Connection managed by your organization",
+  networkVPNWaitingPolicy: "Waiting for organization configuration",
+  networkVPNHelp: "Access mode, target network, and resource permissions are centrally configured in Soha Network Center.",
+  networkDisconnecting: "Disconnecting",
   networkMacProxyPending:
     "The macOS proxy runtime is not included in this build yet; device identity and reporting are available.",
   networkServiceUnavailable: "Soha network service is unavailable",

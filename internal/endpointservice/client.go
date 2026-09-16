@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+ "runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -46,7 +47,7 @@ func NewControlClient(origin, runtimeID string, client *http.Client, maxClockSke
 	}
 	copy := *client
 	copy.CheckRedirect = rejectRedirect
-	capabilities := append([]string{"wireguard", "route-coordinator", "dns-coordinator"}, additionalCapabilities...)
+	capabilities := append([]string{"wireguard", "route-coordinator", "dns-coordinator", "managed-vpn-v1", "vpn-probe-v1"}, additionalCapabilities...)
 	return &ControlClient{origin: parsed, runtimeID: runtimeID, http: &copy, maxClockSkew: maxClockSkew, capabilities: capabilities, now: time.Now}, nil
 }
 
@@ -54,7 +55,7 @@ func (client *ControlClient) Enroll(ctx context.Context, input EnrollmentInput) 
 	if !identifierPattern.MatchString(input.EnrollmentID) || !identifierPattern.MatchString(input.ChallengeID) || !identifierPattern.MatchString(input.DeviceID) || len(input.DevicePublicKey) < 32 || len(input.DevicePublicKey) > 4096 || strings.TrimSpace(input.DevicePublicKey) != input.DevicePublicKey || len(input.ClientVersion) == 0 || len(input.ClientVersion) > 64 || len(input.Token) < 32 || len(input.Token) > 4096 || strings.TrimSpace(input.Token) != input.Token {
 		return EnrollmentResult{}, errors.New("endpoint enrollment parameters are invalid")
 	}
-	payload := EnrollmentRequest{EnrollmentID: input.EnrollmentID, ChallengeID: input.ChallengeID, DeviceID: input.DeviceID, DevicePublicKey: input.DevicePublicKey, WireGuardPublicKey: input.WireGuardPublicKey, Platform: "windows", ClientVersion: input.ClientVersion, Capabilities: append([]string(nil), client.capabilities...)}
+	payload := EnrollmentRequest{EnrollmentID: input.EnrollmentID, ChallengeID: input.ChallengeID, DeviceID: input.DeviceID, DevicePublicKey: input.DevicePublicKey, WireGuardPublicKey: input.WireGuardPublicKey, Platform: endpointPlatform(), ClientVersion: input.ClientVersion, Capabilities: append([]string(nil), client.capabilities...)}
 	raw, err := client.runtimeMessage(MessageEnrollmentRequest, payload)
 	if err != nil {
 		return EnrollmentResult{}, err
@@ -497,3 +498,5 @@ func diagnosticList(value string) []string {
 	}
 	return []string{value}
 }
+
+func endpointPlatform() string { if runtime.GOOS=="darwin" {return "macos"};return runtime.GOOS }

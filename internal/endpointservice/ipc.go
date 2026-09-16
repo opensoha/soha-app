@@ -17,10 +17,10 @@ const (
 	IPCVersion          = 1
 	PipeName            = `\\.\pipe\OpenSoha.Soha.NetworkService`
 	maxIPCMessageBytes  = 32 << 10
-	ipcOperationTimeout = 45 * time.Second
+	ipcOperationTimeout = 125 * time.Second
 )
 
-var ErrIPCUnsupported = errors.New("Soha network service is supported on Windows only")
+var ErrIPCUnsupported = errors.New("Soha network service is supported on Windows and macOS only")
 
 type IPCRequest struct {
 	Version   int             `json:"version"`

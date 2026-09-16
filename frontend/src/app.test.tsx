@@ -20,6 +20,9 @@ import {
   getBootstrap,
   getLoginOptions,
   getNetworkConnectionOptions,
+  getVPNConnectionOptions,
+  getVPNCurrentConnection,
+  createVPNIntent,
   getPortalBootstrap,
   getProfile,
   loginWithProvider,
@@ -166,6 +169,9 @@ vi.mock("@/api", () => {
       .mockResolvedValue({ items: [], unreadCount: 0 }),
     getLoginOptions: vi.fn(),
     getNetworkConnectionOptions: vi.fn(),
+ getVPNConnectionOptions: vi.fn(),
+ getVPNCurrentConnection: vi.fn(),
+ createVPNIntent: vi.fn(),
     getAuthProviders: vi.fn(),
     loginWithProvider: vi.fn(),
     loginWithPassword: vi.fn(),
@@ -316,6 +322,9 @@ describe("desktop app", () => {
       },
     });
     vi.mocked(clearHostSession).mockResolvedValue(undefined);
+    vi.mocked(getVPNConnectionOptions).mockResolvedValue([]);
+    vi.mocked(getVPNCurrentConnection).mockResolvedValue(null);
+    vi.mocked(createVPNIntent).mockResolvedValue({intentId:"intent-1",token:"opaque-token",expiresAt:"2099-01-01T00:00:00Z"});
     vi.mocked(getNetworkStatus).mockResolvedValue(disconnectedNetworkStatus);
     vi.mocked(getNetworkLinkStatus).mockResolvedValue({
       connected: true,
@@ -898,9 +907,12 @@ describe("desktop app", () => {
     expect(container.textContent).not.toContain("自动连接已开启");
     await clickNavigation("VPN");
     await waitForUI(() =>
-      expect(container.textContent).toContain("签名的 Network Extension"),
+      expect(container.textContent).toContain("等待组织连接配置"),
     );
-    expect(getNetworkStatus).not.toHaveBeenCalled();
+    expect(container.querySelector('.vpn-mode-switch')).toBeNull();
+    expect(container.textContent).toContain('连接方案由组织统一管理');
+    expect(container.querySelector<HTMLButtonElement>('.vpn-panel .network-connect-button')?.disabled).toBe(true);
+    expect(getNetworkStatus).toHaveBeenCalled();
   });
 
   it("shows a foreground connection failure and recovers on retry", async () => {
@@ -1514,42 +1526,71 @@ describe("desktop app", () => {
     expect(persisted).toContain("compact");
   });
 
-  it("connects and disconnects the Windows network service without exposing enrollment data", async () => {
+  it("waits for a managed VPN profile instead of offering local mode or scope inputs", async () => {
     vi.mocked(getHostState).mockResolvedValueOnce({
-      ...hostState,
-      app: { ...hostState.app, platform: "windows", arch: "amd64" },
+      ...hostState, app: { ...hostState.app, platform: "windows", arch: "amd64" },
     });
-
     await renderAppToHome();
     await clickNavigation("VPN");
-    await waitForUI(() => expect(container.textContent).toContain("未连接"));
-    await setInput(
-      container.querySelector<HTMLInputElement>("#siteId"),
-      "site-1",
-    );
-    await setInput(
-      container.querySelector<HTMLInputElement>("#networkSpaceId"),
-      "space-1",
-    );
-    await setInput(
-      container.querySelector<HTMLInputElement>("#gatewayId"),
-      "gateway-b",
-    );
-    await act(async () => findButton(container, "连接内网")?.click());
+    await waitForUI(() => expect(container.textContent).toContain("等待组织连接配置"));
+    expect(container.querySelector(".vpn-panel input")).toBeNull();
+    expect(container.querySelector(".vpn-panel .ant-segmented")).toBeNull();
+    const button = container.querySelector<HTMLButtonElement>('button[aria-label="连接内网"]');
+    expect(button?.disabled).toBe(true);
+    await act(async () => button?.click());
+    expect(connectNetwork).not.toHaveBeenCalled();
+  });
 
-    await waitForUI(() =>
-      expect(connectNetwork).toHaveBeenCalledWith({
-        siteId: "site-1",
-        networkSpaceId: "space-1",
-        gatewayId: "gateway-b",
-        mode: "external_vpn",
-        resourceIds: [],
-      }),
-    );
-    expect(container.textContent).toContain("已连接");
-    expect(container.textContent).not.toContain("enrollment");
-    await act(async () => findButton(container, "断开连接")?.click());
+  it("connects macOS Auto using only the server intent and keeps scope out of native input", async () => {
+    vi.mocked(getHostState).mockResolvedValueOnce({...hostState,app:{...hostState.app,platform:"darwin"}});
+    vi.mocked(getVPNConnectionOptions).mockResolvedValue([{profileId:"office",profileRevision:1,name:"企业办公网络",siteId:"site-1",networkSpaceId:"space-1",mode:"external_vpn_ztna",allowManualSelection:true,selectionPolicyId:"policy-1",selectionPolicyRevision:1,selectionStrategy:"latency",available:true,reasonCode:"",candidates:[{gatewayId:"gateway-a",name:"A 地",region:"A",providerCode:"isp-a",providerName:"电信",available:true,reasonCode:"",priority:100}]}]);
+    await renderAppToHome();
+    await clickNavigation("VPN");
+    await waitForUI(() => expect(container.textContent).toContain("企业办公网络"));
+    const button=container.querySelector<HTMLButtonElement>('button[aria-label="连接内网"]');
+    await waitForUI(() => expect(button?.disabled).toBe(false));
+    await act(async () => button?.click());
+    await waitForUI(() => expect(connectNetwork).toHaveBeenCalledOnce());
+    expect(createVPNIntent).toHaveBeenCalledWith({deviceId:disconnectedNetworkStatus.deviceId,profileId:"office",selection:"auto"});
+    expect(connectNetwork).toHaveBeenCalledWith({intentId:"intent-1",intentToken:"opaque-token",requestId:expect.any(String)});
+    expect(localStorage.getItem("soha-app-preferences")||"").not.toContain("opaque-token");
+  });
+
+  it("shows the active VPN mode read-only and disconnects the existing session", async () => {
+    vi.mocked(getHostState).mockResolvedValueOnce({
+      ...hostState, app: { ...hostState.app, platform: "windows", arch: "amd64" },
+    });
+    vi.mocked(getNetworkStatus).mockResolvedValue({
+      ...disconnectedNetworkStatus, state: "connected", sessionId: "session-1",
+      mode: "external_vpn_ztna", gatewayId: "gateway-1",
+    });
+    await renderAppToHome();
+    await clickNavigation("VPN");
+    await waitForUI(() => expect(container.textContent).toContain("内网 VPN + ZTNA"));
+    expect(container.querySelector(".vpn-panel .ant-segmented")).toBeNull();
+    expect(container.textContent).toContain("gateway-1");
+    vi.mocked(getNetworkStatus).mockResolvedValue(disconnectedNetworkStatus);
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="断开连接"]')?.click());
     await waitForUI(() => expect(disconnectNetwork).toHaveBeenCalledOnce());
+    await waitForUI(() => expect(container.textContent).toContain("等待组织连接配置"));
+  });
+
+  it("keeps VPN cleanup available after a failed disconnect", async () => {
+    vi.mocked(getHostState).mockResolvedValueOnce({
+      ...hostState, app: { ...hostState.app, platform: "windows" },
+    });
+    vi.mocked(getNetworkStatus).mockResolvedValue({
+      ...disconnectedNetworkStatus, state: "degraded", diagnostic: "disconnect_incomplete",
+    });
+    vi.mocked(disconnectNetwork).mockRejectedValueOnce(new HostError(409, "network_operation_failed", "Disconnect failed"));
+    await renderAppToHome();
+    await clickNavigation("VPN");
+    await waitForUI(() => expect(container.querySelector<HTMLButtonElement>('button[aria-label="断开连接"]')?.disabled).toBe(false));
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="断开连接"]')?.click());
+    await waitForUI(() => expect(container.textContent).toContain("Disconnect failed"));
+    await waitForUI(() => expect(container.querySelector<HTMLButtonElement>('button[aria-label="断开连接"]')?.disabled).toBe(false));
+    expect(container.textContent).toContain("disconnect_incomplete");
+    expect(getNetworkStatus).toHaveBeenCalledTimes(2);
   });
 
   it("configures an App-owned mihomo subscription without retaining its URL", async () => {

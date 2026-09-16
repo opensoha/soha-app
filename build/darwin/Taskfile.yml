@@ -20,6 +20,7 @@ tasks:
           OBFUSCATED: '{{.OBFUSCATED}}'
           GARBLE_ARGS: '{{.GARBLE_ARGS}}'
           RELEASE_LDFLAGS: '{{.RELEASE_LDFLAGS}}'
+          SERVICE_LDFLAGS: '{{.SERVICE_LDFLAGS}}'
     vars:
       DEFAULT_OUTPUT: '{{.BIN_DIR}}/{{.APP_NAME}}'
       OUTPUT: '{{ .OUTPUT | default .DEFAULT_OUTPUT }}'
@@ -119,13 +120,31 @@ tasks:
     deps:
       - task: build
     cmds:
+      - task: build:service
       - task: create:app:bundle
+
+  build:service:
+    summary: Builds the privileged macOS network service
+    platforms: [darwin]
+    cmds:
+      - go build -trimpath -buildvcs=false -ldflags="-w -s {{.SERVICE_LDFLAGS}}" -o "{{.BIN_DIR}}/soha-app-service" ./cmd/soha-app-service
+    env:
+      CGO_ENABLED: 1
+      GOOS: darwin
+      GOARCH: '{{.ARCH | default ARCH}}'
 
   package:universal:
     summary: Packages darwin universal binary (arm64 + amd64)
     deps:
       - task: build:universal
     cmds:
+      - task: build:service
+        vars: { ARCH: arm64 }
+      - mv "{{.BIN_DIR}}/soha-app-service" "{{.BIN_DIR}}/soha-app-service-arm64"
+      - task: build:service
+        vars: { ARCH: amd64 }
+      - lipo -create -output "{{.BIN_DIR}}/soha-app-service-universal" "{{.BIN_DIR}}/soha-app-service" "{{.BIN_DIR}}/soha-app-service-arm64"
+      - mv "{{.BIN_DIR}}/soha-app-service-universal" "{{.BIN_DIR}}/soha-app-service"
       - task: create:app:bundle
 
   package:dmg:
@@ -168,6 +187,9 @@ tasks:
         fi
       - cp "{{.BIN_DIR}}/{{.APP_NAME}}" "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/MacOS"
       - cp build/darwin/Info.plist "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents"
+      - mkdir -p "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Library/Helpers"
+      - cp "{{.BIN_DIR}}/soha-app-service" "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Library/Helpers/soha-app-service"
+      - cp build/darwin/install-network-service.sh build/darwin/com.opensoha.network-service.plist "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources"
       - task: '{{if eq OS "darwin"}}codesign:adhoc{{else}}codesign:skip{{end}}'
 
   codesign:adhoc:

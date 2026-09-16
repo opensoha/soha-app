@@ -90,6 +90,24 @@ For managed mihomo, run mihomo separately with its external controller bound to 
 
 After provisioning, rerun the installed service binary with `install`. It validates the whole configuration, switches `SohaNetworkService` to delayed automatic start, and starts it. Endpoint private keys and WireGuard `.conf.dpapi` state remain under the protected state directory and are DPAPI-bound to LocalSystem. Endpoint routes provide reachability only: the gateway's deny-first firewall remains the authorization boundary and a broad `NetworkLease` cannot override `ProtectedSet`. Removing the App unregisters the service but intentionally preserves `%ProgramData%\OpenSoha\Soha` for administrator-controlled recovery or removal.
 
+## macOS Endpoint Network Service
+
+The macOS bundle includes `Contents/Library/Helpers/soha-app-service`. It uses the existing WireGuard Go runtime with a native utun interface, IPv4 split routes, and temporary SystemConfiguration DNS settings. It does not require the WireGuard desktop application. This is a launchd service for administrator-provisioned installations; a signed Network Extension distribution remains a separate delivery path.
+
+Build with `wails3 task darwin:package` on macOS. Provision `service.json` and its TLS files under `/var/db/opensoha/network-service`, using `allowedUserUid` instead of the Windows SID and leaving `wireGuardExecutable` empty. Config and credential files must be root-owned, with no writable or symlink parents. The service uses separate control/ingest mTLS identities as described above. Private keys remain in the root-only state directory; they are not Keychain-encrypted.
+
+The bundled installer accepts an optional administrator-issued provisioning directory containing `service.json`, `control-ca.pem`, `control-cert.pem`, `control-key.pem`, optional corresponding `ingest-*` files, and `enrollment-token`. In a local installation named `Soha.app`:
+
+```sh
+sudo /bin/sh /Applications/Soha.app/Contents/Resources/install-network-service.sh /absolute/path/to/provisioning
+# Later helper updates preserve the installed identity:
+sudo /bin/sh /Applications/Soha.app/Contents/Resources/install-network-service.sh
+```
+
+The root daemon authenticates Unix-socket peers by their OS UID; only the configured desktop user or root can issue requests. The App authenticates the server as root. A managed VPN intent contains the user's short-lived server authorization; local IPC cannot choose arbitrary routes or resources. Connection success requires a fresh WireGuard handshake and system readback. Closing the owned utun descriptor removes its routes; temporary DNS keys belong to the service's SystemConfiguration session. Route conflicts or incomplete cleanup block reconnection.
+
+Updating the `.app` includes the new helper but does not silently replace the privileged installed copy: run the installer above with administrator authorization. The macOS proxy page remains unavailable in this build. The core repository provides [`deploy/network-test/vpn-lab.md`](https://github.com/opensoha/soha/blob/main/deploy/network-test/vpn-lab.md) for isolated Docker gateway and resource validation.
+
 ## Software Library
 
 The app reads approved packages uploaded from the Soha internal workbench. Catalog and download requests use the current in-memory login token, and the native runtime verifies the package before opening the system installer.

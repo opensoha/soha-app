@@ -188,7 +188,7 @@ func (runtimeAPI *appRuntime) handleNetwork(writer http.ResponseWriter, request 
 			return
 		}
 	}
-	ctx, cancel := context.WithTimeout(request.Context(), 50*time.Second)
+	ctx, cancel := context.WithTimeout(request.Context(), 130*time.Second)
 	defer cancel()
 	status, err := runtimeAPI.networkCall(ctx, action, input)
 	if err != nil {

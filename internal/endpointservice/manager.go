@@ -52,6 +52,7 @@ type Telemetry interface {
 }
 
 type ManagerOptions struct {
+	CheckVPNHealth    func(context.Context) error
 	RuntimeID         string
 	DeviceID          string
 	PollInterval      time.Duration
@@ -61,6 +62,9 @@ type ManagerOptions struct {
 }
 
 type ConnectInput struct {
+	IntentID         string   `json:"intentId,omitempty"`
+	IntentToken      string   `json:"intentToken,omitempty"`
+	RequestID        string   `json:"requestId,omitempty"`
 	SiteID           string   `json:"siteId"`
 	NetworkSpaceID   string   `json:"networkSpaceId"`
 	GatewayID        string   `json:"gatewayId,omitempty"`
@@ -71,6 +75,20 @@ type ConnectInput struct {
 }
 
 type Status struct {
+	ProfileID            string           `json:"profileId,omitempty"`
+	ProfileRevision      int              `json:"profileRevision,omitempty"`
+	Selection            string           `json:"selection,omitempty"`
+	SelectionReason      string           `json:"selectionReason,omitempty"`
+	DecisionID           string           `json:"decisionId,omitempty"`
+	Phase                string           `json:"phase,omitempty"`
+	ProbeResults         []VPNProbeResult `json:"probeResults,omitempty"`
+	ProbeMeasuredAt      *time.Time       `json:"probeMeasuredAt,omitempty"`
+	FailoverOnDisconnect bool             `json:"failoverOnDisconnect,omitempty"`
+	RetryCooldownSeconds int              `json:"retryCooldownSeconds,omitempty"`
+	MaxAttempts          int              `json:"maxAttempts,omitempty"`
+	ConnectedAt          *time.Time       `json:"connectedAt,omitempty"`
+	TunnelIP             string           `json:"tunnelIP,omitempty"`
+
 	State                 string    `json:"state"`
 	RuntimeID             string    `json:"runtimeId"`
 	DeviceID              string    `json:"deviceId"`
@@ -124,6 +142,9 @@ func NewManager(options ManagerOptions, control RuntimeControl, executor Configu
 }
 
 func (manager *Manager) Connect(ctx context.Context, input ConnectInput) (Status, error) {
+	if input.IntentID != "" || input.IntentToken != "" {
+		return manager.connectManaged(ctx, input)
+	}
 	manager.operationMu.Lock()
 	defer manager.operationMu.Unlock()
 	if input.Mode == "" {
@@ -150,7 +171,11 @@ func (manager *Manager) Connect(ctx context.Context, input ConnectInput) (Status
 		manager.degrade("vpn_connect_failed")
 		return manager.Status(), fmt.Errorf("request VPN connection: %w", err)
 	}
-	if result.Decision != "allow" || !identifierPattern.MatchString(result.SessionID) || !identifierPattern.MatchString(result.GatewayID) || result.ConfigurationVersion < 1 || result.PolicyVersion < 1 || !validLeaseShape(input.Mode, len(result.NetworkLeases), len(result.ResourceLeases)) || !result.ValidUntil.After(manager.now().UTC()) {
+	return manager.acceptVPNConnection(ctx, result, input.Mode)
+}
+
+func (manager *Manager) acceptVPNConnection(ctx context.Context, result VPNConnectResult, mode string) (Status, error) {
+	if result.Decision != "allow" || !identifierPattern.MatchString(result.SessionID) || !identifierPattern.MatchString(result.GatewayID) || result.ConfigurationVersion < 1 || result.PolicyVersion < 1 || !validLeaseShape(mode, len(result.NetworkLeases), len(result.ResourceLeases)) || !result.ValidUntil.After(manager.now().UTC()) {
 		manager.update(func(status *Status) {
 			status.State, status.Diagnostic = StateDisconnected, fallback(result.ReasonCode, "authorization_denied")
 		})
@@ -169,7 +194,7 @@ func (manager *Manager) Connect(ctx context.Context, input ConnectInput) (Status
 	manager.nextRenewAt = renewalTime(manager.now().UTC(), manager.sessionUntil, manager.options.RenewBefore)
 	manager.stateMu.Unlock()
 	if err := manager.syncConfiguration(ctx); err != nil {
-		_, cleanupErr := manager.disconnectLocked(ctx, "connect_failed")
+		cleanupErr := manager.cleanupFailedVPN(ctx)
 		return manager.Status(), errors.Join(err, cleanupErr)
 	}
 	return manager.Status(), nil
@@ -279,7 +304,16 @@ func (manager *Manager) Cycle(ctx context.Context) error {
 			return err
 		}
 	}
-	return manager.syncConfiguration(ctx)
+	if err := manager.syncConfiguration(ctx); err != nil {
+		return err
+	}
+	if active && manager.options.CheckVPNHealth != nil {
+		if err := manager.options.CheckVPNHealth(ctx); err != nil {
+			manager.degrade("vpn_tunnel_unhealthy")
+			return err
+		}
+	}
+	return nil
 }
 
 func (manager *Manager) Run(ctx context.Context) error {
@@ -400,6 +434,10 @@ func (manager *Manager) Status() Status {
 	status := manager.status
 	manager.stateMu.RUnlock()
 	status.ResourceIDs = slices.Clone(status.ResourceIDs)
+	status.ProbeResults = slices.Clone(status.ProbeResults)
+	for i := range status.ProbeResults {
+		status.ProbeResults[i].RTTSamplesMs = slices.Clone(status.ProbeResults[i].RTTSamplesMs)
+	}
 	status.UptimeSeconds = max(0, int64(manager.now().UTC().Sub(manager.startedAt)/time.Second))
 	return status
 }
@@ -419,6 +457,10 @@ func (manager *Manager) syncConfiguration(ctx context.Context) error {
 	if err := decodeStrict(message.Payload, &desired); err != nil || !message.ExpiresAt.Equal(desired.ValidUntil) {
 		manager.degrade("invalid_configuration_payload")
 		return errors.New("network control returned an invalid endpoint configuration payload")
+	}
+	if manager.managedConfigurationRevoked(desired) {
+		_, err := manager.disconnectLocked(ctx, "authorization_revoked")
+		return err
 	}
 	if err := validateMihomoConfiguration(desired.Mihomo, desired.WireGuard, false); err != nil {
 		manager.degrade("unsafe_mihomo_configuration")
@@ -505,6 +547,12 @@ func applyDesiredStatus(status *Status, desired ConfigurationDesired) {
 	}
 	if desired.WireGuard != nil || desired.Mihomo != nil {
 		status.State = StateConnected
+	}
+	if status.ProfileID != "" && desired.WireGuard == nil {
+		status.State = StateDisconnected
+	}
+	if desired.WireGuard != nil && len(desired.WireGuard.Addresses) > 0 {
+		status.TunnelIP = desired.WireGuard.Addresses[0]
 	}
 }
 

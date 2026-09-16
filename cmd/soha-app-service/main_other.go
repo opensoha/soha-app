@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build !windows && !darwin
 
 package main
 
@@ -8,6 +8,6 @@ import (
 )
 
 func main() {
-	_, _ = fmt.Fprintln(os.Stderr, "soha-app-service is supported on Windows only")
+	_, _ = fmt.Fprintln(os.Stderr, "soha-app-service is supported on Windows and macOS only")
 	os.Exit(1)
 }

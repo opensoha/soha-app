@@ -1,3 +1,4 @@
+import { ManagedVPNPanel } from "@/vpn-panel";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   CheckOutlined,
@@ -36,7 +37,6 @@ import { useNavigate } from "react-router-dom";
 import {
   ApiError,
   changePassword,
-  createNetworkAccessGrant,
   getAnnouncementInbox,
   getAuthProviders,
   getBootstrap,
@@ -57,8 +57,6 @@ import {
   checkServer,
   clearMihomoApp,
   configureMihomoApp,
-  connectNetwork,
-  disconnectNetwork,
   getHostState,
   getMihomoAppStatus,
   getNetworkLinkStatus,
@@ -86,9 +84,7 @@ import {
   type AuthProvider,
   type ConnectionCheck,
   type HostState,
-  type NetworkAccessMode,
   type NetworkConnectionOption,
-  type NetworkConnectInput,
   type ProfileUpdate,
   type SoftwarePackage,
   type SoftwareTaskState,
@@ -1087,6 +1083,7 @@ export function NetworkPage() {
       <section className="network-connection-panel">
         <div className="network-medium-switch">
           <Segmented
+            aria-label={text.network}
             block
             className="network-mode-segmented"
             onChange={(value) => setMedium(value as NetworkConnectionMedium)}
@@ -1172,16 +1169,8 @@ export function SettingsPage({ view = "settings" }: { view?: SettingsView }) {
   const { message } = App.useApp();
   const text = useText();
   const [serverForm] = Form.useForm<{ serverUrl: string }>();
-  const [networkForm] = Form.useForm<{
-    siteId: string;
-    networkSpaceId: string;
-    gatewayId?: string;
-    mode: NetworkAccessMode;
-    resourceIds?: string;
-  }>();
   const [mihomoForm] = Form.useForm<{ subscriptionUrl: string }>();
   const pendingServerURL = Form.useWatch("serverUrl", serverForm);
-  const networkMode = Form.useWatch("mode", networkForm) || "external_vpn";
   const [serverModalOpen, setServerModalOpen] = useState(false);
   const [switching, setSwitching] = useState(false);
   const [switchError, setSwitchError] = useState<string | null>(null);
@@ -1205,7 +1194,7 @@ export function SettingsPage({ view = "settings" }: { view?: SettingsView }) {
   const networkQuery = useQuery({
     queryKey: ["network-status"],
     queryFn: getNetworkStatus,
-    enabled: view !== "settings" && host?.app.platform === "windows",
+    enabled: view !== "settings" && (host?.app.platform === "windows" || (view === "vpn" && host?.app.platform === "darwin")),
     refetchInterval: 10_000,
     retry: false,
   });
@@ -1218,59 +1207,6 @@ export function SettingsPage({ view = "settings" }: { view?: SettingsView }) {
       networkQuery.data?.mihomoMode === "app_subscription",
     refetchInterval: 10_000,
     retry: false,
-  });
-  const connectNetworkMutation = useMutation({
-    mutationFn: async (input: {
-      siteId: string;
-      networkSpaceId: string;
-      gatewayId?: string;
-      mode: NetworkAccessMode;
-      resourceIds?: string;
-    }) => {
-      const resourceIds =
-        input.resourceIds?.split(/[\s,]+/).filter(Boolean) || [];
-      const gatewayId = input.gatewayId?.trim();
-      const request: NetworkConnectInput = {
-        siteId: input.siteId,
-        networkSpaceId: input.networkSpaceId,
-        ...(gatewayId ? { gatewayId } : {}),
-        mode: input.mode,
-        resourceIds,
-      };
-      if (input.mode !== "external_vpn") {
-        const deviceId = networkQuery.data?.deviceId;
-        if (!deviceId)
-          throw new ApiError(
-            409,
-            "network_device_unavailable",
-            text.networkServiceUnavailable,
-          );
-        const secret = await createNetworkAccessGrant({
-          deviceId,
-          siteId: input.siteId,
-          networkSpaceId: input.networkSpaceId,
-          mode: input.mode,
-          resourceIds,
-          ttlSeconds: 300,
-        });
-        request.accessGrantId = secret.grant.id;
-        request.accessGrantToken = secret.token;
-      }
-      return connectNetwork(request);
-    },
-    onSuccess: (result) => {
-      queryClient.setQueryData(["network-status"], result);
-      message.success(text.networkConnected);
-    },
-    onError: (error) => message.error(readableError(error, text)),
-  });
-  const disconnectNetworkMutation = useMutation({
-    mutationFn: disconnectNetwork,
-    onSuccess: (result) => {
-      queryClient.setQueryData(["network-status"], result);
-      message.success(text.networkDisconnected);
-    },
-    onError: (error) => message.error(readableError(error, text)),
   });
   const configureMihomoMutation = useMutation({
     mutationFn: ({ subscriptionUrl }: { subscriptionUrl: string }) =>
@@ -1379,6 +1315,7 @@ export function SettingsPage({ view = "settings" }: { view?: SettingsView }) {
   const app = host?.app;
   const updateStatus = updateQuery.data;
   const networkStatus = networkQuery.data;
+  const networkSupported = app?.platform === "windows";
   const networkStatusText =
     networkStatus?.state === "connected"
       ? text.networkConnected
@@ -1470,15 +1407,13 @@ export function SettingsPage({ view = "settings" }: { view?: SettingsView }) {
         </>
       ) : null}
       {view !== "settings" ? (
-        <section className="settings-section">
-          <h2>{pageTitle}</h2>
-          {app?.platform !== "windows" ? (
+        <section className={view === "vpn" ? "network-connection-panel vpn-panel" : "settings-section"}>
+          {view === "proxy" ? <h2>{pageTitle}</h2> : null}
+          {!networkSupported && view === "proxy" ? (
             <Alert
               description={
                 app?.platform === "darwin"
-                  ? view === "vpn"
-                    ? text.networkMacVPNPending
-                    : text.networkMacProxyPending
+                  ? text.networkMacProxyPending
                   : text.networkWindowsOnly
               }
               showIcon
@@ -1488,12 +1423,13 @@ export function SettingsPage({ view = "settings" }: { view?: SettingsView }) {
             <>
               {networkQuery.isError ? (
                 <Alert
+                  action={<Button loading={networkQuery.isFetching} onClick={() => networkQuery.refetch()} size="small">{text.retry}</Button>}
                   description={readableError(networkQuery.error, text)}
                   showIcon
                   title={text.networkServiceUnavailable}
                   type="warning"
                 />
-              ) : (
+              ) : view === "proxy" ? (
                 <Descriptions
                   column={1}
                   items={[
@@ -1559,125 +1495,8 @@ export function SettingsPage({ view = "settings" }: { view?: SettingsView }) {
                   ]}
                   size="small"
                 />
-              )}
-              {view === "vpn" ? (
-                <Form
-                  form={networkForm}
-                  initialValues={{ mode: "external_vpn" }}
-                  layout="vertical"
-                  onFinish={(input) => connectNetworkMutation.mutate(input)}
-                  requiredMark={false}
-                >
-                  <div className="form-grid">
-                    <Form.Item
-                      label={text.networkSite}
-                      name="siteId"
-                      rules={[
-                        { required: true, message: text.networkSiteRequired },
-                      ]}
-                    >
-                      <Input
-                        autoCapitalize="none"
-                        autoComplete="off"
-                        spellCheck={false}
-                      />
-                    </Form.Item>
-                    <Form.Item
-                      label={text.networkSpace}
-                      name="networkSpaceId"
-                      rules={[
-                        { required: true, message: text.networkSpaceRequired },
-                      ]}
-                    >
-                      <Input
-                        autoCapitalize="none"
-                        autoComplete="off"
-                        spellCheck={false}
-                      />
-                    </Form.Item>
-                    <Form.Item
-                      extra={text.networkGatewayHint}
-                      label={text.networkGateway}
-                      name="gatewayId"
-                    >
-                      <Input
-                        autoCapitalize="none"
-                        autoComplete="off"
-                        spellCheck={false}
-                      />
-                    </Form.Item>
-                    <Form.Item
-                      label={text.networkMode}
-                      name="mode"
-                      rules={[{ required: true }]}
-                    >
-                      <Select
-                        options={[
-                          {
-                            label: text.networkModeInternalZTNA,
-                            value: "internal_ztna",
-                          },
-                          { label: text.networkModeVPN, value: "external_vpn" },
-                          {
-                            label: text.networkModeVPNZTNA,
-                            value: "external_vpn_ztna",
-                          },
-                          {
-                            label: text.networkModeDirectZTNA,
-                            value: "external_direct_ztna",
-                          },
-                        ]}
-                      />
-                    </Form.Item>
-                    {networkMode !== "external_vpn" ? (
-                      <Form.Item
-                        extra={text.networkResourcesHint}
-                        label={text.networkResources}
-                        name="resourceIds"
-                        rules={[
-                          {
-                            required: true,
-                            whitespace: true,
-                            message: text.networkResourcesRequired,
-                          },
-                        ]}
-                      >
-                        <Input.TextArea
-                          autoCapitalize="none"
-                          autoComplete="off"
-                          rows={2}
-                          spellCheck={false}
-                        />
-                      </Form.Item>
-                    ) : null}
-                  </div>
-                  <Space wrap>
-                    <Button
-                      disabled={
-                        networkQuery.isError ||
-                        networkQuery.isPending ||
-                        networkStatus?.state !== "disconnected"
-                      }
-                      htmlType="submit"
-                      loading={connectNetworkMutation.isPending}
-                      type="primary"
-                    >
-                      {text.networkConnect}
-                    </Button>
-                    <Button
-                      disabled={
-                        networkQuery.isError ||
-                        networkQuery.isPending ||
-                        networkStatus?.state === "disconnected"
-                      }
-                      loading={disconnectNetworkMutation.isPending}
-                      onClick={() => disconnectNetworkMutation.mutate()}
-                    >
-                      {text.networkDisconnect}
-                    </Button>
-                  </Space>
-                </Form>
               ) : null}
+              {view === "vpn" ? <ManagedVPNPanel /> : null}
               {view === "proxy" &&
               networkStatus?.mihomoMode === "app_subscription" ? (
                 <div className="settings-subsection">

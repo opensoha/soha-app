@@ -1,3 +1,4 @@
+import { VPNRecovery } from "@/vpn-recovery"
 import { Component, type ErrorInfo, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import {
   AppstoreOutlined,
@@ -202,7 +203,7 @@ function SessionBridge() {
 
 function AuthGuard() {
   const session = useAppStore((state) => state.session)
-  return session ? <Outlet /> : <Navigate to="/login" replace />
+  return session ? <><VPNRecovery /><Outlet /></> : <Navigate to="/login" replace />
 }
 
 function DesktopShell() {

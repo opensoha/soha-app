@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/draw"
+	"image/png"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -147,6 +151,11 @@ func configureSystemTray(app *application.App, mainWindow, companionWindow *appl
 	tray := app.SystemTray.New()
 	tray.SetTooltip("Soha")
 	if runtime.GOOS == "darwin" {
+		if padded, err := macTrayIcon(icon); err == nil {
+			icon = padded
+		} else {
+			app.Logger.Error("pad menu bar icon", "error", err)
+		}
 		tray.SetTemplateIcon(icon)
 	} else {
 		tray.SetIcon(icon)
@@ -170,4 +179,21 @@ func configureSystemTray(app *application.App, mainWindow, companionWindow *appl
 	tray.OnClick(func() {
 		activateMainWindow(mainWindow)
 	})
+}
+
+func macTrayIcon(data []byte) ([]byte, error) {
+	icon, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	bounds := icon.Bounds()
+	// Wails scales the canvas to the menu bar height; inset the artwork by 1/12 per side.
+	padding := image.Pt(bounds.Dx()/10, bounds.Dy()/10)
+	canvas := image.NewNRGBA(image.Rect(0, 0, bounds.Dx()+2*padding.X, bounds.Dy()+2*padding.Y))
+	draw.Draw(canvas, bounds.Sub(bounds.Min).Add(padding), icon, bounds.Min, draw.Src)
+	var result bytes.Buffer
+	if err := png.Encode(&result, canvas); err != nil {
+		return nil, err
+	}
+	return result.Bytes(), nil
 }

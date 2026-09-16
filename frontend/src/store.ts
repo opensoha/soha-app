@@ -19,7 +19,11 @@ const defaultNetworkConnectionPreferences: NetworkConnectionPreferences = {
   wiredAutoConnect: false,
 }
 
+export interface VPNRecoveryPlan { profileId: string; selection: string; max: number; cooldown: number; failures: number; attempts: number; nextAt: number }
+
 interface AppState {
+ vpnRecovery: VPNRecoveryPlan | null
+ setVPNRecovery: (plan: VPNRecoveryPlan | null) => void
   host: HostState | null
   connection: ConnectionCheck | null
   session: Session | null
@@ -51,6 +55,8 @@ export const useAppStore = create<AppState>()(
       locale: 'zh_CN',
       portalCardSize: 'standard',
       networkConnection: defaultNetworkConnectionPreferences,
+ vpnRecovery: null,
+ setVPNRecovery: (vpnRecovery) => set({vpnRecovery}),
       setHost: (host) => set({ host }),
       setConnection: (connection) => set({ connection }),
       commitSession: (session, bootstrap = null) => {
@@ -73,7 +79,7 @@ export const useAppStore = create<AppState>()(
         }),
       clearSession: () => {
         setAccessToken(null)
-        set({ session: null, bootstrap: null, networkConnection: defaultNetworkConnectionPreferences })
+        set({ session: null, bootstrap: null, vpnRecovery: null, networkConnection: defaultNetworkConnectionPreferences })
       },
       setThemeMode: (themeMode) => set({ themeMode }),
       setLocale: (locale) => set({ locale }),

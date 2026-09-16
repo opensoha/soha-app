@@ -64,6 +64,12 @@ function Providers() {
           Descriptions: { labelColor: dark ? '#d4d4d8' : '#4b5563' },
           Input: { borderRadius: 6, controlHeight: 38 },
           Modal: { borderRadiusLG: 12 },
+          Segmented: {
+            trackBg: dark ? '#122238' : '#f0f2f5',
+            itemColor: dark ? '#d4d4d8' : '#4b5563',
+            itemSelectedBg: dark ? '#4096ff' : '#0958d9',
+            itemSelectedColor: dark ? '#07111f' : '#ffffff',
+          },
         },
       }}
     >

@@ -68,3 +68,41 @@ func TestTrayIconHasTransparentBackground(t *testing.T) {
 		t.Fatalf("tray icon corner alpha = %d, want transparent", alpha)
 	}
 }
+
+func TestMacTrayIconAddsCenteredPadding(t *testing.T) {
+	data, err := macTrayIcon(trayIcon)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := png.Decode(bytes.NewReader(trayIcon))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, h := source.Bounds().Dx(), source.Bounds().Dy()
+	px, py := w/10, h/10
+	if got.Bounds().Dx() != w+2*px || got.Bounds().Dy() != h+2*py {
+		t.Fatalf("padded icon bounds = %v", got.Bounds())
+	}
+	for y := 0; y < got.Bounds().Dy(); y++ {
+		for x := 0; x < got.Bounds().Dx(); x++ {
+			r, g, b, a := got.At(x, y).RGBA()
+			if x < px || x >= px+w || y < py || y >= py+h {
+				if a != 0 {
+					t.Fatalf("padding at (%d, %d) is not transparent", x, y)
+				}
+				continue
+			}
+			sr, sg, sb, sa := source.At(x-px, y-py).RGBA()
+			if r != sr || g != sg || b != sb || a != sa {
+				t.Fatalf("artwork changed at (%d, %d)", x, y)
+			}
+		}
+	}
+	if _, err := macTrayIcon([]byte("invalid PNG")); err == nil {
+		t.Fatal("invalid PNG accepted")
+	}
+}

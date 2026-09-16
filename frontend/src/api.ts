@@ -1,3 +1,4 @@
+import type { NetworkVPNConnectionOption, NetworkVPNConnectionIntentInput, NetworkVPNConnectionIntentSecret, NetworkVPNConnectionView } from '@opensoha/contracts/gen/ts/sohaapi'
 import type {
   Announcement,
   AnnouncementInbox,
@@ -472,4 +473,21 @@ function optionalString(value: unknown): string | undefined {
 
 function contractError(): ApiError {
   return new ApiError(0, 'response_contract_mismatch', 'Invalid Soha server response')
+}
+
+export async function getVPNConnectionOptions(deviceId: string): Promise<NetworkVPNConnectionOption[]> {
+ const payload = await request(`/network-access/vpn/connection-options?deviceId=${encodeURIComponent(deviceId)}`)
+ if (!isRecord(payload) || !Array.isArray(payload.items) || payload.items.length > 100 || !payload.items.every(item => isRecord(item) && hasStrings(item, ['profileId','name','mode','selectionStrategy']) && Array.isArray(item.candidates) && item.candidates.length <= 32)) throw contractError()
+ return payload.items as NetworkVPNConnectionOption[]
+}
+export async function createVPNIntent(input: NetworkVPNConnectionIntentInput): Promise<NetworkVPNConnectionIntentSecret> {
+ const data = envelopeData(await request('/network-access/vpn/connection-intents', {method:'POST',body:JSON.stringify(input)}))
+ if (!isRecord(data) || !hasStrings(data,['intentId','token','expiresAt'])) throw contractError()
+ return data as unknown as NetworkVPNConnectionIntentSecret
+}
+export async function getVPNCurrentConnection(deviceId: string): Promise<NetworkVPNConnectionView | null> {
+ const data = envelopeData(await request(`/network-access/vpn/current-connection?deviceId=${encodeURIComponent(deviceId)}`))
+ if (data === null) return null
+ if (!isRecord(data) || !hasStrings(data,['sessionId','profileId','gatewayId','state'])) throw contractError()
+ return data as unknown as NetworkVPNConnectionView
 }
