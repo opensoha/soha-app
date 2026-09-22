@@ -523,7 +523,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Path downloaded | Out-Null
-          gh release download $env:TAG --repo $env:GITHUB_REPOSITORY --dir downloaded --pattern "soha-app-v$env:VERSION-windows-amd64*.exe"
+          gh release download $env:TAG --repo $env:GITHUB_REPOSITORY --dir downloaded --pattern "soha-app-v$env:VERSION-windows-amd64*.exe" --pattern "soha-app-service-v$env:VERSION-windows-amd64.exe"
           $assets = @(Get-ChildItem downloaded/*.exe)
           if ($assets.Count -ne 3) { throw "Expected three Windows executables, found $($assets.Count)" }
           foreach ($asset in $assets) {

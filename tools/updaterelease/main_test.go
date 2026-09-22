@@ -7,6 +7,8 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 )
@@ -197,5 +199,37 @@ func writeTestAppZIP(t *testing.T, destination string) {
 	}
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWindowsSignatureDownloadIncludesEveryExecutable(t *testing.T) {
+	payload, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, job, ok := strings.Cut(string(payload), "  verify-windows-signatures:")
+	if !ok {
+		t.Fatal("missing Windows signature verification job")
+	}
+	job, _, _ = strings.Cut(job, "  verify-macos-signatures:")
+	patterns := regexp.MustCompile(`--pattern "([^"]+)"`).FindAllStringSubmatch(job, -1)
+	for name, want := range map[string]bool{
+		"soha-app-v0.2.0-windows-amd64.exe":           true,
+		"soha-app-v0.2.0-windows-amd64-installer.exe": true,
+		"soha-app-service-v0.2.0-windows-amd64.exe":   true,
+		"soha-app-service-v0.1.9-windows-amd64.exe":   false,
+		"soha-app-v0.2.0-linux-amd64.deb":             false,
+	} {
+		matched := false
+		for _, pattern := range patterns {
+			hit, err := filepath.Match(strings.ReplaceAll(pattern[1], "$env:VERSION", "0.2.0"), name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			matched = matched || hit
+		}
+		if matched != want {
+			t.Errorf("signature download matches %s = %v, want %v", name, matched, want)
+		}
 	}
 }
