@@ -132,6 +132,11 @@ func main() {
 		return app.Browser.OpenFile(logDirectory)
 	})
 	host.setOpenBrowserURL(app.Browser.OpenURL)
+	if supportsNativePersonalExport(runtime.GOOS) {
+		host.personalArchiveDialog = func() (string, error) {
+			return app.Dialog.SaveFile().SetFilename("personal-data.tar").AddFilter("TAR archive", "*.tar").PromptForSingleSelection()
+		}
+	}
 
 	window = app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:                      "Soha",

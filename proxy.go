@@ -75,28 +75,29 @@ type hostState struct {
 }
 
 type appHost struct {
-	static             http.Handler
-	proxy              *httputil.ReverseProxy
-	target             atomic.Pointer[url.URL]
-	client             *http.Client
-	config             *configStore
-	locked             bool
-	appInfo            AppInfo
-	stateMu            sync.RWMutex
-	source             string
-	pendingMu          sync.Mutex
-	pending            *url.URL
-	pendingCode        string
-	sessionMu          sync.Mutex
-	credentialsBlocked atomic.Bool
-	credentialKeyring  keyring.Keyring
-	desktopAuthMu      sync.Mutex
-	desktopAuthTimeout time.Duration
-	rendererReady      sync.Once
-	nativeMu           sync.RWMutex
-	openLogDirectory   func() error
-	openBrowserURL     func(string) error
-	runtimeAPI         http.Handler
+	static                http.Handler
+	proxy                 *httputil.ReverseProxy
+	target                atomic.Pointer[url.URL]
+	client                *http.Client
+	config                *configStore
+	locked                bool
+	appInfo               AppInfo
+	stateMu               sync.RWMutex
+	source                string
+	pendingMu             sync.Mutex
+	pending               *url.URL
+	pendingCode           string
+	sessionMu             sync.Mutex
+	credentialsBlocked    atomic.Bool
+	credentialKeyring     keyring.Keyring
+	desktopAuthMu         sync.Mutex
+	desktopAuthTimeout    time.Duration
+	rendererReady         sync.Once
+	nativeMu              sync.RWMutex
+	openLogDirectory      func() error
+	openBrowserURL        func(string) error
+	personalArchiveDialog func() (string, error)
+	runtimeAPI            http.Handler
 }
 
 type proxyTargetContextKey struct{}
@@ -174,6 +175,8 @@ func (h *appHost) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		h.handleOpenLogDirectory(writer, request)
 	case request.URL.Path == hostPrefix+"/browser/open":
 		h.handleOpenBrowser(writer, request)
+	case request.URL.Path == hostPrefix+"/personal-data/export":
+		h.handlePersonalDataExport(writer, request)
 	case request.URL.Path == hostPrefix+"/auth/desktop/start":
 		h.handleDesktopAuth(writer, request)
 	case request.URL.Path == hostPrefix || strings.HasPrefix(request.URL.Path, hostPrefix+"/"):

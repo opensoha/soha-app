@@ -14,6 +14,7 @@ import {
 import { DesktopApp } from "@/app";
 import {
   ApiError,
+  invalidateServerRequests,
   changePassword,
   getAnnouncementInbox,
   getAuthProviders,
@@ -154,6 +155,7 @@ vi.mock("@/api", () => {
       }
     },
     setAccessToken: vi.fn(),
+    invalidateServerRequests: vi.fn(),
     setSessionListener: vi.fn(),
     restoreSession: vi
       .fn()
@@ -601,6 +603,29 @@ describe("desktop app", () => {
 
     expect(useAppStore.getState().session).toBeNull();
     expect(container.textContent).toContain("登录 Soha");
+  });
+
+  it.each([{ permissionKeys: [] }, { permissionKeys: ["observe.ai.chat"] }])("replaces the authority snapshot when a session is renewed (%j)", async ({ permissionKeys }) => {
+    vi.mocked(getBootstrap).mockResolvedValueOnce({ ...bootstrap, permissionSnapshot: { permissionKeys: ["observe.ai.chat"] } });
+    const queryClient = await renderAppToHome();
+    expect(container.textContent).toContain("Heya");
+    queryClient.setQueryData(["refresh-fixture"], "same-owner-data");
+    const listener = vi.mocked(setSessionListener).mock.calls.find(([candidate]) => typeof candidate === "function")?.[0];
+    const fresh = { ...bootstrap, permissionSnapshot: { permissionKeys } };
+    await act(async () => listener?.({ accessToken: "renewed-fixture", user: principal }, fresh));
+    expect(useAppStore.getState().bootstrap).toEqual(fresh);
+    expect(queryClient.getQueryData(["refresh-fixture"])).toBe("same-owner-data");
+    expect(container.textContent?.includes("Heya")).toBe(permissionKeys.includes("observe.ai.chat"));
+  });
+
+  it("drops the previous user's query cache when refresh changes identity", async () => {
+    const queryClient = await renderAppToHome();
+    queryClient.setQueryData(["refresh-fixture"], "previous-user-data");
+    const listener = vi.mocked(setSessionListener).mock.calls.find(([candidate]) => typeof candidate === "function")?.[0];
+    const nextUser = { ...principal, userId: "next-user" };
+    await act(async () => listener?.({ accessToken: "renewed-fixture", user: nextUser }, { ...bootstrap, user: nextUser, currentUser: nextUser }));
+    expect(useAppStore.getState().session?.user.userId).toBe("next-user");
+    expect(queryClient.getQueryData(["refresh-fixture"])).toBeUndefined();
   });
 
   it("shows a credential error without committing a failed password login", async () => {
@@ -1376,6 +1401,7 @@ describe("desktop app", () => {
     );
     expect(useAppStore.getState().session).toBeNull();
     expect(queryClient.getQueryData(["private"])).toBeUndefined();
+    expect(invalidateServerRequests).toHaveBeenCalled();
   });
 
   it("keeps old credentials cleared when Server activation fails", async () => {

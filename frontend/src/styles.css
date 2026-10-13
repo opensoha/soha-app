@@ -943,6 +943,54 @@ input {
   }
 }
 
+@media (max-width: 767px) {
+  .desktop-shell,
+  .desktop-shell[data-platform="darwin"] {
+    height: 100dvh;
+    min-height: 0;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .sidebar {
+    min-height: 0;
+    padding: 8px 12px;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .sidebar-drag-region {
+    display: none;
+  }
+
+  .sidebar nav {
+    display: flex;
+    margin-top: 0;
+    overflow-x: auto;
+  }
+
+  .nav-item {
+    min-height: 44px;
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .sidebar-footer {
+    margin-top: 8px;
+    padding-top: 8px;
+  }
+
+  .workspace {
+    height: auto;
+    min-height: 0;
+  }
+
+  .titlebar {
+    flex: 0 0 44px;
+    padding-inline: 16px;
+  }
+}
+
 @media (max-height: 680px) {
   .connection-main,
   .login-main {

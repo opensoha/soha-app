@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import { setAccessToken } from '@/api'
+import { invalidateServerRequests, setAccessToken } from '@/api'
 import type { Bootstrap, ConnectionCheck, HostState, Principal, Session, UserProfile } from '@/types'
 
 export type ThemeMode = 'system' | 'light' | 'dark'
@@ -46,7 +46,7 @@ interface AppState {
 
 export const useAppStore = create<AppState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       host: null,
       connection: null,
       session: null,
@@ -57,9 +57,19 @@ export const useAppStore = create<AppState>()(
       networkConnection: defaultNetworkConnectionPreferences,
  vpnRecovery: null,
  setVPNRecovery: (vpnRecovery) => set({vpnRecovery}),
-      setHost: (host) => set({ host }),
+      setHost: (host) => {
+        const current = get().host
+        if (current && current.serverUrl !== host.serverUrl) {
+          invalidateServerRequests()
+          get().clearSession()
+          set({ host, connection: null })
+          return
+        }
+        set({ host })
+      },
       setConnection: (connection) => set({ connection }),
       commitSession: (session, bootstrap = null) => {
+        if (get().session && get().session?.user.userId !== session.user.userId) invalidateServerRequests()
         setAccessToken(session.accessToken)
         set({ session, bootstrap })
       },
@@ -113,6 +123,13 @@ export const useAppStore = create<AppState>()(
     },
   ),
 )
+
+// User IDs are only unique within a server. Keep assistant caches and drafts
+// attached to that service even when a late component callback still runs.
+export function selectAssistantOwner(state: AppState): string | undefined {
+  const userId = state.bootstrap?.currentUser.userId
+  return userId ? JSON.stringify([state.host?.serverUrl || '', userId]) : undefined
+}
 
 function normalizeNetworkConnectionPreferences(value: unknown): NetworkConnectionPreferences {
   if (typeof value !== 'object' || value === null) return defaultNetworkConnectionPreferences

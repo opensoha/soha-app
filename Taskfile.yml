@@ -1,6 +1,16 @@
 version: '3'
 
 vars:
+  LOCAL_VERIFY:
+    sh: >-
+      if [ "${GITHUB_ACTIONS:-}" != true ] &&
+      { command -v opensoha-verify >/dev/null 2>&1 || [ -n "${OPENSOHA_LOCAL_VERIFY_REQUIRED:-}" ]; };
+      then echo "opensoha-verify run --"; fi
+  LOCAL_DOCKER_BUILD:
+    sh: >-
+      if [ "${GITHUB_ACTIONS:-}" != true ] &&
+      { command -v opensoha-verify >/dev/null 2>&1 || [ -n "${OPENSOHA_LOCAL_VERIFY_REQUIRED:-}" ]; };
+      then echo "opensoha-verify build-image --"; else echo "docker build"; fi
   APP_NAME: "soha-app"
   BIN_DIR: "bin"
   PACKAGE_MANAGER: '{{.PACKAGE_MANAGER | default "npm"}}'
@@ -23,6 +33,19 @@ includes:
   android: ./build/android/Taskfile.yml
 
 tasks:
+  test:
+    cmds:
+      - "{{.LOCAL_VERIFY}} go test ./..."
+  vet:
+    cmds:
+      - "{{.LOCAL_VERIFY}} go vet ./..."
+  verify:docker:
+    deps:
+      - task: common:build:frontend
+        vars:
+          BUILD_FLAGS: "-tags server,production"
+    cmds:
+      - "opensoha-verify image -- -f build/docker/Dockerfile.server ."
   build:
     summary: Builds the application
     cmds:

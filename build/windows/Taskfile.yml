@@ -47,13 +47,13 @@ tasks:
             ref: .DEV
       - task: common:generate:icons
     preconditions:
-      - sh: '{{if eq .OBFUSCATED "true"}}garble -version{{else}}exit 0{{end}}'
-        msg: "garble is required for obfuscated builds. Install it with: go install mvdan.cc/garble@v0.16.0 (requires Go 1.24+). See https://github.com/burrowers/garble/releases for version/toolchain compatibility."
+      - sh: '{{if eq .OBFUSCATED "true"}}garble version{{else}}exit 0{{end}}'
+        msg: "garble is required for obfuscated builds. Install it with: go install mvdan.cc/garble@v0.18.0 (requires Go 1.27). See https://github.com/burrowers/garble/releases for version/toolchain compatibility."
     cmds:
       - task: generate:syso
         vars:
           ARCH: '{{.ARCH}}'
-      - '{{if eq .OBFUSCATED "true"}}garble {{.GARBLE_ARGS}} build{{else}}go build{{end}} {{.BUILD_FLAGS}} -o "{{.BIN_DIR}}/{{.APP_NAME}}.exe"'
+      - '{{.LOCAL_VERIFY}} {{if eq .OBFUSCATED "true"}}garble {{.GARBLE_ARGS}} build{{else}}go build{{end}} {{.BUILD_FLAGS}} -o "{{.BIN_DIR}}/{{.APP_NAME}}.exe"'
       - task: build:service
         vars:
           ARCH: '{{.ARCH}}'
@@ -89,12 +89,12 @@ tasks:
       - task: generate:syso
         vars:
           ARCH: '{{.ARCH}}'
-      - docker run --rm -v "{{.ROOT_DIR}}:/app" {{.DOCKER_MOUNTS}} -e APP_NAME="{{.APP_NAME}}" {{if .EXTRA_TAGS}}-e EXTRA_TAGS="{{.EXTRA_TAGS}}"{{end}} {{if eq .OBFUSCATED "true"}}-e OBFUSCATED=true{{end}} {{if .GARBLE_ARGS}}-e GARBLE_ARGS="{{.GARBLE_ARGS}}"{{end}} {{.CROSS_IMAGE}} windows {{.DOCKER_ARCH}}
+      - '{{.LOCAL_VERIFY}} docker run --rm -v "{{.ROOT_DIR}}:/app" {{.DOCKER_MOUNTS}} -e APP_NAME="{{.APP_NAME}}" {{if .EXTRA_TAGS}}-e EXTRA_TAGS="{{.EXTRA_TAGS}}"{{end}} {{if eq .OBFUSCATED "true"}}-e OBFUSCATED=true{{end}} {{if .GARBLE_ARGS}}-e GARBLE_ARGS="{{.GARBLE_ARGS}}"{{end}} {{.CROSS_IMAGE}} windows {{.DOCKER_ARCH}}'
       - task: build:service
         vars:
           ARCH: '{{.ARCH}}'
           SERVICE_LDFLAGS: '{{.SERVICE_LDFLAGS}}'
-      - cmd: docker run --rm -v "{{.ROOT_DIR}}:/app" alpine chown -R $(id -u):$(id -g) /app/bin
+      - cmd: '{{.LOCAL_VERIFY}} docker run --rm -v "{{.ROOT_DIR}}:/app" alpine chown -R $(id -u):$(id -g) /app/bin'
         platforms: [linux, darwin]
       - rm -f *.syso
     vars:
@@ -108,7 +108,7 @@ tasks:
     summary: Builds the Windows endpoint network service
     internal: true
     cmds:
-      - go build -tags production -trimpath -buildvcs=false -ldflags="-w -s{{if .SERVICE_LDFLAGS}} {{.SERVICE_LDFLAGS}}{{end}}" -o "{{.BIN_DIR}}/soha-app-service.exe" ./cmd/soha-app-service
+      - '{{.LOCAL_VERIFY}} go build -tags production -trimpath -buildvcs=false -ldflags="-w -s{{if .SERVICE_LDFLAGS}} {{.SERVICE_LDFLAGS}}{{end}}" -o "{{.BIN_DIR}}/soha-app-service.exe" ./cmd/soha-app-service'
     env:
       GOOS: windows
       GOARCH: '{{.ARCH | default ARCH}}'
@@ -128,7 +128,7 @@ tasks:
     summary: Generates Windows `.syso` file
     dir: build
     cmds:
-      - wails3 generate syso -arch {{.ARCH}} -icon windows/icon.ico -manifest windows/wails.exe.manifest -info windows/info.json -out ../wails_windows_{{.ARCH}}.syso
+      - '{{.LOCAL_VERIFY}} wails3 generate syso -arch {{.ARCH}} -icon windows/icon.ico -manifest windows/wails.exe.manifest -info windows/info.json -out ../wails_windows_{{.ARCH}}.syso'
     vars:
       ARCH: '{{.ARCH | default ARCH}}'
 
@@ -142,7 +142,7 @@ tasks:
         msg: "Soha endpoint networking requires INSTALL_SCOPE=machine"
     cmds:
       # Create the Microsoft WebView2 bootstrapper if it doesn't exist
-      - wails3 generate webview2bootstrapper -dir "{{.ROOT_DIR}}/build/windows/nsis"
+      - '{{.LOCAL_VERIFY}} wails3 generate webview2bootstrapper -dir "{{.ROOT_DIR}}/build/windows/nsis"'
       - |
         {{if eq OS "windows"}}
         makensis -DARG_WAILS_{{.ARG_FLAG}}_BINARY="{{.ROOT_DIR}}\{{.BIN_DIR}}\{{.APP_NAME}}.exe" -DARG_SOHA_SERVICE_BINARY="{{.ROOT_DIR}}\{{.BIN_DIR}}\soha-app-service.exe" project.nsi

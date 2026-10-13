@@ -1,29 +1,29 @@
 import type {
   ConnectionCheck,
   HostState,
-	MihomoAppStatus,
+  MihomoAppStatus,
   NetworkConnectInput,
   NetworkLinkStatus,
   NetworkServiceStatus,
   SoftwareListResponse,
   SoftwareTaskResponse,
   UpdateStatus,
-} from '@/types'
+} from "@/types";
 
 interface DataEnvelope<T> {
-  data: T
+  data: T;
 }
 
 interface ErrorEnvelope {
-  error?: { code?: string; message?: string }
+  error?: { code?: string; message?: string };
 }
 
 interface PreparedSwitch {
-  activationToken: string
-  connection: ConnectionCheck
+  activationToken: string;
+  connection: ConnectionCheck;
 }
 
-export const wailsRequestBodyHeader = 'X-Soha-App-Body'
+export const wailsRequestBodyHeader = "X-Soha-App-Body";
 
 export class HostError extends Error {
   constructor(
@@ -32,119 +32,172 @@ export class HostError extends Error {
     message: string,
     readonly requestId?: string,
   ) {
-    super(message)
-    this.name = 'HostError'
+    super(message);
+    this.name = "HostError";
   }
 }
 
 export function getHostState(): Promise<HostState> {
-  return hostRequest<HostState>('/app/v1/state')
+  return hostRequest<HostState>("/app/v1/state");
+}
+
+export function savePersonalDataExport(
+  input: { assistantId: string; environmentVersion: number },
+  accessToken: string | null,
+  signal: AbortSignal,
+): Promise<{ status: "saved" | "canceled" }> {
+  const request = jsonRequest(input);
+  return hostRequest("/app/v1/personal-data/export", {
+    ...request,
+    headers: {
+      ...request.headers,
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+    },
+    signal,
+  });
 }
 
 export function getNetworkStatus(): Promise<NetworkServiceStatus> {
-  return hostRequest<NetworkServiceStatus>('/app/v1/network/status', {}, false)
+  return hostRequest<NetworkServiceStatus>("/app/v1/network/status", {}, false);
 }
 
 export function getNetworkLinkStatus(): Promise<NetworkLinkStatus> {
-  return hostRequest<NetworkLinkStatus>('/app/v1/network/link', {}, false)
+  return hostRequest<NetworkLinkStatus>("/app/v1/network/link", {}, false);
 }
 
-export function connectNetwork(input: NetworkConnectInput): Promise<NetworkServiceStatus> {
+export function connectNetwork(
+  input: NetworkConnectInput,
+): Promise<NetworkServiceStatus> {
   return hostRequest<NetworkServiceStatus>(
-    '/app/v1/network/connect',
+    "/app/v1/network/connect",
     jsonRequest(input),
     false,
-  )
+  );
 }
 
 export function disconnectNetwork(): Promise<NetworkServiceStatus> {
   return hostRequest<NetworkServiceStatus>(
-    '/app/v1/network/disconnect',
+    "/app/v1/network/disconnect",
     jsonRequest({}),
     false,
-  )
+  );
 }
 
 export function getMihomoAppStatus(): Promise<MihomoAppStatus> {
-	return hostRequest<MihomoAppStatus>('/app/v1/network/mihomo', {}, false)
+  return hostRequest<MihomoAppStatus>("/app/v1/network/mihomo", {}, false);
 }
 
-export function configureMihomoApp(subscriptionUrl: string): Promise<MihomoAppStatus> {
-	return hostRequest<MihomoAppStatus>('/app/v1/network/mihomo', {
-		...jsonRequest({ subscriptionUrl }),
-		method: 'PUT',
-	}, false)
+export function configureMihomoApp(
+  subscriptionUrl: string,
+): Promise<MihomoAppStatus> {
+  return hostRequest<MihomoAppStatus>(
+    "/app/v1/network/mihomo",
+    {
+      ...jsonRequest({ subscriptionUrl }),
+      method: "PUT",
+    },
+    false,
+  );
 }
 
-export function selectMihomoApp(selectedProxy: string): Promise<MihomoAppStatus> {
-	return hostRequest<MihomoAppStatus>('/app/v1/network/mihomo/selection', {
-		...jsonRequest({ selectedProxy }),
-		method: 'PUT',
-	}, false)
+export function selectMihomoApp(
+  selectedProxy: string,
+): Promise<MihomoAppStatus> {
+  return hostRequest<MihomoAppStatus>(
+    "/app/v1/network/mihomo/selection",
+    {
+      ...jsonRequest({ selectedProxy }),
+      method: "PUT",
+    },
+    false,
+  );
 }
 
 export function refreshMihomoApp(): Promise<MihomoAppStatus> {
-	return hostRequest<MihomoAppStatus>('/app/v1/network/mihomo/refresh', jsonRequest({}), false)
+  return hostRequest<MihomoAppStatus>(
+    "/app/v1/network/mihomo/refresh",
+    jsonRequest({}),
+    false,
+  );
 }
 
 export function clearMihomoApp(): Promise<MihomoAppStatus> {
-	return hostRequest<MihomoAppStatus>('/app/v1/network/mihomo', { method: 'DELETE' }, false)
+  return hostRequest<MihomoAppStatus>(
+    "/app/v1/network/mihomo",
+    { method: "DELETE" },
+    false,
+  );
 }
 
 export function checkServer(serverUrl: string): Promise<ConnectionCheck> {
-  return hostRequest<ConnectionCheck>('/app/v1/connections/check', jsonRequest({ serverUrl }))
+  return hostRequest<ConnectionCheck>(
+    "/app/v1/connections/check",
+    jsonRequest({ serverUrl }),
+  );
 }
 
 export async function prepareServerSwitch(
   serverUrl: string,
   accessToken?: string,
 ): Promise<PreparedSwitch> {
-  const request = jsonRequest({ serverUrl })
-  if (accessToken) request.headers = { ...request.headers, Authorization: `Bearer ${accessToken}` }
-  return hostRequest<PreparedSwitch>('/app/v1/connections/switch', request)
+  const request = jsonRequest({ serverUrl });
+  if (accessToken)
+    request.headers = {
+      ...request.headers,
+      Authorization: `Bearer ${accessToken}`,
+    };
+  return hostRequest<PreparedSwitch>("/app/v1/connections/switch", request);
 }
 
-export function activateServerSwitch(activationToken: string): Promise<HostState> {
+export function activateServerSwitch(
+  activationToken: string,
+): Promise<HostState> {
   return hostRequest<HostState>(
-    '/app/v1/connections/activate',
+    "/app/v1/connections/activate",
     jsonRequest({ activationToken }),
-  )
+  );
 }
 
 export function clearHostSession(): Promise<void> {
-  return hostRequest('/app/v1/session/clear', jsonRequest({})).then(() => undefined)
+  return hostRequest("/app/v1/session/clear", jsonRequest({})).then(
+    () => undefined,
+  );
 }
 
 export function openLogDirectory(): Promise<void> {
-  return hostRequest('/app/v1/logs/open', jsonRequest({})).then(() => undefined)
+  return hostRequest("/app/v1/logs/open", jsonRequest({})).then(
+    () => undefined,
+  );
 }
 
 export function getUpdateStatus(): Promise<UpdateStatus> {
-  return hostRequest<UpdateStatus>('/app/v1/updates/status', {}, false)
+  return hostRequest<UpdateStatus>("/app/v1/updates/status", {}, false);
 }
 
 export function checkForUpdates(): Promise<UpdateStatus> {
   return hostRequest<UpdateStatus>(
-    '/app/v1/updates/check',
+    "/app/v1/updates/check",
     jsonRequest({}),
     false,
-  )
+  );
 }
 
 export function installUpdate(): Promise<UpdateStatus> {
   return hostRequest<UpdateStatus>(
-    '/app/v1/updates/install',
+    "/app/v1/updates/install",
     jsonRequest({}),
     false,
-  )
+  );
 }
 
-export function listSoftware(accessToken: string): Promise<SoftwareListResponse> {
+export function listSoftware(
+  accessToken: string,
+): Promise<SoftwareListResponse> {
   return hostRequest<SoftwareListResponse>(
-    '/app/v1/software',
+    "/app/v1/software",
     bearerRequest(accessToken),
     false,
-  )
+  );
 }
 
 export function installSoftware(
@@ -155,7 +208,7 @@ export function installSoftware(
     `/app/v1/software/${encodeURIComponent(softwareId)}/install`,
     bearerRequest(accessToken, jsonRequest({})),
     false,
-  )
+  );
 }
 
 export function getSoftwareTask(taskId: string): Promise<SoftwareTaskResponse> {
@@ -163,37 +216,45 @@ export function getSoftwareTask(taskId: string): Promise<SoftwareTaskResponse> {
     `/app/v1/software/tasks/${encodeURIComponent(taskId)}`,
     {},
     false,
-  )
+  );
 }
 
 export function openBrowserURL(url: string): Promise<void> {
-  return hostRequest('/app/v1/browser/open', jsonRequest({ url })).then(() => undefined)
+  return hostRequest("/app/v1/browser/open", jsonRequest({ url })).then(
+    () => undefined,
+  );
 }
 
-export function startDesktopAuth(providerId: string, signal: AbortSignal): Promise<unknown> {
-  return hostRequest<unknown>('/app/v1/auth/desktop/start', {
+export function startDesktopAuth(
+  providerId: string,
+  signal: AbortSignal,
+): Promise<unknown> {
+  return hostRequest<unknown>("/app/v1/auth/desktop/start", {
     ...jsonRequest({ providerId }),
     signal,
-  })
+  });
 }
 
 function jsonRequest(body: object): RequestInit {
-  const payload = JSON.stringify(body)
+  const payload = JSON.stringify(body);
   return {
-    method: 'POST',
-    credentials: 'include',
+    method: "POST",
+    credentials: "include",
     headers: {
-      'Content-Type': 'application/json',
+      "Content-Type": "application/json",
       [wailsRequestBodyHeader]: encodeURIComponent(payload),
     },
-  }
+  };
 }
 
-function bearerRequest(accessToken: string, init: RequestInit = {}): RequestInit {
+function bearerRequest(
+  accessToken: string,
+  init: RequestInit = {},
+): RequestInit {
   return {
     ...init,
     headers: { ...init.headers, Authorization: `Bearer ${accessToken}` },
-  }
+  };
 }
 
 async function hostRequest<T>(
@@ -201,36 +262,37 @@ async function hostRequest<T>(
   init: RequestInit = {},
   expectsDataEnvelope = true,
 ): Promise<T> {
-  let response: Response
+  let response: Response;
   try {
-    response = await fetch(path, { credentials: 'include', ...init })
+    response = await fetch(path, { credentials: "include", ...init });
   } catch (error) {
-    if (init.signal?.aborted) throw error
-    throw new HostError(0, 'host_unavailable', 'Soha App host is unavailable')
+    if (init.signal?.aborted) throw error;
+    throw new HostError(0, "host_unavailable", "Soha App host is unavailable");
   }
 
   const payload = (await response.json().catch(() => null)) as
-    | DataEnvelope<T>
-    | ErrorEnvelope
-    | T
-    | null
-  const envelope = payload as (DataEnvelope<T> & ErrorEnvelope) | null
+    DataEnvelope<T> | ErrorEnvelope | T | null;
+  const envelope = payload as (DataEnvelope<T> & ErrorEnvelope) | null;
   if (!response.ok) {
-    const error = envelope?.error
+    const error = envelope?.error;
     throw new HostError(
       response.status,
-      error?.code || 'host_request_failed',
-      error?.message || 'Soha App host request failed',
-      response.headers.get('X-Request-ID') || undefined,
-    )
+      error?.code || "host_request_failed",
+      error?.message || "Soha App host request failed",
+      response.headers.get("X-Request-ID") || undefined,
+    );
   }
-  if (!payload || typeof payload !== 'object' || (expectsDataEnvelope && !('data' in payload))) {
+  if (
+    !payload ||
+    typeof payload !== "object" ||
+    (expectsDataEnvelope && !("data" in payload))
+  ) {
     throw new HostError(
       response.status,
-      'host_contract_mismatch',
-      'Invalid Soha App host response',
-      response.headers.get('X-Request-ID') || undefined,
-    )
+      "host_contract_mismatch",
+      "Invalid Soha App host response",
+      response.headers.get("X-Request-ID") || undefined,
+    );
   }
-  return expectsDataEnvelope ? envelope!.data : payload as T
+  return expectsDataEnvelope ? envelope!.data : (payload as T);
 }

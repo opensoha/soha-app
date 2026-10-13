@@ -8,7 +8,7 @@ tasks:
     # Tidy consistency is enforced separately before frontend dependencies exist.
     run: once
     cmds:
-      - go mod verify
+      - '{{.LOCAL_VERIFY}} go mod verify'
 
   install:frontend:deps:
     summary: Install frontend dependencies
@@ -27,7 +27,7 @@ tasks:
       - sh: npm version
         msg: "Looks like npm isn't installed. Npm is part of the Node installer: https://nodejs.org/en/download/"
     cmds:
-      - npm ci
+      - '{{.LOCAL_VERIFY}} npm ci'
 
   install:frontend:deps:bun:
     dir: frontend
@@ -41,7 +41,7 @@ tasks:
       - sh: bun --version
         msg: "bun not found"
     cmds:
-      - bun install
+      - '{{.LOCAL_VERIFY}} bun install'
 
   install:frontend:deps:pnpm:
     dir: frontend
@@ -54,7 +54,7 @@ tasks:
       - sh: pnpm --version
         msg: "pnpm not found"
     cmds:
-      - pnpm install
+      - '{{.LOCAL_VERIFY}} pnpm install'
 
   install:frontend:deps:yarn:
     dir: frontend
@@ -67,7 +67,7 @@ tasks:
       - sh: yarn --version
         msg: "yarn not found"
     cmds:
-      - yarn install
+      - '{{.LOCAL_VERIFY}} yarn install'
 
   build:frontend:
     label: build:frontend (DEV={{.DEV}} RUNNER={{.PACKAGE_MANAGER}})
@@ -112,21 +112,21 @@ tasks:
   frontend:run:yarn:
     dir: frontend
     cmds:
-      - yarn {{.SCRIPT}}
+      - '{{.LOCAL_VERIFY}} yarn {{.SCRIPT}}'
     vars:
       SCRIPT: "{{.SCRIPT}}"
 
   frontend:run:pnpm:
     dir: frontend
     cmds:
-      - pnpm run {{.SCRIPT}}
+      - '{{.LOCAL_VERIFY}} pnpm run {{.SCRIPT}}'
     vars:
       SCRIPT: "{{.SCRIPT}}"
 
   frontend:run:bun:
     dir: frontend
     cmds:
-      - bun run {{.SCRIPT}}
+      - '{{.LOCAL_VERIFY}} bun run {{.SCRIPT}}'
     vars:
       SCRIPT: "{{.SCRIPT}}"
 
@@ -182,7 +182,7 @@ tasks:
     generates:
       - frontend/bindings/**/*
     cmds:
-      - wails3 generate bindings -f '{{.BUILD_FLAGS}}' -clean=true{{if eq .OBFUSCATED "true"}} -obfuscated{{end}} -ts -i
+      - "{{.LOCAL_VERIFY}} wails3 generate bindings -f '{{.BUILD_FLAGS}}' -clean=true{{if eq .OBFUSCATED \"true\"}} -obfuscated{{end}} -ts -i"
 
   generate:icons:
     summary: Generates Windows `.ico` and Mac `.icns` from an image; on macOS, `-iconcomposerinput appicon.icon -macassetdir darwin` also produces `Assets.car` from a `.icon` file (skipped on other platforms).
@@ -195,7 +195,7 @@ tasks:
       - "darwin/icons.icns"
       - "windows/icon.ico"
     cmds:
-      - wails3 generate icons -input appicon.png -macfilename darwin/icons.icns -windowsfilename windows/icon.ico -iconcomposerinput appicon.icon -macassetdir darwin
+      - '{{.LOCAL_VERIFY}} wails3 generate icons -input appicon.png -macfilename darwin/icons.icns -windowsfilename windows/icon.ico -iconcomposerinput appicon.icon -macassetdir darwin'
 
   dev:frontend:
     summary: Runs the frontend in development mode
@@ -252,9 +252,9 @@ tasks:
             ref: .OBFUSCATED
     preconditions:
       - sh: '{{if eq .OBFUSCATED "true"}}command -v garble >/dev/null 2>&1{{else}}true{{end}}'
-        msg: "garble is required for obfuscated builds. Install it with: go install mvdan.cc/garble@v0.16.0 (requires Go 1.24+). See https://github.com/burrowers/garble/releases for version/toolchain compatibility."
+        msg: "garble is required for obfuscated builds. Install it with: go install mvdan.cc/garble@v0.18.0 (requires Go 1.27). See https://github.com/burrowers/garble/releases for version/toolchain compatibility."
     cmds:
-      - '{{if eq .OBFUSCATED "true"}}garble {{.GARBLE_ARGS}} build{{else}}go build{{end}} {{.BUILD_FLAGS}} -o "{{.BIN_DIR}}/{{.APP_NAME}}-server{{exeExt}}"'
+      - '{{.LOCAL_VERIFY}} {{if eq .OBFUSCATED "true"}}garble {{.GARBLE_ARGS}} build{{else}}go build{{end}} {{.BUILD_FLAGS}} -o "{{.BIN_DIR}}/{{.APP_NAME}}-server{{exeExt}}"'
     vars:
       BUILD_FLAGS: '-tags server{{if eq .DEV "true"}}{{if eq .OBFUSCATED "true"}},wails_obfuscated{{end}}{{if .EXTRA_TAGS}},{{.EXTRA_TAGS}}{{end}} -buildvcs=false -gcflags=all="-l"{{else}},production{{if eq .OBFUSCATED "true"}},wails_obfuscated{{end}}{{if .EXTRA_TAGS}},{{.EXTRA_TAGS}}{{end}} -trimpath -buildvcs=false -ldflags="-w -s"{{end}}'
 
@@ -276,7 +276,7 @@ tasks:
 
       Usage: task build:docker [TAG=myapp:latest] [CGO_ENABLED=1] [GO_IMAGE=...] [RUNTIME_IMAGE=...]
       For CGO apps, set CGO_ENABLED=1 with libc-compatible builder/runtime images, e.g.:
-        task build:docker CGO_ENABLED=1 GO_IMAGE=golang:bookworm RUNTIME_IMAGE=gcr.io/distroless/base-debian12
+        task build:docker CGO_ENABLED=1 GO_IMAGE=golang:1.27.2-bookworm RUNTIME_IMAGE=gcr.io/distroless/base-debian12
     deps:
       # Build the production frontend so frontend/dist (embedded by the Go build
       # inside the image) is present and current in the Docker build context.
@@ -287,9 +287,9 @@ tasks:
           BUILD_FLAGS: "-tags server,production"
     cmds:
       - >-
-        docker build
+        {{.LOCAL_DOCKER_BUILD}}
         --build-arg CGO_ENABLED={{.CGO_ENABLED | default "0"}}
-        --build-arg GO_IMAGE={{.GO_IMAGE | default "golang:alpine"}}
+        --build-arg GO_IMAGE={{.GO_IMAGE | default "golang:1.27.2-alpine"}}
         --build-arg RUNTIME_IMAGE={{.RUNTIME_IMAGE | default "gcr.io/distroless/static-debian12"}}
         -t {{.TAG | default (printf "%s:latest" .APP_NAME)}}
         -f build/docker/Dockerfile.server .
@@ -326,7 +326,7 @@ tasks:
       Builds the Docker image needed for cross-compiling to any platform.
       Run this once to enable cross-platform builds from any OS.
     cmds:
-      - docker build -t wails-cross -f build/docker/Dockerfile.cross build/docker/
+      - '{{.LOCAL_DOCKER_BUILD}} -t wails-cross -f build/docker/Dockerfile.cross build/docker/'
     preconditions:
       - sh: docker info > /dev/null 2>&1
         msg: "Docker is required. Please install Docker first."

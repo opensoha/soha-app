@@ -1,0 +1,482 @@
+.app-assistant {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.app-assistant-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.app-assistant-header img {
+  width: 28px;
+  height: 28px;
+}
+.app-assistant-header > div {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+.app-assistant-header > div > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app-assistant-header > div > span:last-child {
+  font-size: 12px;
+}
+.app-assistant .app-assistant-sections {
+  align-self: center;
+  margin: 12px;
+}
+.app-assistant .app-assistant-topic-toggle {
+  display: none;
+}
+.app-assistant-workspace {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+.app-assistant-workspace > aside {
+  width: 208px;
+  flex: 0 0 208px;
+  border-right: 1px solid var(--border);
+  padding: 12px;
+  overflow-y: auto;
+  background: var(--surface-muted);
+}
+.app-assistant-topics {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.app-assistant-topics button {
+  text-align: left;
+  justify-content: flex-start;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.app-assistant-topics .is-selected {
+  background: var(--primary-muted);
+  color: var(--primary);
+}
+.app-assistant-topic-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 14px;
+}
+.app-assistant-chat {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+}
+.app-assistant-messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 24px max(20px, calc((100% - 720px) / 2));
+  overscroll-behavior: contain;
+}
+.app-assistant-message {
+  max-width: 92%;
+  margin-bottom: 24px;
+  overflow-wrap: anywhere;
+}
+.app-assistant-message > div {
+  white-space: pre-wrap;
+  line-height: 1.8;
+  margin-top: 8px;
+}
+.app-assistant-message.is-user {
+  margin-left: auto;
+  background: var(--surface-muted);
+  padding: 12px 16px;
+  border-radius: 14px;
+}
+.app-assistant-message-content {
+  position: relative;
+}
+.app-assistant-message-content .ant-image {
+  display: block;
+  max-width: min(320px, 100%);
+}
+.app-assistant-chat-image {
+  max-height: 260px;
+  object-fit: contain;
+  border-radius: 12px;
+}
+.app-assistant-message-reaction {
+  position: absolute;
+  right: -12px;
+  bottom: -25px;
+  display: grid;
+  place-items: center;
+  min-width: 28px;
+  height: 24px;
+  padding-inline: 4px;
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: 0 1px 3px #0000000f;
+  font-size: 15px;
+  line-height: 1;
+}
+.app-assistant-chat-task.is-chat-image img {
+  object-fit: contain;
+}
+.app-assistant-composer {
+  margin: 12px 20px 20px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 28px;
+}
+.app-assistant-composer textarea {
+  border: none;
+  box-shadow: none;
+  resize: none;
+}
+.app-assistant-composer-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+}
+.app-assistant-composer-row textarea {
+  flex: 1;
+  min-width: 0;
+  align-self: center;
+  padding-inline: 0;
+}
+.app-assistant-composer-row > .ant-btn {
+  flex: none;
+}
+.app-assistant-model-trigger {
+  max-width: 240px;
+  color: var(--text-secondary);
+  gap: 6px;
+}
+.app-assistant-model-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app-assistant-model-effort {
+  flex: none;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.app-assistant-model-trigger > .anticon-down {
+  flex: none;
+  font-size: 9px;
+}
+.app-assistant-context-trigger {
+  width: 28px;
+  min-width: 28px;
+  padding: 0;
+  color: var(--text-secondary);
+}
+.app-assistant-context-trigger .ant-progress {
+  display: flex;
+}
+.app-assistant-context-trigger.is-unknown .ant-progress {
+  opacity: 0.5;
+}
+.app-assistant-model-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(280px, calc(100vw - 48px));
+}
+.app-assistant-add-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 180px;
+}
+.app-assistant-add-menu > .ant-btn {
+  justify-content: flex-start;
+  min-height: 36px;
+}
+.app-assistant-context-chips {
+  margin-bottom: 8px;
+}
+@media (max-width: 767px) {
+  .app-assistant-composer {
+    padding: 6px;
+  }
+  .app-assistant-composer-row {
+    gap: 4px;
+  }
+  .app-assistant-composer-row > .ant-btn {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .app-assistant-model-trigger {
+    max-width: 124px;
+    padding-inline: 4px;
+  }
+  .app-assistant-composer .app-assistant-context-trigger {
+    width: 44px;
+    min-inline-size: 44px;
+    min-height: 44px;
+  }
+  .app-assistant-add-menu > .ant-btn {
+    min-height: 44px;
+  }
+}
+@media (max-width: 380px) {
+  .app-assistant-model-trigger {
+    max-width: 104px;
+  }
+}
+.app-assistant-content {
+  width: 100%;
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 24px;
+  overflow-y: auto;
+}
+.app-assistant-task {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 20px 0;
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+.app-assistant-approval {
+  width: 100%;
+  border: 1px solid var(--border);
+  padding: 14px;
+  border-radius: 8px;
+}
+.app-assistant-native-progress {
+  width: 100%;
+}
+.app-assistant-result,
+.app-assistant-approval pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.app-assistant-bottom {
+  display: none;
+}
+@media (max-width: 767px) {
+  .app-assistant-environment-refresh {
+    min-height: 44px;
+  }
+  .app-assistant {
+    border: 0;
+    border-radius: 0;
+  }
+  .app-assistant-workspace > aside,
+  .app-assistant .app-assistant-sections {
+    display: none;
+  }
+  .app-assistant .app-assistant-topic-toggle {
+    display: inline-flex;
+  }
+  .app-assistant-header {
+    padding: 12px;
+  }
+  .app-assistant-messages,
+  .app-assistant-content {
+    padding: 16px;
+  }
+  .app-assistant-composer {
+    margin: 8px 12px 12px;
+  }
+  .app-assistant-bottom {
+    display: flex;
+    gap: 4px;
+    border-top: 1px solid var(--border);
+    padding: 8px 12px max(8px, env(safe-area-inset-bottom));
+  }
+  .app-assistant-bottom > button {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 4px;
+    height: 48px;
+    color: var(--text-secondary);
+    font-size: 12px;
+  }
+  .app-assistant-bottom > button[aria-current="page"] {
+    color: var(--primary);
+    background: var(--primary-muted);
+  }
+}
+
+.app-assistant-environment-controls {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+@media (max-width: 767px) {
+  .app-assistant-environment-controls .ant-btn,
+  .app-assistant-environment-controls .ant-select {
+    min-height: 44px;
+  }
+}
+
+.app-assistant-avatar {
+  display: inline-flex;
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: var(--ant-color-bg-container, #fff);
+}
+.app-assistant-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.app-assistant-avatar source {
+  display: none;
+}
+.app-assistant-avatar.is-default img {
+  object-fit: contain;
+  padding: 20px;
+}
+.app-assistant-avatar.is-busy {
+  animation: assistant-avatar-pulse 1.8s ease-in-out infinite;
+}
+.app-assistant-profile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 20px;
+}
+.app-assistant-profile h4 {
+  margin: 0;
+}
+.app-assistant-profile-picture {
+  position: relative;
+}
+.app-assistant-profile-picture button {
+  position: absolute;
+  right: -6px;
+  bottom: -4px;
+  min-width: 44px;
+  min-height: 44px;
+  background: var(--ant-color-bg-layout, #f5f5f5);
+}
+.app-assistant-message .app-assistant-avatar {
+  width: 24px;
+  height: 24px;
+  vertical-align: middle;
+  margin-right: 6px;
+}
+.app-assistant-message .app-assistant-avatar.is-default img {
+  padding: 0;
+}
+.app-assistant-avatar-editor .ant-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.app-assistant-avatar-preview {
+  display: flex;
+  justify-content: center;
+}
+.app-assistant-avatar-preview .app-assistant-avatar {
+  width: 112px;
+  height: 112px;
+}
+.app-assistant-avatar-motion {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+@keyframes assistant-avatar-pulse {
+  50% {
+    box-shadow: 0 0 0 7px rgba(22, 119, 255, 0.08);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .app-assistant-avatar.is-busy {
+    animation: none;
+  }
+}
+@media (max-width: 767px) {
+  .app-assistant-avatar-editor .ant-btn,
+  .app-assistant-avatar-editor .ant-select-selector,
+  .app-assistant-avatar-editor .ant-modal-close {
+    min-height: 44px;
+  }
+}
+
+.app-assistant-chat-task {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  font-size: 12px;
+}
+.app-assistant-chat-task img {
+  width: 40px;
+  height: 40px;
+  object-fit: cover;
+  border-radius: 10px;
+}
+.app-assistant-chat-result {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 8px 0;
+}
+.app-assistant-chat-result img {
+  width: 160px;
+  max-width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  border-radius: 18px;
+}
+.app-assistant-chat-result .ant-btn,
+.app-assistant-chat-task .ant-btn {
+  min-height: 44px;
+}
+
+.app-assistant-context-usage {
+  width: min(320px, 75vw);
+  max-height: 70vh;
+  overflow-y: auto;
+}
+.app-assistant-context-usage dl > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 10px 0;
+}
+.app-assistant-context-usage dd {
+  margin: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+.app-assistant-context-usage dt {
+  flex-shrink: 0;
+}
+.app-assistant-context-usage p,
+.app-assistant-task-usage p {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.app-assistant-context-usage progress {
+  width: 100%;
+  margin-top: 8px;
+}

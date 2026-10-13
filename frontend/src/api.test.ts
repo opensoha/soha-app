@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  ApiError,
   changePassword,
   createNetworkAccessGrant,
   getBootstrap,
@@ -11,6 +12,7 @@ import {
   loginWithPassword,
   logoutServer,
   registerEndpointDevice,
+  requestResponse,
   setAccessToken,
   setPortalFavorite,
   setSessionListener,
@@ -50,6 +52,74 @@ describe('API transport', () => {
     setAccessToken(null)
     setSessionListener(null)
     vi.unstubAllGlobals()
+  })
+
+  it.each([200, 401])('rejects a late response from a previous server (%i)', async (status) => {
+    let complete!: (response: Response) => void
+    const fetchMock = vi.fn().mockImplementation(() => new Promise<Response>((resolve) => { complete = resolve }))
+    vi.stubGlobal('fetch', fetchMock)
+    setAccessToken('old-server')
+    const request = getBootstrap()
+    const result = expect(request).rejects.toMatchObject({ code: 'session_changed' })
+    setAccessToken(null)
+    setAccessToken('new-server-same-user')
+    expect((fetchMock.mock.calls[0][1] as RequestInit).signal?.aborted).toBe(true)
+    complete(jsonResponse({ data: { user: principal, currentUser: principal } }, status))
+    await result
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('cancels an already-open stream when the server session changes', async () => {
+    let input!: ReadableStreamDefaultController<Uint8Array>
+    const canceled = vi.fn()
+    const source = new ReadableStream<Uint8Array>({ start(controller) { input = controller }, cancel: canceled })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(source)))
+    setAccessToken('old-server')
+    const response = await requestResponse('/copilot/sessions/session/messages/stream', { method: 'POST', body: '{}' })
+    const reader = response.body!.getReader()
+    input.enqueue(new TextEncoder().encode('first-event'))
+    expect((await reader.read()).done).toBe(false)
+    const next = expect(reader.read()).rejects.toMatchObject({ name: 'AbortError' })
+    setAccessToken(null)
+    setAccessToken('new-server-same-user')
+    await next
+    expect(canceled).toHaveBeenCalledTimes(1)
+  })
+
+  it('preserves caller cancellation with the server-scoped transport signal', async () => {
+    const controller = new AbortController()
+    const fetchMock = vi.fn().mockImplementation((_path: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => reject(new DOMException('Canceled', 'AbortError')), { once: true })
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    setAccessToken('current-server')
+    const request = requestResponse('/copilot/agent-runs/run/events', { signal: controller.signal })
+    const result = expect(request).rejects.toMatchObject({ name: 'AbortError' })
+    controller.abort()
+    expect((fetchMock.mock.calls[0][1] as RequestInit).signal?.aborted).toBe(true)
+    await result
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not install an old refresh result after a server switch', async () => {
+    let complete!: (response: Response) => void
+    const listener = vi.fn()
+    setSessionListener(listener)
+    const fetchMock = vi.fn().mockImplementation((path: string) => {
+      if (path.endsWith('/auth/refresh')) return new Promise<Response>((resolve) => { complete = resolve })
+      return Promise.resolve(jsonResponse({ error: { code: 'unauthorized' } }, 401))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    setAccessToken('old-server')
+    const request = getBootstrap()
+    const result = expect(request).rejects.toMatchObject({ code: 'session_changed' })
+    await vi.waitFor(() => expect(complete).toBeDefined())
+    setAccessToken(null)
+    setAccessToken('new-server')
+    complete(jsonResponse({ data: { user: principal, tokens: { accessToken: 'late-old-server' } } }))
+    await result
+    expect(listener).not.toHaveBeenCalled()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
   it('sends password login JSON through the Wails body header', async () => {
@@ -172,6 +242,8 @@ describe('API transport', () => {
   })
 
   it('uses one refresh for concurrent 401 responses and retries each request once', async () => {
+    const listener = vi.fn()
+    setSessionListener(listener)
     let refreshCalls = 0
     let resolveRefresh: ((response: Response) => void) | undefined
     const authorizations: string[] = []
@@ -222,12 +294,64 @@ describe('API transport', () => {
 
     await Promise.all([first, second])
     expect(refreshCalls).toBe(1)
+    expect(listener).toHaveBeenCalledWith(
+      { accessToken: 'new-token', user: { ...principal, permissionKeys: [] } },
+      { user: { ...principal, permissionKeys: [] }, currentUser: { ...principal, permissionKeys: [] }, permissionSnapshot: { permissionKeys: [] }, branding: {} },
+    )
     expect(authorizations).toEqual([
       'Bearer old-token',
       'Bearer old-token',
       'Bearer new-token',
       'Bearer new-token',
+      'Bearer new-token',
     ])
+  })
+
+  it.each([401, 403, 503, 'mismatched-user'] as const)('rejects a refreshed authority snapshot (%s) without a refresh loop or stale session', async (failure) => {
+    const listener = vi.fn()
+    setSessionListener(listener)
+    setAccessToken('expired-token')
+    let refreshCalls = 0
+    let bootstrapCalls = 0
+    vi.stubGlobal('fetch', vi.fn((input: string | URL | Request) => {
+      const path = String(input)
+      if (path.endsWith('/auth/refresh')) {
+        refreshCalls++
+        return Promise.resolve(jsonResponse({ data: { user: principal, tokens: { accessToken: 'renewed-token' } } }))
+      }
+      if (path.endsWith('/auth/bootstrap')) {
+        bootstrapCalls++
+        if (bootstrapCalls === 1) return Promise.resolve(jsonResponse({ error: { code: 'unauthorized' } }, 401))
+        if (failure === 'mismatched-user') return Promise.resolve(jsonResponse({ data: { user: principal, currentUser: { ...principal, userId: 'other-user' } } }))
+        return Promise.resolve(jsonResponse({ error: { code: 'snapshot_unavailable' } }, failure))
+      }
+      throw new Error(`unexpected request: ${path}`)
+    }))
+    await expect(getBootstrap()).rejects.toBeInstanceOf(ApiError)
+    expect(refreshCalls).toBe(1)
+    expect(bootstrapCalls).toBe(2)
+    expect(listener).toHaveBeenCalledExactlyOnceWith(null)
+  })
+
+  it('discards a refreshed authority snapshot after the service changes', async () => {
+    const listener = vi.fn()
+    setSessionListener(listener)
+    setAccessToken('expired-token')
+    let complete!: (response: Response) => void
+    let bootstrapCalls = 0
+    vi.stubGlobal('fetch', vi.fn((input: string | URL | Request) => {
+      const path = String(input)
+      if (path.endsWith('/auth/refresh')) return Promise.resolve(jsonResponse({ data: { user: principal, tokens: { accessToken: 'renewed-token' } } }))
+      if (path.endsWith('/auth/bootstrap') && ++bootstrapCalls === 1) return Promise.resolve(jsonResponse({ error: { code: 'unauthorized' } }, 401))
+      return new Promise<Response>((resolve) => { complete = resolve })
+    }))
+    const result = expect(getBootstrap()).rejects.toMatchObject({ code: 'session_changed' })
+    await vi.waitFor(() => expect(complete).toBeDefined())
+    setAccessToken(null)
+    setAccessToken('new-service-token')
+    complete(jsonResponse({ data: { user: principal, currentUser: principal } }))
+    await result
+    expect(listener).not.toHaveBeenCalled()
   })
 
   it.each([401, 403])('clears the session after refresh status %i without retrying in a loop', async (refreshStatus) => {

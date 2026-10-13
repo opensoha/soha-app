@@ -4,9 +4,10 @@ Independent Wails 3 desktop client for connecting to a Soha Server. The App owns
 
 ## Prerequisites
 
-- Go 1.26.6
+- Go 1.27.2
 - Node.js 22 and npm 10+
 - Wails CLI pinned to `v3.0.0-beta.16`
+- macOS 13 Ventura or newer for macOS builds and installations (required by Go 1.27)
 
 ```sh
 go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.16

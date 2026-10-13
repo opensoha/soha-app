@@ -14,10 +14,10 @@
 #   docker run --rm -v $(pwd):/app wails-cross windows arm64
 
 # Wails beta.2 uses GTK APIs that are newer than Bookworm's GTK 4.8.
-FROM golang:1.26-trixie
+FROM golang:1.27.2-trixie
 
 ARG TARGETARCH
-ARG GARBLE_VERSION=v0.16.0
+ARG GARBLE_VERSION=v0.18.0
 
 # Install base tools, GCC, and GTK/WebKit dev packages
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -70,7 +70,7 @@ for arg in "$@"; do
         *) ARGS="$ARGS $arg" ;;
     esac
 done
-exec zig cc -fno-sanitize=all -target aarch64-macos-none -isysroot /opt/macos-sdk -I/opt/macos-sdk/usr/include -L/opt/macos-sdk/usr/lib -F/opt/macos-sdk/System/Library/Frameworks -w $ARGS
+exec zig cc -fno-sanitize=all -target aarch64-macos-none -mmacosx-version-min=13.0 -isysroot /opt/macos-sdk -I/opt/macos-sdk/usr/include -L/opt/macos-sdk/usr/lib -F/opt/macos-sdk/System/Library/Frameworks -w $ARGS
 ZIGWRAP
 RUN chmod +x /usr/local/bin/zcc-darwin-arm64
 
@@ -90,7 +90,7 @@ for arg in "$@"; do
         *) ARGS="$ARGS $arg" ;;
     esac
 done
-exec zig cc -fno-sanitize=all -target x86_64-macos-none -isysroot /opt/macos-sdk -I/opt/macos-sdk/usr/include -L/opt/macos-sdk/usr/lib -F/opt/macos-sdk/System/Library/Frameworks -w $ARGS
+exec zig cc -fno-sanitize=all -target x86_64-macos-none -mmacosx-version-min=13.0 -isysroot /opt/macos-sdk -I/opt/macos-sdk/usr/include -L/opt/macos-sdk/usr/lib -F/opt/macos-sdk/System/Library/Frameworks -w $ARGS
 ZIGWRAP
 RUN chmod +x /usr/local/bin/zcc-darwin-amd64
 

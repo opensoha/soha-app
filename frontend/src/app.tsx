@@ -10,6 +10,7 @@ import {
   SafetyCertificateOutlined,
   SettingOutlined,
   UserOutlined,
+  CommentOutlined,
 } from '@ant-design/icons'
 import { Alert, App, Avatar, Badge, Button, Result, Spin, Tooltip } from 'antd'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -33,6 +34,7 @@ import {
 } from '@/api'
 import { applyBranding } from '@/branding'
 import { useText } from '@/i18n'
+import { AssistantPage } from '@/assistant'
 import {
   checkServer,
   clearHostSession,
@@ -75,6 +77,7 @@ export function DesktopApp({ initialEntries }: { initialEntries?: string[] } = {
             <Route element={<DesktopShell />}>
               <Route path="/home" element={<HomePage />} />
               <Route path="/portal" element={<PortalPage />} />
+              <Route path="/assistant" element={<AssistantPage />} />
               <Route path="/portal/applications/:applicationId" element={<PortalApplicationPage />} />
               <Route path="/network" element={<NetworkPage />} />
               <Route path="/vpn" element={<VPNPage />} />
@@ -187,9 +190,10 @@ function SessionBridge() {
   const commitSession = useAppStore((state) => state.commitSession)
   const clearSession = useAppStore((state) => state.clearSession)
   useEffect(() => {
-    setSessionListener((session) => {
+    setSessionListener((session, bootstrap) => {
       if (session) {
-        commitSession(session)
+        if (useAppStore.getState().session?.user.userId !== session.user.userId) queryClient.clear()
+        commitSession(session, bootstrap)
         return
       }
       clearSession()
@@ -304,6 +308,7 @@ function DesktopShell() {
   const navigation = [
     { path: '/home', label: text.home, icon: <HomeOutlined /> },
     { path: '/portal', label: text.portal, icon: <AppstoreOutlined /> },
+    ...(bootstrap?.permissionSnapshot.permissionKeys.includes('observe.ai.chat') ? [{ path: '/assistant', label: text.assistant, icon: <CommentOutlined /> }] : []),
     { path: '/software', label: text.software, icon: <AppstoreOutlined /> },
     { path: '/network', label: text.network, icon: <GlobalOutlined /> },
     { path: '/vpn', label: text.vpn, icon: <SafetyCertificateOutlined /> },
