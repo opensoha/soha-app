@@ -28,6 +28,10 @@ func newEndpointRuntime(configPath, version string, logger *slog.Logger) (*endpo
 	if err != nil {
 		return nil, err
 	}
+	uiPresence, err := endpointservice.NewUIProcessPresence(config)
+	if err != nil {
+		return nil, err
+	}
 	privateKey, err := endpointservice.LoadOrCreatePrivateKey(config.PrivateKeyPath())
 	if err != nil {
 		return nil, err
@@ -44,6 +48,12 @@ func newEndpointRuntime(configPath, version string, logger *slog.Logger) (*endpo
 			return nil, err
 		}
 		capabilities = []string{"mihomo"}
+	}
+	if endpointservice.NativeEAPSupported() {
+		capabilities = append(capabilities, "eap-profile-v1", "radius-eap-tls-v1")
+	}
+	if uiPresence != nil {
+		capabilities = append(capabilities, "endpoint-ui-presence-v1")
 	}
 	control, err := endpointservice.NewControlClient(config.ControlURL, config.RuntimeID, controlHTTP, 5*time.Minute, capabilities...)
 	if err != nil {
@@ -88,7 +98,18 @@ func newEndpointRuntime(configPath, version string, logger *slog.Logger) (*endpo
 			return nil, err
 		}
 	}
-	manager, err := endpointservice.NewManager(endpointservice.ManagerOptions{CheckVPNHealth: system.CheckVPNHealth, RuntimeID: config.RuntimeID, DeviceID: config.DeviceID, PollInterval: time.Minute, HeartbeatInterval: time.Minute, RenewBefore: 30 * time.Second, MaxClockSkew: 5 * time.Minute}, control, executor, telemetry, logger)
+	var admission *endpointservice.AdmissionManager
+	if endpointservice.NativeEAPSupported() {
+		eapSystem, err := endpointservice.NewNativeEAPSystem(config)
+		if err != nil {
+			return nil, err
+		}
+		admission, err = endpointservice.NewAdmissionManager(config.StateDirectory, config.DeviceID, control, eapSystem)
+		if err != nil {
+			return nil, err
+		}
+	}
+	manager, err := endpointservice.NewManager(endpointservice.ManagerOptions{Admission: admission, UIPresence: uiPresence, CheckVPNHealth: system.CheckVPNHealth, RuntimeID: config.RuntimeID, DeviceID: config.DeviceID, PollInterval: time.Minute, HeartbeatInterval: time.Minute, RenewBefore: 30 * time.Second, MaxClockSkew: 5 * time.Minute}, control, executor, telemetry, logger)
 	if err != nil {
 		return nil, err
 	}

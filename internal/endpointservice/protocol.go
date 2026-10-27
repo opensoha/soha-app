@@ -79,6 +79,7 @@ type ResourceLease struct {
 }
 
 type ConfigurationDesired struct {
+	Admission            *AdmissionConfiguration `json:"admission,omitempty"`
 	ConfigurationVersion int                     `json:"configurationVersion"`
 	PolicyVersion        int                     `json:"policyVersion"`
 	ValidUntil           time.Time               `json:"validUntil"`

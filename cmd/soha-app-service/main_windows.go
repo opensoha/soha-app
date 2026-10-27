@@ -57,6 +57,10 @@ func run(args []string) int {
 	case "version":
 		_ = json.NewEncoder(os.Stdout).Encode(map[string]string{"name": "soha-app-service", "version": resolvedVersion()})
 		return 0
+	case "eap-user-helper":
+		ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+		defer cancel()
+		err = endpointservice.RunEAPUserHelper(ctx, os.Stdin, os.Stdout)
 	default:
 		return usage()
 	}

@@ -10,13 +10,14 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"strings"
 	"time"
 )
 
 const (
 	IPCVersion          = 1
 	PipeName            = `\\.\pipe\OpenSoha.Soha.NetworkService`
-	maxIPCMessageBytes  = 32 << 10
+	maxIPCMessageBytes  = 128 << 10
 	ipcOperationTimeout = 125 * time.Second
 )
 
@@ -28,6 +29,7 @@ type IPCRequest struct {
 	Action    string          `json:"action"`
 	Connect   *ConnectInput   `json:"connect,omitempty"`
 	Mihomo    *MihomoAppInput `json:"mihomo,omitempty"`
+	Admission *AdmissionInput `json:"admission,omitempty"`
 }
 
 type IPCResponse struct {
@@ -36,6 +38,7 @@ type IPCResponse struct {
 	OK           bool             `json:"ok"`
 	Status       Status           `json:"status"`
 	Mihomo       *MihomoAppStatus `json:"mihomo,omitempty"`
+	Admission    *AdmissionStatus `json:"admission,omitempty"`
 	ErrorCode    string           `json:"errorCode,omitempty"`
 	ErrorMessage string           `json:"errorMessage,omitempty"`
 }
@@ -96,7 +99,19 @@ func serveIPCConnection(parent context.Context, connection net.Conn, manager *Ma
 			if request.Version != IPCVersion || !identifierPattern.MatchString(request.RequestID) {
 				err = errors.New("invalid IPC envelope")
 			} else {
-				response.Status, response.Mihomo, err = runIPCAction(requestCtx, manager, request)
+				if request.Action == "ui_presence" {
+					if request.Connect != nil || request.Mihomo != nil || request.Admission != nil {
+						err = errors.New("UI presence cannot include renderer parameters")
+					} else {
+						err = manager.options.UIPresence.Observe(connection, manager.now().UTC())
+					}
+				} else if strings.HasPrefix(request.Action, "admission_") {
+					response.Admission, err = runAdmissionIPCAction(requestCtx, manager, request)
+				} else if request.Admission != nil {
+					err = errors.New("admission parameters require an admission action")
+				} else {
+					response.Status, response.Mihomo, err = runIPCAction(requestCtx, manager, request)
+				}
 			}
 		}
 	}
@@ -191,7 +206,7 @@ func CallIPC(ctx context.Context, action string, input *ConnectInput) (Status, e
 		return Status{}, fmt.Errorf("read endpoint IPC response: %w", err)
 	}
 	var response IPCResponse
-	if err := decodeStrict(raw, &response); err != nil || response.Version != IPCVersion || response.RequestID != requestID || !validIPCStatus(response.Status) || response.Mihomo != nil {
+	if err := decodeStrict(raw, &response); err != nil || response.Version != IPCVersion || response.RequestID != requestID || !validIPCStatus(response.Status) || response.Mihomo != nil || response.Admission != nil {
 		return Status{}, errors.New("endpoint IPC response is invalid")
 	}
 	if !response.OK {
@@ -225,7 +240,7 @@ func CallMihomoIPC(ctx context.Context, action string, input *MihomoAppInput) (M
 		return MihomoAppStatus{}, fmt.Errorf("read endpoint IPC response: %w", err)
 	}
 	var response IPCResponse
-	if err := decodeStrict(raw, &response); err != nil || response.Version != IPCVersion || response.RequestID != requestID || !validIPCStatus(response.Status) || response.Mihomo == nil || !validIPCMihomoStatus(*response.Mihomo) {
+	if err := decodeStrict(raw, &response); err != nil || response.Version != IPCVersion || response.RequestID != requestID || !validIPCStatus(response.Status) || response.Mihomo == nil || !validIPCMihomoStatus(*response.Mihomo) || response.Admission != nil {
 		return MihomoAppStatus{}, errors.New("endpoint IPC response is invalid")
 	}
 	if !response.OK {

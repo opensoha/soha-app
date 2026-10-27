@@ -52,6 +52,8 @@ type Telemetry interface {
 }
 
 type ManagerOptions struct {
+	Admission         *AdmissionManager
+	UIPresence        *UIProcessPresence
 	CheckVPNHealth    func(context.Context) error
 	RuntimeID         string
 	DeviceID          string
@@ -75,19 +77,22 @@ type ConnectInput struct {
 }
 
 type Status struct {
-	ProfileID            string           `json:"profileId,omitempty"`
-	ProfileRevision      int              `json:"profileRevision,omitempty"`
-	Selection            string           `json:"selection,omitempty"`
-	SelectionReason      string           `json:"selectionReason,omitempty"`
-	DecisionID           string           `json:"decisionId,omitempty"`
-	Phase                string           `json:"phase,omitempty"`
-	ProbeResults         []VPNProbeResult `json:"probeResults,omitempty"`
-	ProbeMeasuredAt      *time.Time       `json:"probeMeasuredAt,omitempty"`
-	FailoverOnDisconnect bool             `json:"failoverOnDisconnect,omitempty"`
-	RetryCooldownSeconds int              `json:"retryCooldownSeconds,omitempty"`
-	MaxAttempts          int              `json:"maxAttempts,omitempty"`
-	ConnectedAt          *time.Time       `json:"connectedAt,omitempty"`
-	TunnelIP             string           `json:"tunnelIP,omitempty"`
+	PresenceState          string           `json:"presenceState,omitempty"`
+	PresenceLastReceivedAt *time.Time       `json:"presenceLastReceivedAt,omitempty"`
+	PresenceEpoch          int              `json:"presenceEpoch,omitempty"`
+	ProfileID              string           `json:"profileId,omitempty"`
+	ProfileRevision        int              `json:"profileRevision,omitempty"`
+	Selection              string           `json:"selection,omitempty"`
+	SelectionReason        string           `json:"selectionReason,omitempty"`
+	DecisionID             string           `json:"decisionId,omitempty"`
+	Phase                  string           `json:"phase,omitempty"`
+	ProbeResults           []VPNProbeResult `json:"probeResults,omitempty"`
+	ProbeMeasuredAt        *time.Time       `json:"probeMeasuredAt,omitempty"`
+	FailoverOnDisconnect   bool             `json:"failoverOnDisconnect,omitempty"`
+	RetryCooldownSeconds   int              `json:"retryCooldownSeconds,omitempty"`
+	MaxAttempts            int              `json:"maxAttempts,omitempty"`
+	ConnectedAt            *time.Time       `json:"connectedAt,omitempty"`
+	TunnelIP               string           `json:"tunnelIP,omitempty"`
 
 	State                 string    `json:"state"`
 	RuntimeID             string    `json:"runtimeId"`
@@ -131,6 +136,7 @@ type Manager struct {
 	appliedVersion    int
 	disabled          bool
 	cleanupReason     string
+	presenceBootID    string
 }
 
 func NewManager(options ManagerOptions, control RuntimeControl, executor ConfigurationExecutor, telemetry Telemetry, logger *slog.Logger) (*Manager, error) {
@@ -138,7 +144,7 @@ func NewManager(options ManagerOptions, control RuntimeControl, executor Configu
 		return nil, errors.New("endpoint manager dependencies and intervals are invalid")
 	}
 	now := time.Now
-	return &Manager{options: options, control: control, executor: executor, telemetry: telemetry, logger: logger, now: now, startedAt: now().UTC(), intervalJitter: runtimeIntervalJitter, heartbeatWait: waitFor, pollInterval: options.PollInterval, heartbeatInterval: options.HeartbeatInterval, disabled: true, status: Status{State: StateDisconnected, RuntimeID: options.RuntimeID, DeviceID: options.DeviceID}}, nil
+	return &Manager{options: options, control: control, executor: executor, telemetry: telemetry, logger: logger, now: now, startedAt: now().UTC(), intervalJitter: runtimeIntervalJitter, heartbeatWait: waitFor, pollInterval: options.PollInterval, heartbeatInterval: options.HeartbeatInterval, presenceBootID: randomID(), disabled: true, status: Status{State: StateDisconnected, RuntimeID: options.RuntimeID, DeviceID: options.DeviceID}}, nil
 }
 
 func (manager *Manager) Connect(ctx context.Context, input ConnectInput) (Status, error) {
@@ -319,6 +325,29 @@ func (manager *Manager) Cycle(ctx context.Context) error {
 func (manager *Manager) Run(ctx context.Context) error {
 	poll := time.NewTimer(0)
 	defer poll.Stop()
+	if manager.options.Admission != nil {
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			for waitFor(ctx, 10*time.Second) {
+				if err := manager.options.Admission.Check(ctx); err != nil && ctx.Err() == nil {
+					manager.logger.Warn("endpoint admission check failed", "event", "endpoint_admission.check.failed")
+				}
+			}
+		}()
+		defer func() { <-done }()
+	}
+	var presenceDone <-chan struct{}
+	if publisher, ok := manager.control.(EndpointPresenceControl); ok {
+		done := make(chan struct{})
+		presenceDone = done
+		go func() { defer close(done); manager.runPresence(ctx, publisher) }()
+	}
+	defer func() {
+		if presenceDone != nil {
+			<-presenceDone
+		}
+	}()
 	var heartbeatDone <-chan struct{}
 	if manager.telemetry != nil {
 		done := make(chan struct{})
@@ -457,6 +486,11 @@ func (manager *Manager) syncConfiguration(ctx context.Context) error {
 	if err := decodeStrict(message.Payload, &desired); err != nil || !message.ExpiresAt.Equal(desired.ValidUntil) {
 		manager.degrade("invalid_configuration_payload")
 		return errors.New("network control returned an invalid endpoint configuration payload")
+	}
+	if manager.options.Admission != nil {
+		if err := manager.options.Admission.Observe(desired.Admission, desired.ValidUntil, message.OccurredAt); err != nil {
+			manager.logger.Warn("endpoint admission configuration rejected", "event", "endpoint_admission.configuration.rejected")
+		}
 	}
 	if manager.managedConfigurationRevoked(desired) {
 		_, err := manager.disconnectLocked(ctx, "authorization_revoked")
