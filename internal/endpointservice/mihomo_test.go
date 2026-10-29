@@ -4,87 +4,73 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"go.yaml.in/yaml/v3"
 )
 
 func TestMihomoControllerAppliesSafeProxyOnlyConfiguration(t *testing.T) {
-	secret := "test-mihomo-controller-secret-123456"
-	var configurationPayload string
-	failReset := false
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.Header.Get("Authorization") != "Bearer "+secret {
-			t.Fatalf("authorization was not set")
-		}
-		switch request.Method + " " + request.URL.Path {
-		case "PUT /configs":
-			if failReset {
-				writer.WriteHeader(http.StatusInternalServerError)
-				return
-			}
-			var body struct {
-				Payload string `json:"payload"`
-			}
-			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
-				t.Fatal(err)
-			}
-			configurationPayload = body.Payload
-			writer.WriteHeader(http.StatusNoContent)
-		case "PUT /providers/proxies/soha-managed":
-			writer.WriteHeader(http.StatusNoContent)
-		case "PUT /proxies/Soha":
-			writer.WriteHeader(http.StatusNoContent)
-		case "GET /configs":
-			writer.Header().Set("Content-Type", "application/json")
-			_, _ = writer.Write([]byte(`{"mixed-port":7890,"mode":"rule"}`))
-		case "GET /proxies/Soha":
-			writer.Header().Set("Content-Type", "application/json")
-			_, _ = writer.Write([]byte(`{"all":["edge-a"],"now":"edge-a"}`))
-		case "GET /connections":
-			writer.Header().Set("Content-Type", "application/json")
-			_, _ = writer.Write([]byte(`{"downloadTotal":4096,"uploadTotal":1024,"connections":[{"metadata":{"host":"must-not-leave-endpoint"}}]}`))
-		default:
-			t.Fatalf("unexpected controller request %s %s", request.Method, request.URL.Path)
-		}
-	}))
-	defer server.Close()
-
+	const secret = "test-mihomo-controller-secret-123456"
+	server, fixture := newMihomoControllerFixture(t, secret)
 	controller, err := NewMihomoController(server.URL, secret)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = controller.Disable(ctx)
+	})
 	_, port, _ := mihomoOrigin(server.URL)
 	configuration := managedMihomoConfiguration(port)
+	configuration.SourceType, configuration.SelectedProxy, configuration.SubscriptionURL = "manual_node", "", ""
+	configuration.ManualNode = &MihomoManualNode{Protocol: "https", Server: "192.0.2.8", Port: 8443}
+	configuration.Protection.CIDRs = []string{"10.30.0.0/16"}
+	configuration.Protection.Hosts = []string{"protected.example"}
 	readback, err := controller.Apply(context.Background(), configuration)
-	if err != nil || readback.ProfileID != configuration.ProfileID || readback.SelectedProxy != "edge-a" {
+	if err != nil || readback.ProfileID != configuration.ProfileID || readback.SelectedProxy != mihomoManualProxyName {
 		t.Fatalf("Apply() = %#v, %v", readback, err)
 	}
+	fixture.mu.Lock()
+	fixture.connections = true
+	payload, probes := fixture.payload, fixture.probes
+	fixture.mu.Unlock()
+	if probes != 2 {
+		t.Fatalf("authenticated guard probes = %d", probes)
+	}
 	snapshot, err := controller.ProxyFlowSnapshot(context.Background())
-	if err != nil || snapshot.DownloadTotal != 4096 || snapshot.UploadTotal != 1024 || snapshot.ActiveConnections != 1 || snapshot.SelectedProxy != "edge-a" {
+	encoded, _ := json.Marshal(snapshot)
+	if err != nil || snapshot.DownloadTotal != 4096 || snapshot.UploadTotal != 1024 || snapshot.ActiveConnections != 1 || snapshot.SelectedProxy != mihomoManualProxyName || strings.Contains(string(encoded), "must-not-leave-endpoint") {
 		t.Fatalf("ProxyFlowSnapshot() = %#v, %v", snapshot, err)
 	}
-	for _, required := range []string{"allow-lan: false", "bind-address: \"127.0.0.1\"", "enable: false", "proxy: DIRECT", "10.20.0.0/16,DIRECT", "https://subscriptions.example.test/profile?id=1"} {
-		if !strings.Contains(configurationPayload, required) {
-			t.Fatalf("mihomo payload omitted %q: %s", required, configurationPayload)
+	for _, required := range []string{"mixed-port: 0", "allow-lan: false", `bind-address: "127.0.0.1"`, "enable: false", "10.20.0.0/16,soha-egress-direct", "DOMAIN-SUFFIX,protected.example,REJECT", "IP-CIDR,10.30.0.0/16,REJECT", "192.0.2.8"} {
+		if !strings.Contains(payload, required) {
+			t.Fatalf("mihomo payload omitted %q", required)
 		}
 	}
-	if strings.Contains(configurationPayload, "0.0.0.0/0") {
-		t.Fatalf("mihomo payload took ownership of the default route: %s", configurationPayload)
+	if strings.Index(payload, "IP-CIDR,10.30.0.0/16,REJECT") > strings.Index(payload, "IP-CIDR,10.20.0.0/16,soha-egress-direct") || strings.Contains(payload, "0.0.0.0/0") || strings.Contains(payload, "proxy-providers:") {
+		t.Fatal("protected order, route scope or pinned bootstrap changed")
 	}
-	failReset = true
+	if err := controller.Verify(context.Background(), &configuration); err != nil {
+		t.Fatal(err)
+	}
+	fixture.mu.Lock()
+	fixture.failReset = true
+	fixture.mu.Unlock()
 	if err := controller.Disable(context.Background()); err == nil {
 		t.Fatal("expected the controller reset to fail")
 	}
 	snapshot, err = controller.ProxyFlowSnapshot(context.Background())
 	if err != nil || !snapshot.Active || snapshot.DownloadTotal != 4096 {
-		t.Fatalf("failed reset lost the active proxy metrics: %#v, %v", snapshot, err)
+		t.Fatalf("failed reset lost proxy metrics: %#v, %v", snapshot, err)
 	}
-	failReset = false
+	fixture.mu.Lock()
+	fixture.failReset = false
+	fixture.mu.Unlock()
 	if err := controller.Disable(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -110,12 +96,12 @@ func TestCoordinatedExecutorKeepsComponentsIndependent(t *testing.T) {
 	wireGuard.outcome = ApplyOutcome{Status: "rejected", ReadbackHash: emptyReadbackHash(), ReasonCode: "wireguard_failed"}
 	mihomo.applyErr = nil
 	_ = executor.Apply(context.Background(), desired, time.Now())
-	if mihomo.applyCalls != 2 {
-		t.Fatal("WireGuard failure prevented independent mihomo reconciliation")
+	if mihomo.applyCalls != 1 || executor.mihomoActive || wireGuard.disableCalls != 0 {
+		t.Fatal("WireGuard failure must keep the proxy stopped without disabling the independent tunnel component")
 	}
 }
 
-func TestCoordinatedExecutorRollsBackManagedMihomo(t *testing.T) {
+func TestCoordinatedExecutorStopsManagedMihomoAfterReplacementFailure(t *testing.T) {
 	wireGuard := &fakeConfigurationExecutor{outcome: ApplyOutcome{Status: "applied", ReadbackHash: emptyReadbackHash()}}
 	mihomo := &fakeMihomoRuntime{}
 	executor, err := NewCoordinatedExecutor(wireGuard, mihomo)
@@ -135,8 +121,8 @@ func TestCoordinatedExecutorRollsBackManagedMihomo(t *testing.T) {
 	if outcome := executor.Apply(context.Background(), second, time.Now()); outcome.Status != "rejected" || outcome.ReasonCode != "mihomo_apply_failed" {
 		t.Fatalf("second Apply() = %#v", outcome)
 	}
-	if mihomo.applyCalls != 3 || mihomo.lastConfiguration.ProfileRevision != 1 || mihomo.lastConfiguration.SelectedProxy != "edge-a" || wireGuard.disableCalls != 0 {
-		t.Fatalf("rollback runtime=%#v wireguard=%#v", mihomo, wireGuard)
+	if mihomo.applyCalls != 2 || mihomo.disableCalls < 2 || executor.mihomoActive || executor.appDesired != nil || wireGuard.disableCalls != 0 {
+		t.Fatalf("old proxy restarted or failed to stop: runtime=%#v wireguard=%#v", mihomo, wireGuard)
 	}
 }
 
@@ -176,7 +162,7 @@ func TestCoordinatedExecutorPersistsAppSubscriptionWithoutExposingURL(t *testing
 	}
 }
 
-func TestCoordinatedExecutorRollsBackAppSelection(t *testing.T) {
+func TestCoordinatedExecutorStopsFailedSelectionAndRetainsRepairState(t *testing.T) {
 	mihomo := &fakeMihomoRuntime{proxies: []string{"edge-a", "edge-b"}}
 	statePath := filepath.Join(t.TempDir(), "mihomo-app.dpapi")
 	executor, err := NewCoordinatedExecutor(&fakeConfigurationExecutor{outcome: ApplyOutcome{Status: "applied", ReadbackHash: emptyReadbackHash()}}, mihomo, statePath)
@@ -193,12 +179,15 @@ func TestCoordinatedExecutorRollsBackAppSelection(t *testing.T) {
 	}
 	mihomo.applyErrOnce = errors.New("selection failed")
 	status, err := executor.SelectMihomoApp(context.Background(), "edge-b")
-	if err == nil || status.SelectedProxy != "edge-a" || mihomo.lastSelectedProxy != "edge-a" {
+	if err == nil || status.Configured || status.SelectedProxy != "" || mihomo.applyCalls != 2 || executor.mihomoActive || executor.appDesired != nil {
 		t.Fatalf("SelectMihomoApp() = %#v, %v runtime=%#v", status, err, mihomo)
 	}
 	state, err := loadMihomoAppState(statePath)
 	if err != nil || state.SelectedProxy != "edge-a" || state.SubscriptionURL != subscriptionURL {
 		t.Fatalf("persisted state = %#v, %v", state, err)
+	}
+	if outcome := executor.Apply(context.Background(), desired, time.Now()); outcome.Status != "applied" || !executor.appStatus.Configured || executor.appStatus.SelectedProxy != "edge-a" {
+		t.Fatalf("fresh configuration could not recover the retained selection: %#v, %#v", outcome, executor.appStatus)
 	}
 }
 
@@ -207,17 +196,40 @@ func managedMihomoConfiguration(controllerPort int) MihomoConfiguration {
 		Mode: "managed_follow", SourceType: "managed_subscription", ProfileID: "mihomo-1", ProfileRevision: 1, MixedPort: 7890,
 		ControllerPort: controllerPort, DNSMode: "disabled", SelectorGroup: "Soha", SelectedProxy: "edge-a",
 		BypassCIDRs: []string{"10.20.0.0/16"}, BypassHosts: []string{"control.example.test"}, FailClosed: true,
-		SubscriptionURL: "https://subscriptions.example.test/profile?id=1",
+		SubscriptionURL:  "https://subscriptions.example.test/profile?id=1",
+		Protection:       &MihomoProtection{PolicyVersion: 1, CIDRs: []string{}, Hosts: []string{}},
+		EnforcementUntil: time.Now().Add(time.Minute),
 	}
 }
 
 func TestRenderMihomoConfigurationSupportsManualNode(t *testing.T) {
 	configuration := managedMihomoConfiguration(9090)
 	configuration.SourceType, configuration.SelectedProxy, configuration.SubscriptionURL = "manual_node", "", ""
-	configuration.ManualNode = &MihomoManualNode{Protocol: "https", Server: "proxy.example.test", Port: 8443, Username: "alice", Password: "secret"}
+	configuration.ManualNode = &MihomoManualNode{Protocol: "https", Server: "192.0.2.8", Port: 8443, Username: "alice", Password: "synthetic-secret"}
+	configuration.GuardPort, configuration.GuardProxyPort, configuration.GuardDirectPort = 18080, 18081, 18082
+	configuration.GuardProxySecret, configuration.GuardDirectSecret = strings.Repeat("p", 32), strings.Repeat("d", 32)
+	configuration.BootstrapNodes = []map[string]any{{"name": mihomoManualProxyName, "type": "http", "tls": true, "server": "192.0.2.8", "port": 8443, "username": "alice", "password": "synthetic-secret"}}
 	raw, err := renderMihomoConfiguration(configuration, "", "127.0.0.1", "127.0.0.1:9090", strings.Repeat("s", 32))
-	if err != nil || !strings.Contains(raw, "type: \"http\"") || !strings.Contains(raw, "tls: true") || !strings.Contains(raw, "server: \"proxy.example.test\"") || strings.Contains(raw, "proxy-providers:") {
-		t.Fatalf("manual mihomo configuration = %q, %v", raw, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document struct{ Proxies []map[string]any }
+	if err := yaml.Unmarshal([]byte(raw), &document); err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, node := range document.Proxies {
+		if node["name"] != mihomoManualProxyName {
+			continue
+		}
+		found = node["type"] == "http" && node["tls"] == true && node["server"] == "192.0.2.8" && node["port"] == 8443 && node["username"] == "alice" && node["password"] == "synthetic-secret"
+	}
+	if !found || strings.Contains(raw, "proxy-providers:") {
+		t.Fatal("pinned manual node or provider boundary changed")
+	}
+	configuration.GuardPort = 0
+	if _, err := renderMihomoConfiguration(configuration, "", "127.0.0.1", "127.0.0.1:9090", strings.Repeat("s", 32)); err == nil {
+		t.Fatal("manual node rendered without its guard")
 	}
 }
 

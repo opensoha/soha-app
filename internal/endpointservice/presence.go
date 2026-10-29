@@ -71,7 +71,7 @@ func (manager *Manager) runPresence(ctx context.Context, publisher EndpointPrese
 		manager.stateMu.RLock()
 		cleanupPending := manager.cleanupReason != ""
 		manager.stateMu.RUnlock()
-		if cleanupPending {
+		if cleanupPending || manager.options.Channels != nil && !manager.options.Channels.Healthy(manager.now().UTC()) {
 			health = "unhealthy"
 		}
 		callCtx, cancel := context.WithTimeout(ctx, 10*time.Second)

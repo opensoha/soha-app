@@ -1686,6 +1686,8 @@ describe("desktop app", () => {
     await waitForUI(() => expect(container.querySelector<HTMLButtonElement>('button[aria-label="断开连接"]')?.disabled).toBe(false));
     expect(container.textContent).toContain("disconnect_incomplete");
     expect(getNetworkStatus).toHaveBeenCalledTimes(2);
+    expect(connectNetwork).not.toHaveBeenCalled();
+    expect(createVPNIntent).not.toHaveBeenCalled();
   });
 
   it("configures an App-owned mihomo subscription without retaining its URL", async () => {

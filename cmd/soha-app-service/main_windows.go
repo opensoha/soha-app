@@ -57,6 +57,15 @@ func run(args []string) int {
 	case "version":
 		_ = json.NewEncoder(os.Stdout).Encode(map[string]string{"name": "soha-app-service", "version": resolvedVersion()})
 		return 0
+	case "channel-removal-check":
+		path, pathErr := serviceConfigPath()
+		if pathErr != nil {
+			err = pathErr
+		} else {
+			err = endpointservice.CheckNativeChannelRemoval(path)
+		}
+	case "clipboard-guard":
+		err = endpointservice.RunClipboardGuard(os.Stdin, os.Stdout)
 	case "eap-user-helper":
 		ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 		defer cancel()
@@ -167,6 +176,9 @@ func installService() error {
 	if err != nil {
 		return err
 	}
+	if err := endpointservice.CheckNativeChannelRemoval(configPath); err != nil {
+		return err
+	}
 	configured := true
 	if _, err := os.Stat(configPath); errors.Is(err, os.ErrNotExist) {
 		configured = false
@@ -252,6 +264,13 @@ func stopService() error {
 }
 
 func uninstallService() error {
+	path, err := serviceConfigPath()
+	if err != nil {
+		return err
+	}
+	if err := endpointservice.CheckNativeChannelRemoval(path); err != nil {
+		return err
+	}
 	manager, err := mgr.Connect()
 	if err != nil {
 		return err
@@ -266,6 +285,9 @@ func uninstallService() error {
 	}
 	defer service.Close()
 	if err := stopOpenedService(service); err != nil {
+		return err
+	}
+	if err := endpointservice.FinalizeNativeChannelRemoval(path); err != nil {
 		return err
 	}
 	if err := service.Delete(); err != nil {

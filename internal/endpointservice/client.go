@@ -47,17 +47,17 @@ func NewControlClient(origin, runtimeID string, client *http.Client, maxClockSke
 	}
 	copy := *client
 	copy.CheckRedirect = rejectRedirect
-	capabilities := append([]string{"wireguard", "route-coordinator", "dns-coordinator", "managed-vpn-v1", "vpn-probe-v1", "endpoint-presence-v1"}, additionalCapabilities...)
+	capabilities := append([]string{"wireguard", "wireguard-ipv6-v1", "network-lifecycle-v1", "route-coordinator", "dns-coordinator", "managed-vpn-v1", "vpn-probe-v1", "endpoint-presence-v1"}, additionalCapabilities...)
 	return &ControlClient{origin: parsed, runtimeID: runtimeID, http: &copy, maxClockSkew: maxClockSkew, capabilities: capabilities, now: time.Now}, nil
 }
 
 func validEndpointCapabilities(capabilities []string) bool {
-	if len(capabilities) > 4 {
+	if len(capabilities) > 9 {
 		return false
 	}
 	seen := map[string]bool{}
 	for _, capability := range capabilities {
-		if seen[capability] || capability != "mihomo" && capability != "eap-profile-v1" && capability != "radius-eap-tls-v1" && capability != "endpoint-ui-presence-v1" {
+		if seen[capability] || capability != "windows-channel-controls-v1" && capability != "mihomo" && capability != "mihomo-policy-v1" && capability != "mihomo-dns-pin-v1" && capability != "eap-profile-v1" && capability != "radius-eap-tls-v1" && capability != "endpoint-ui-presence-v1" {
 			return false
 		}
 		seen[capability] = true

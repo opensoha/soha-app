@@ -4,9 +4,11 @@ go 1.27.3
 
 require (
 	github.com/Microsoft/go-winio v0.6.3
+	github.com/opensoha/soha-contracts v0.1.27
 	github.com/totallygamerjet/bsdiff v1.0.0
 	github.com/wailsapp/wails/v3 v3.0.0-beta.16
 	github.com/zalando/go-keyring v0.2.6
+	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/mod v0.41.0
 	golang.org/x/net v0.60.0
 	golang.org/x/sys v0.48.0

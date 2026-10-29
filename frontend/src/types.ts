@@ -1,3 +1,4 @@
+import type { EndpointChannelReceipt } from '@opensoha/contracts/gen/ts/sohaapi'
 import type {
   AuthProvider as ContractAuthProvider,
   IdentityApplication as ContractIdentityApplication,
@@ -294,6 +295,8 @@ export interface LegacyNetworkConnectInput {
 }
 
 export interface NetworkServiceStatus {
+ channelControls?: { policyVersion: number; policyFresh: boolean; controlReachable: boolean; lastObservedAt: string; channels: EndpointChannelReceipt[]; diagnostic: string }
+
   presenceState?: 'healthy' | 'unhealthy' | 'unavailable'
   presenceLastReceivedAt?: string
   presenceEpoch?: number
@@ -323,9 +326,11 @@ export interface NetworkServiceStatus {
   configurationVersion: number
   policyVersion: number
   validUntil?: string
+  sessionValidUntil?: string
   mihomoMode?: 'managed_follow' | 'app_subscription'
   mihomoProfileId?: string
   mihomoProfileRevision?: number
+  mihomoPolicyVersion?: number
   uptimeSeconds: number
   diagnostic?: string
 }

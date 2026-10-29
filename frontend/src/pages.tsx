@@ -1,3 +1,4 @@
+import { ChannelControlsPanel } from '@/channel-controls-panel'
 import { ManagedVPNPanel } from "@/vpn-panel";
 import { AdmissionPanel } from "@/admission-panel";
 import { useEffect, useRef, useState, type ReactNode } from "react";
@@ -1368,6 +1369,7 @@ export function SettingsPage({ view = "settings" }: { view?: SettingsView }) {
               )}
             </SettingRow>
           </section>
+          <section className="settings-section"><ChannelControlsPanel /></section>
         </>
       ) : null}
       {view !== "settings" ? (
@@ -1446,10 +1448,21 @@ export function SettingsPage({ view = "settings" }: { view?: SettingsView }) {
                       label: text.networkMihomo,
                       children: networkMihomoText,
                     },
+                    ...(view === "proxy"
+                      ? [
+                          { key: "proxy-policy", label: text.networkMihomoPolicyVersion, children: networkStatus?.mihomoPolicyVersion || "-" },
+                          { key: "proxy-coverage", label: text.networkProxyCoverage, children: text.networkProxyCoverageDescription },
+                        ]
+                      : []),
                     {
                       key: "valid-until",
                       label: text.networkValidUntil,
                       children: networkStatus?.validUntil || "-",
+                    },
+                    {
+                      key: "session-valid-until",
+                      label: text.networkSessionValidUntil,
+                      children: networkStatus?.sessionValidUntil || "-",
                     },
                     {
                       key: "diagnostic",

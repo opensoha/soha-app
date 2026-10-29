@@ -79,6 +79,42 @@ func NewExecutor(privateKey wgtypes.Key, system System) (*Executor, error) {
 	return &Executor{privateKey: privateKey, publicKey: privateKey.PublicKey().String(), system: system}, nil
 }
 
+// VPNBinding returns only a verified, live native interface. A configured name
+// or an old plan is insufficient evidence for an interface-bound proxy exit.
+func (executor *Executor) VPNBinding(ctx context.Context) (string, []string, error) {
+	executor.mu.Lock()
+	defer executor.mu.Unlock()
+	native, ok := executor.system.(interface {
+		TunnelInterface(context.Context) (string, error)
+	})
+	if !ok || executor.previous == nil {
+		return "", nil, errors.New("native VPN interface readback is unavailable")
+	}
+	readback, err := executor.system.Readback(ctx)
+	if err != nil || !reflect.DeepEqual(readback, executor.previous.Readback()) {
+		return "", nil, errors.New("native VPN state changed")
+	}
+	name, err := native.TunnelInterface(ctx)
+	if err != nil || !validVPNInterfaceName(name) {
+		return "", nil, errors.New("native VPN interface is unavailable")
+	}
+	return name, slices.Clone(readback.Routes), nil
+}
+
+func validVPNInterfaceName(name string) bool {
+	if len(name) < 1 || len(name) > 64 {
+		return false
+	}
+	for _, char := range name {
+		if char < 'a' || char > 'z' {
+			if (char < 'A' || char > 'Z') && (char < '0' || char > '9') && char != '_' && char != '-' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func (executor *Executor) Apply(ctx context.Context, desired ConfigurationDesired, now time.Time) ApplyOutcome {
 	executor.mu.Lock()
 	defer executor.mu.Unlock()
@@ -101,6 +137,24 @@ func (executor *Executor) Apply(ctx context.Context, desired ConfigurationDesire
 	}
 	executor.previous = &plan
 	return ApplyOutcome{Status: "applied", ReadbackHash: readbackHash(readback)}
+}
+
+func (executor *Executor) Verify(ctx context.Context, desired ConfigurationDesired, now time.Time) ApplyOutcome {
+	executor.mu.Lock()
+	defer executor.mu.Unlock()
+	expected := TunnelReadback{}
+	if desired.WireGuard != nil {
+		plan, err := buildTunnelPlan(desired, executor.privateKey, executor.publicKey, now.UTC())
+		if err != nil {
+			return ApplyOutcome{Status: "rejected", ReadbackHash: emptyReadbackHash(), ReasonCode: "unsafe_endpoint_configuration"}
+		}
+		expected = plan.Readback()
+	}
+	actual, err := executor.system.Readback(ctx)
+	if err != nil || !reflect.DeepEqual(actual, expected) {
+		return ApplyOutcome{Status: "rejected", ReadbackHash: emptyReadbackHash(), ReasonCode: "endpoint_readback_mismatch"}
+	}
+	return ApplyOutcome{Status: "applied", ReadbackHash: readbackHash(actual)}
 }
 
 func (executor *Executor) Disable(ctx context.Context) error {
@@ -160,7 +214,7 @@ func buildTunnelPlan(desired ConfigurationDesired, privateKey wgtypes.Key, publi
 	seenDNS := map[string]struct{}{}
 	for _, raw := range wg.DNSServers {
 		address, parseErr := netip.ParseAddr(raw)
-		if parseErr != nil || !address.Is4() || address.String() != raw || !prefixWithinAny(netip.PrefixFrom(address, 32), routes) {
+		if parseErr != nil || address.Is4In6() || !address.IsGlobalUnicast() || address.String() != raw || !prefixWithinAny(netip.PrefixFrom(address, address.BitLen()), routes) {
 			return TunnelPlan{}, errors.New("invalid endpoint DNS server")
 		}
 		if _, exists := seenDNS[raw]; exists {
@@ -181,15 +235,15 @@ func canonicalPrefixes(raw []string, requireHost bool) ([]string, error) {
 	seen := map[string]struct{}{}
 	for _, value := range raw {
 		prefix, err := netip.ParsePrefix(value)
-		if err != nil || !prefix.Addr().Is4() || prefix.Masked() != prefix || prefix.Bits() == 0 || (requireHost && prefix.Bits() != 32) {
-			return nil, errors.New("invalid IPv4 split route")
+		if err != nil || prefix.Addr().Is4In6() || !prefix.Addr().IsGlobalUnicast() || prefix.Masked() != prefix || prefix.Bits() == 0 || (requireHost && prefix.Bits() != prefix.Addr().BitLen()) {
+			return nil, errors.New("invalid IP split route")
 		}
 		canonical := prefix.String()
 		if canonical != value {
-			return nil, errors.New("non-canonical IPv4 split route")
+			return nil, errors.New("non-canonical IP split route")
 		}
 		if _, exists := seen[canonical]; exists {
-			return nil, errors.New("duplicate IPv4 split route")
+			return nil, errors.New("duplicate IP split route")
 		}
 		seen[canonical] = struct{}{}
 		result = append(result, canonical)
@@ -201,7 +255,7 @@ func canonicalPrefixes(raw []string, requireHost bool) ([]string, error) {
 		for _, candidate := range result[index+1:] {
 			right := netip.MustParsePrefix(candidate)
 			if left.Contains(right.Addr()) || right.Contains(left.Addr()) {
-				return nil, errors.New("overlapping IPv4 split routes")
+				return nil, errors.New("overlapping IP split routes")
 			}
 		}
 	}
@@ -218,7 +272,7 @@ func routesCoveredByLeases(routes []string, networkLeases []NetworkLease, resour
 			}
 			for _, cidr := range lease.CIDRs {
 				leasePrefix, err := netip.ParsePrefix(cidr)
-				if err == nil && leasePrefix.IsValid() && leasePrefix.Addr().Is4() && leasePrefix.Masked() == leasePrefix && leasePrefix.Bits() <= prefix.Bits() && leasePrefix.Contains(prefix.Addr()) {
+				if err == nil && leasePrefix.IsValid() && !leasePrefix.Addr().Is4In6() && leasePrefix.Masked() == leasePrefix && leasePrefix.Bits() <= prefix.Bits() && leasePrefix.Contains(prefix.Addr()) {
 					covered = true
 				}
 			}
@@ -274,7 +328,7 @@ func validFirewallRules(rules []WireGuardFirewallRule, addresses []string, netwo
 		}
 		seen[rule.ID] = struct{}{}
 		destination, err := netip.ParsePrefix(rule.DestinationCIDR)
-		if err != nil || destination.Masked() != destination || destination.Bits() == 0 || !destination.Addr().Is4() || !prefixWithinAny(destination, routes) {
+		if err != nil || destination.Masked() != destination || destination.Bits() == 0 || destination.Addr().Is4In6() || !prefixWithinAny(destination, routes) {
 			return false
 		}
 		if (rule.Protocol == "any" || rule.Protocol == "icmp") && len(rule.Ports) != 0 {
@@ -342,7 +396,7 @@ func validEndpointHost(host string) bool {
 		return false
 	}
 	if address := net.ParseIP(host); address != nil {
-		return address.To4() != nil
+		return !address.IsUnspecified() && !address.IsMulticast()
 	}
 	for _, label := range strings.Split(host, ".") {
 		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
