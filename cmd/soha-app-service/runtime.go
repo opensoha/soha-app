@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -28,12 +29,19 @@ func newEndpointRuntime(configPath, version string, logger *slog.Logger) (*endpo
 	if err != nil {
 		return nil, err
 	}
+	uiPresence, err := endpointservice.NewUIProcessPresence(config)
+	if err != nil {
+		return nil, err
+	}
 	privateKey, err := endpointservice.LoadOrCreatePrivateKey(config.PrivateKeyPath())
 	if err != nil {
 		return nil, err
 	}
 	var mihomo endpointservice.MihomoRuntime
 	var capabilities []string
+	if endpointservice.NativeChannelsSupported() {
+		capabilities = append(capabilities, "windows-channel-controls-v1")
+	}
 	if config.MihomoConfigured() {
 		secret, err := config.MihomoControllerSecret()
 		if err != nil {
@@ -43,7 +51,13 @@ func newEndpointRuntime(configPath, version string, logger *slog.Logger) (*endpo
 		if err != nil {
 			return nil, err
 		}
-		capabilities = []string{"mihomo"}
+		capabilities = append(capabilities, "mihomo", "mihomo-policy-v1", "mihomo-dns-pin-v1")
+	}
+	if endpointservice.NativeEAPSupported() {
+		capabilities = append(capabilities, "eap-profile-v1", "radius-eap-tls-v1")
+	}
+	if uiPresence != nil {
+		capabilities = append(capabilities, "endpoint-ui-presence-v1")
 	}
 	control, err := endpointservice.NewControlClient(config.ControlURL, config.RuntimeID, controlHTTP, 5*time.Minute, capabilities...)
 	if err != nil {
@@ -88,7 +102,29 @@ func newEndpointRuntime(configPath, version string, logger *slog.Logger) (*endpo
 			return nil, err
 		}
 	}
-	manager, err := endpointservice.NewManager(endpointservice.ManagerOptions{CheckVPNHealth: system.CheckVPNHealth, RuntimeID: config.RuntimeID, DeviceID: config.DeviceID, PollInterval: time.Minute, HeartbeatInterval: time.Minute, RenewBefore: 30 * time.Second, MaxClockSkew: 5 * time.Minute}, control, executor, telemetry, logger)
+	var admission *endpointservice.AdmissionManager
+	if endpointservice.NativeEAPSupported() {
+		eapSystem, err := endpointservice.NewNativeEAPSystem(config)
+		if err != nil {
+			return nil, err
+		}
+		admission, err = endpointservice.NewAdmissionManager(config.StateDirectory, config.DeviceID, control, eapSystem)
+		if err != nil {
+			return nil, err
+		}
+	}
+	var channels *endpointservice.ChannelManager
+	if endpointservice.NativeChannelsSupported() {
+		native, err := endpointservice.NewNativeChannelSystem(config)
+		if err != nil {
+			return nil, err
+		}
+		channels, err = endpointservice.NewChannelManager(config, control, native)
+		if err != nil {
+			return nil, err
+		}
+	}
+	manager, err := endpointservice.NewManager(endpointservice.ManagerOptions{Channels: channels, ControlURL: config.ControlURL, ConfigurationStatePath: filepath.Join(config.StateDirectory, "configuration-floor.json"), Admission: admission, UIPresence: uiPresence, CheckVPNHealth: system.CheckVPNHealth, RuntimeID: config.RuntimeID, DeviceID: config.DeviceID, PollInterval: time.Minute, HeartbeatInterval: time.Minute, RenewBefore: 30 * time.Second, MaxClockSkew: 5 * time.Minute}, control, executor, telemetry, logger)
 	if err != nil {
 		return nil, err
 	}

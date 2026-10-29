@@ -30,6 +30,7 @@ type MihomoAppStatus struct {
 }
 
 type mihomoAppState struct {
+	Cleared         bool   `json:"cleared,omitempty"`
 	Version         int    `json:"version"`
 	ProfileID       string `json:"profileId"`
 	ProfileRevision int    `json:"profileRevision"`
@@ -62,7 +63,13 @@ func saveMihomoAppState(path string, state mihomoAppState) error {
 	if err != nil {
 		return err
 	}
-	protected, err := protectSecret(plain, mihomoAppStateDescription)
+	return saveProtectedState(path, plain, mihomoAppStateDescription)
+}
+
+// Replace the committed file directly; unlinking it first loses durable clear
+// and version-floor records if a process exits before the rename.
+func saveProtectedState(path string, plain []byte, description string) error {
+	protected, err := protectSecret(plain, description)
 	clear(plain)
 	if err != nil {
 		return fmt.Errorf("protect mihomo app subscription: %w", err)
@@ -95,14 +102,17 @@ func saveMihomoAppState(path string, state mihomoAppState) error {
 	if err := temporary.Close(); err != nil {
 		return err
 	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
 	return os.Rename(temporaryPath, path)
 }
 
 func validMihomoAppState(state mihomoAppState) bool {
-	return state.Version == mihomoAppStateVersion && identifierPattern.MatchString(state.ProfileID) && state.ProfileRevision > 0 && validSubscriptionURL(state.SubscriptionURL) && validMihomoName(state.SelectedProxy)
+	if state.Version != mihomoAppStateVersion || !identifierPattern.MatchString(state.ProfileID) || state.ProfileRevision < 1 {
+		return false
+	}
+	if state.Cleared {
+		return state.SubscriptionURL == "" && state.SelectedProxy == ""
+	}
+	return validSubscriptionURL(state.SubscriptionURL) && validMihomoName(state.SelectedProxy)
 }
 
 func cloneMihomoAppStatus(status MihomoAppStatus) MihomoAppStatus {

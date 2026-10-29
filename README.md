@@ -4,8 +4,8 @@ Independent Wails 3 desktop client for connecting to a Soha Server. The App owns
 
 ## Prerequisites
 
-- Go 1.27.2
-- Node.js 22 and npm 10+
+- Go 1.27.3
+- Node.js 22.12+ (or a supported 24/26 release) and npm 10+
 - Wails CLI pinned to `v3.0.0-beta.16`
 - macOS 13 Ventura or newer for macOS builds and installations (required by Go 1.27)
 
@@ -108,6 +108,12 @@ sudo /bin/sh /Applications/Soha.app/Contents/Resources/install-network-service.s
 The root daemon authenticates Unix-socket peers by their OS UID; only the configured desktop user or root can issue requests. The App authenticates the server as root. A managed VPN intent contains the user's short-lived server authorization; local IPC cannot choose arbitrary routes or resources. Connection success requires a fresh WireGuard handshake and system readback. Closing the owned utun descriptor removes its routes; temporary DNS keys belong to the service's SystemConfiguration session. Route conflicts or incomplete cleanup block reconnection.
 
 Updating the `.app` includes the new helper but does not silently replace the privileged installed copy: run the installer above with administrator authorization. The macOS proxy page remains unavailable in this build. The core repository provides [`deploy/network-test/vpn-lab.md`](https://github.com/opensoha/soha/blob/main/deploy/network-test/vpn-lab.md) for isolated Docker gateway and resource validation.
+
+## Trusted App Presence
+
+Service health and native App presence are separate. Without administrator provisioning, UI presence remains `unknown`. To enable it, add both `uiExecutable` and `uiCodeIdentity` to the protected service configuration. On macOS, use the installed `.app` path and `cdhash:<CDHash>` from `/usr/bin/codesign -d --verbose=4 /Applications/Soha.app`. The daemon verifies the actual Unix-socket peer PID/UID and its running code with Security.framework against that pinned CodeDirectory hash. On Windows, use the absolute installed `soha-app.exe` path under Program Files and `sha256:<lowercase SHA256>` from `Get-FileHash`; the daemon verifies the pipe peer PID, active desktop SID/session, protected path ACLs, and binary identity. Another program under the same user cannot refresh presence.
+
+The native host renews presence every 10 seconds; a missing renewal expires after 30 seconds. Hiding the main window in the tray keeps the App running; quitting or terminating the process stops renewals. Renderer requests cannot submit an online boolean or an observation timestamp. A changed UI build requires administrator verification and a new pin before service restart; routine enrollment does not silently trust new code. This signal identifies the approved native program and its liveness, not proof that an endpoint is tamper-proof.
 
 ## Software Library
 

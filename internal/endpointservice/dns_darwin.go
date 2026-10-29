@@ -10,8 +10,8 @@ package endpointservice
 
 typedef struct {
  SCDynamicStoreRef store;
- CFStringRef dnsKey, ipKey;
- CFDictionaryRef dns, ip;
+ CFStringRef dnsKey, ipKeys[2];
+ CFDictionaryRef dns, ip[2];
 } sohaDNS;
 
 static CFStringRef sohaString(const char *text) { return CFStringCreateWithCString(NULL,text,kCFStringEncodingUTF8); }
@@ -21,18 +21,29 @@ static CFArrayRef sohaStrings(const char *lines) {
  while(part) { CFStringRef value=sohaString(part); CFArrayAppendValue(array,value); CFRelease(value); part=strtok_r(NULL,"\n",&save); }
  free(copy); return array;
 }
+static int sohaDNSValueMatches(sohaDNS *h,CFStringRef key,CFDictionaryRef expected,int allowMissing) {
+ CFPropertyListRef current=SCDynamicStoreCopyValue(h->store,key);
+ int ok=current ? CFEqual(current,expected) : allowMissing;
+ if(current)CFRelease(current);return ok;
+}
+static int sohaDNSCheck(sohaDNS *h,int allowMissing) {
+ if(!sohaDNSValueMatches(h,h->dnsKey,h->dns,allowMissing))return 0;
+ for(int i=0;i<2;i++)if(h->ipKeys[i] && !sohaDNSValueMatches(h,h->ipKeys[i],h->ip[i],allowMissing))return 0;
+ return 1;
+}
 static int sohaDNSMatches(sohaDNS *h) {
- CFPropertyListRef dns=SCDynamicStoreCopyValue(h->store,h->dnsKey);
- CFPropertyListRef ip=SCDynamicStoreCopyValue(h->store,h->ipKey);
- int ok=dns && ip && CFEqual(dns,h->dns) && CFEqual(ip,h->ip);
- if(dns)CFRelease(dns);if(ip)CFRelease(ip);return ok;
+ return sohaDNSCheck(h,0);
 }
 static void sohaDNSFree(sohaDNS *h) {
- if(h->dns)CFRelease(h->dns);if(h->ip)CFRelease(h->ip);
- if(h->dnsKey)CFRelease(h->dnsKey);if(h->ipKey)CFRelease(h->ipKey);
+ if(h->dns)CFRelease(h->dns);
+ if(h->dnsKey)CFRelease(h->dnsKey);
+ for(int i=0;i<2;i++) {
+  if(h->ip[i])CFRelease(h->ip[i]);
+  if(h->ipKeys[i])CFRelease(h->ipKeys[i]);
+ }
  if(h->store)CFRelease(h->store);free(h);
 }
-static sohaDNS *sohaDNSOpen(const char *service,const char *iface,const char *addresses,const char *servers) {
+static sohaDNS *sohaDNSOpen(const char *service,const char *iface,const char *ipv4,const char *ipv6,const char *servers) {
  sohaDNS *h=calloc(1,sizeof(*h));
  const void *optionKeys[]={kSCDynamicStoreUseSessionKeys}, *optionValues[]={kCFBooleanTrue};
  CFDictionaryRef options=CFDictionaryCreate(NULL,optionKeys,optionValues,1,&kCFTypeDictionaryKeyCallBacks,&kCFTypeDictionaryValueCallBacks);
@@ -40,27 +51,37 @@ static sohaDNS *sohaDNSOpen(const char *service,const char *iface,const char *ad
  if(!h->store){sohaDNSFree(h);return NULL;}
  CFStringRef serviceID=sohaString(service), interfaceName=sohaString(iface);
  h->dnsKey=SCDynamicStoreKeyCreateNetworkServiceEntity(NULL,kSCDynamicStoreDomainState,serviceID,kSCEntNetDNS);
- h->ipKey=SCDynamicStoreKeyCreateNetworkServiceEntity(NULL,kSCDynamicStoreDomainState,serviceID,kSCEntNetIPv4);
- CFArrayRef serverArray=sohaStrings(servers), addressArray=sohaStrings(addresses);
+ CFArrayRef serverArray=sohaStrings(servers);
  const void *emptyDomain[]={CFSTR("")};
  CFArrayRef domains=CFArrayCreate(NULL,emptyDomain,1,&kCFTypeArrayCallBacks);
  const void *dnsKeys[]={kSCPropNetDNSServerAddresses,kSCPropNetDNSSupplementalMatchDomains,kSCPropInterfaceName};
  const void *dnsValues[]={serverArray,domains,interfaceName};
  h->dns=CFDictionaryCreate(NULL,dnsKeys,dnsValues,3,&kCFTypeDictionaryKeyCallBacks,&kCFTypeDictionaryValueCallBacks);
- const void *ipKeys[]={kSCPropInterfaceName,kSCPropNetIPv4Addresses};
- const void *ipValues[]={interfaceName,addressArray};
- h->ip=CFDictionaryCreate(NULL,ipKeys,ipValues,2,&kCFTypeDictionaryKeyCallBacks,&kCFTypeDictionaryValueCallBacks);
- CFRelease(serverArray);CFRelease(addressArray);CFRelease(domains);CFRelease(interfaceName);CFRelease(serviceID);
- if(!SCDynamicStoreAddTemporaryValue(h->store,h->ipKey,h->ip) || !SCDynamicStoreAddTemporaryValue(h->store,h->dnsKey,h->dns)) {sohaDNSFree(h);return NULL;}
+ const char *addresses[]={ipv4,ipv6};
+ CFStringRef entities[]={kSCEntNetIPv4,kSCEntNetIPv6};
+ CFStringRef addressKeys[]={kSCPropNetIPv4Addresses,kSCPropNetIPv6Addresses};
+ for(int i=0;i<2;i++)if(addresses[i][0]) {
+  h->ipKeys[i]=SCDynamicStoreKeyCreateNetworkServiceEntity(NULL,kSCDynamicStoreDomainState,serviceID,entities[i]);
+  CFArrayRef values=sohaStrings(addresses[i]);
+  const void *keys[]={kSCPropInterfaceName,addressKeys[i]}, *ipValues[]={interfaceName,values};
+  h->ip[i]=CFDictionaryCreate(NULL,keys,ipValues,2,&kCFTypeDictionaryKeyCallBacks,&kCFTypeDictionaryValueCallBacks);
+  CFRelease(values);
+ }
+ CFRelease(serverArray);CFRelease(domains);CFRelease(interfaceName);CFRelease(serviceID);
+ for(int i=0;i<2;i++)if(h->ipKeys[i] && !SCDynamicStoreAddTemporaryValue(h->store,h->ipKeys[i],h->ip[i])) {sohaDNSFree(h);return NULL;}
+ if(!SCDynamicStoreAddTemporaryValue(h->store,h->dnsKey,h->dns)) {sohaDNSFree(h);return NULL;}
  return h;
 }
+static int sohaDNSRemove(sohaDNS *h,CFStringRef key,CFDictionaryRef expected) {
+ CFPropertyListRef current=SCDynamicStoreCopyValue(h->store,key);
+ if(!current)return 1;
+ int owned=CFEqual(current,expected);CFRelease(current);
+ return owned && SCDynamicStoreRemoveValue(h->store,key);
+}
 static int sohaDNSClose(sohaDNS *h) {
- CFPropertyListRef current=SCDynamicStoreCopyValue(h->store,h->dnsKey);
- if(current && !CFEqual(current,h->dns)){CFRelease(current);return 0;}
- if(current){CFRelease(current);if(!SCDynamicStoreRemoveValue(h->store,h->dnsKey))return 0;}
- current=SCDynamicStoreCopyValue(h->store,h->ipKey);
- if(current && !CFEqual(current,h->ip)){CFRelease(current);return 0;}
- if(current){CFRelease(current);if(!SCDynamicStoreRemoveValue(h->store,h->ipKey))return 0;}
+ if(!sohaDNSCheck(h,1))return 0;
+ if(!sohaDNSRemove(h,h->dnsKey,h->dns))return 0;
+ for(int i=0;i<2;i++)if(h->ipKeys[i] && !sohaDNSRemove(h,h->ipKeys[i],h->ip[i]))return 0;
  sohaDNSFree(h);return 1;
 }
 */
@@ -75,15 +96,21 @@ import (
 type darwinDNS struct{ handle *C.sohaDNS }
 
 func openDarwinDNS(iface string, addresses, servers []string) (*darwinDNS, error) {
+	ipv4, ipv6, err := splitDarwinDNSAddresses(addresses)
+	if err != nil {
+		return nil, err
+	}
 	service := C.CString("com.opensoha.vpn." + randomID())
 	defer C.free(unsafe.Pointer(service))
 	name := C.CString(iface)
 	defer C.free(unsafe.Pointer(name))
-	address := C.CString(strings.Join(addresses, "\n"))
-	defer C.free(unsafe.Pointer(address))
+	address4 := C.CString(strings.Join(ipv4, "\n"))
+	defer C.free(unsafe.Pointer(address4))
+	address6 := C.CString(strings.Join(ipv6, "\n"))
+	defer C.free(unsafe.Pointer(address6))
 	dns := C.CString(strings.Join(servers, "\n"))
 	defer C.free(unsafe.Pointer(dns))
-	h := C.sohaDNSOpen(service, name, address, dns)
+	h := C.sohaDNSOpen(service, name, address4, address6, dns)
 	if h == nil {
 		return nil, errors.New("could not install temporary macOS VPN DNS settings")
 	}

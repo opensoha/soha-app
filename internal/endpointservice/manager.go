@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -52,13 +53,18 @@ type Telemetry interface {
 }
 
 type ManagerOptions struct {
-	CheckVPNHealth    func(context.Context) error
-	RuntimeID         string
-	DeviceID          string
-	PollInterval      time.Duration
-	HeartbeatInterval time.Duration
-	RenewBefore       time.Duration
-	MaxClockSkew      time.Duration
+	Channels               *ChannelManager
+	ControlURL             string
+	ConfigurationStatePath string
+	Admission              *AdmissionManager
+	UIPresence             *UIProcessPresence
+	CheckVPNHealth         func(context.Context) error
+	RuntimeID              string
+	DeviceID               string
+	PollInterval           time.Duration
+	HeartbeatInterval      time.Duration
+	RenewBefore            time.Duration
+	MaxClockSkew           time.Duration
 }
 
 type ConnectInput struct {
@@ -75,37 +81,43 @@ type ConnectInput struct {
 }
 
 type Status struct {
-	ProfileID            string           `json:"profileId,omitempty"`
-	ProfileRevision      int              `json:"profileRevision,omitempty"`
-	Selection            string           `json:"selection,omitempty"`
-	SelectionReason      string           `json:"selectionReason,omitempty"`
-	DecisionID           string           `json:"decisionId,omitempty"`
-	Phase                string           `json:"phase,omitempty"`
-	ProbeResults         []VPNProbeResult `json:"probeResults,omitempty"`
-	ProbeMeasuredAt      *time.Time       `json:"probeMeasuredAt,omitempty"`
-	FailoverOnDisconnect bool             `json:"failoverOnDisconnect,omitempty"`
-	RetryCooldownSeconds int              `json:"retryCooldownSeconds,omitempty"`
-	MaxAttempts          int              `json:"maxAttempts,omitempty"`
-	ConnectedAt          *time.Time       `json:"connectedAt,omitempty"`
-	TunnelIP             string           `json:"tunnelIP,omitempty"`
+	ChannelControls        *ChannelStatus   `json:"channelControls,omitempty"`
+	PresenceState          string           `json:"presenceState,omitempty"`
+	PresenceLastReceivedAt *time.Time       `json:"presenceLastReceivedAt,omitempty"`
+	PresenceEpoch          int              `json:"presenceEpoch,omitempty"`
+	ProfileID              string           `json:"profileId,omitempty"`
+	ProfileRevision        int              `json:"profileRevision,omitempty"`
+	Selection              string           `json:"selection,omitempty"`
+	SelectionReason        string           `json:"selectionReason,omitempty"`
+	DecisionID             string           `json:"decisionId,omitempty"`
+	Phase                  string           `json:"phase,omitempty"`
+	ProbeResults           []VPNProbeResult `json:"probeResults,omitempty"`
+	ProbeMeasuredAt        *time.Time       `json:"probeMeasuredAt,omitempty"`
+	FailoverOnDisconnect   bool             `json:"failoverOnDisconnect,omitempty"`
+	RetryCooldownSeconds   int              `json:"retryCooldownSeconds,omitempty"`
+	MaxAttempts            int              `json:"maxAttempts,omitempty"`
+	ConnectedAt            *time.Time       `json:"connectedAt,omitempty"`
+	TunnelIP               string           `json:"tunnelIP,omitempty"`
 
-	State                 string    `json:"state"`
-	RuntimeID             string    `json:"runtimeId"`
-	DeviceID              string    `json:"deviceId"`
-	SiteID                string    `json:"siteId,omitempty"`
-	NetworkSpaceID        string    `json:"networkSpaceId,omitempty"`
-	Mode                  string    `json:"mode,omitempty"`
-	ResourceIDs           []string  `json:"resourceIds,omitempty"`
-	SessionID             string    `json:"sessionId,omitempty"`
-	GatewayID             string    `json:"gatewayId,omitempty"`
-	ConfigurationVersion  int       `json:"configurationVersion"`
-	PolicyVersion         int       `json:"policyVersion"`
-	ValidUntil            time.Time `json:"validUntil,omitempty"`
-	MihomoMode            string    `json:"mihomoMode,omitempty"`
-	MihomoProfileID       string    `json:"mihomoProfileId,omitempty"`
-	MihomoProfileRevision int       `json:"mihomoProfileRevision,omitempty"`
-	UptimeSeconds         int64     `json:"uptimeSeconds"`
-	Diagnostic            string    `json:"diagnostic,omitempty"`
+	State                 string     `json:"state"`
+	RuntimeID             string     `json:"runtimeId"`
+	DeviceID              string     `json:"deviceId"`
+	SiteID                string     `json:"siteId,omitempty"`
+	NetworkSpaceID        string     `json:"networkSpaceId,omitempty"`
+	Mode                  string     `json:"mode,omitempty"`
+	ResourceIDs           []string   `json:"resourceIds,omitempty"`
+	SessionID             string     `json:"sessionId,omitempty"`
+	GatewayID             string     `json:"gatewayId,omitempty"`
+	ConfigurationVersion  int        `json:"configurationVersion"`
+	PolicyVersion         int        `json:"policyVersion"`
+	ValidUntil            time.Time  `json:"validUntil,omitempty"`
+	SessionValidUntil     *time.Time `json:"sessionValidUntil,omitempty"`
+	MihomoMode            string     `json:"mihomoMode,omitempty"`
+	MihomoProfileID       string     `json:"mihomoProfileId,omitempty"`
+	MihomoProfileRevision int        `json:"mihomoProfileRevision,omitempty"`
+	MihomoPolicyVersion   int        `json:"mihomoPolicyVersion,omitempty"`
+	UptimeSeconds         int64      `json:"uptimeSeconds"`
+	Diagnostic            string     `json:"diagnostic,omitempty"`
 }
 
 type Manager struct {
@@ -120,17 +132,20 @@ type Manager struct {
 	intervalJitter func(time.Duration) time.Duration
 	heartbeatWait  func(context.Context, time.Duration) bool
 
-	operationMu       sync.Mutex
-	stateMu           sync.RWMutex
-	pollInterval      time.Duration
-	heartbeatInterval time.Duration
-	status            Status
-	leaseIDs          []string
-	sessionUntil      time.Time
-	nextRenewAt       time.Time
-	appliedVersion    int
-	disabled          bool
-	cleanupReason     string
+	operationMu        sync.Mutex
+	stateMu            sync.RWMutex
+	pollInterval       time.Duration
+	heartbeatInterval  time.Duration
+	status             Status
+	leaseIDs           []string
+	sessionUntil       time.Time
+	nextRenewAt        time.Time
+	appliedVersion     int
+	appliedHash        string
+	disabled           bool
+	cleanupReason      string
+	presenceBootID     string
+	configurationFloor configurationFloor
 }
 
 func NewManager(options ManagerOptions, control RuntimeControl, executor ConfigurationExecutor, telemetry Telemetry, logger *slog.Logger) (*Manager, error) {
@@ -138,7 +153,11 @@ func NewManager(options ManagerOptions, control RuntimeControl, executor Configu
 		return nil, errors.New("endpoint manager dependencies and intervals are invalid")
 	}
 	now := time.Now
-	return &Manager{options: options, control: control, executor: executor, telemetry: telemetry, logger: logger, now: now, startedAt: now().UTC(), intervalJitter: runtimeIntervalJitter, heartbeatWait: waitFor, pollInterval: options.PollInterval, heartbeatInterval: options.HeartbeatInterval, disabled: true, status: Status{State: StateDisconnected, RuntimeID: options.RuntimeID, DeviceID: options.DeviceID}}, nil
+	manager := &Manager{options: options, control: control, executor: executor, telemetry: telemetry, logger: logger, now: now, startedAt: now().UTC(), intervalJitter: runtimeIntervalJitter, heartbeatWait: waitFor, pollInterval: options.PollInterval, heartbeatInterval: options.HeartbeatInterval, presenceBootID: randomID(), disabled: true, status: Status{State: StateDisconnected, RuntimeID: options.RuntimeID, DeviceID: options.DeviceID}}
+	if err := manager.restoreConfigurationFloor(); err != nil {
+		return nil, err
+	}
+	return manager, nil
 }
 
 func (manager *Manager) Connect(ctx context.Context, input ConnectInput) (Status, error) {
@@ -258,14 +277,18 @@ func (manager *Manager) disconnectLocked(ctx context.Context, reason string) (St
 	manager.stateMu.RLock()
 	sessionID, leaseIDs := manager.status.SessionID, slices.Clone(manager.leaseIDs)
 	manager.stateMu.RUnlock()
+	stateErr := manager.beginVPNCleanup(sessionID, leaseIDs, reason)
 	localErr := manager.executor.Disable(ctx)
 	var remoteErr error
 	if sessionID != "" && len(leaseIDs) != 0 {
 		remoteErr = manager.control.Revoke(ctx, LeaseRevoke{SessionID: sessionID, LeaseIDs: leaseIDs, ReasonCode: reason, EffectiveAt: manager.now().UTC()})
 	}
+	if localErr == nil && remoteErr == nil {
+		stateErr = errors.Join(stateErr, manager.finishVPNCleanup())
+	}
 	manager.stateMu.Lock()
 	manager.disabled = localErr == nil
-	if localErr != nil || remoteErr != nil {
+	if localErr != nil || remoteErr != nil || stateErr != nil {
 		manager.status.State, manager.status.Diagnostic = StateDegraded, "disconnect_incomplete"
 		manager.cleanupReason = reason
 	} else {
@@ -277,7 +300,7 @@ func (manager *Manager) disconnectLocked(ctx context.Context, reason string) (St
 	}
 	status := manager.status
 	manager.stateMu.Unlock()
-	return status, errors.Join(localErr, remoteErr)
+	return status, errors.Join(localErr, remoteErr, stateErr)
 }
 
 func (manager *Manager) Cycle(ctx context.Context) error {
@@ -287,6 +310,7 @@ func (manager *Manager) Cycle(ctx context.Context) error {
 	manager.stateMu.RLock()
 	cleanupReason := manager.cleanupReason
 	active := manager.status.SessionID != ""
+	sessionExpired := active && !manager.sessionUntil.IsZero() && !manager.sessionUntil.After(now)
 	expired := (active || !manager.disabled) && !manager.status.ValidUntil.IsZero() && !manager.status.ValidUntil.After(now)
 	renew := active && !manager.nextRenewAt.IsZero() && !manager.nextRenewAt.After(now)
 	manager.stateMu.RUnlock()
@@ -294,10 +318,18 @@ func (manager *Manager) Cycle(ctx context.Context) error {
 		_, err := manager.disconnectLocked(ctx, cleanupReason)
 		return err
 	}
+	if sessionExpired {
+		_, err := manager.disconnectLocked(ctx, "lease_expired")
+		return err
+	}
 	if expired {
 		_, err := manager.disconnectLocked(ctx, "configuration_expired")
 		return err
 	}
+	cycleCtx, cancel := manager.cycleContext(ctx)
+	defer cancel()
+	defer manager.enforceExpiry(ctx)
+	ctx = cycleCtx
 	if active && renew {
 		if err := manager.renew(ctx, now); err != nil {
 			manager.degrade("lease_renewal_failed")
@@ -307,18 +339,93 @@ func (manager *Manager) Cycle(ctx context.Context) error {
 	if err := manager.syncConfiguration(ctx); err != nil {
 		return err
 	}
+	ctx, healthCancel := manager.cycleContext(ctx)
+	defer healthCancel()
+	manager.stateMu.RLock()
+	active = manager.status.SessionID != ""
+	manager.stateMu.RUnlock()
 	if active && manager.options.CheckVPNHealth != nil {
 		if err := manager.options.CheckVPNHealth(ctx); err != nil {
-			manager.degrade("vpn_tunnel_unhealthy")
-			return err
+			return errors.Join(err, manager.rejectConfiguration(ctx, "vpn_tunnel_unhealthy"))
 		}
 	}
 	return nil
 }
 
-func (manager *Manager) Run(ctx context.Context) error {
+func (manager *Manager) cycleContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	manager.stateMu.RLock()
+	deadlines := []time.Time{manager.status.ValidUntil}
+	if manager.status.SessionID != "" {
+		deadlines = append(deadlines, manager.sessionUntil)
+	}
+	manager.stateMu.RUnlock()
+	var deadline time.Time
+	for _, until := range deadlines {
+		if !until.IsZero() && (deadline.IsZero() || until.Before(deadline)) {
+			deadline = until
+		}
+	}
+	if !deadline.IsZero() {
+		return context.WithDeadline(ctx, deadline)
+	}
+	return context.WithCancel(ctx)
+}
+
+func (manager *Manager) enforceExpiry(ctx context.Context) {
+	now := manager.now().UTC()
+	manager.stateMu.RLock()
+	leaseExpired := manager.status.SessionID != "" && !manager.sessionUntil.IsZero() && !manager.sessionUntil.After(now)
+	configurationExpired := !manager.disabled && !manager.status.ValidUntil.IsZero() && !manager.status.ValidUntil.After(now)
+	manager.stateMu.RUnlock()
+	if !leaseExpired && !configurationExpired {
+		return
+	}
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	reason := "configuration_expired"
+	if leaseExpired {
+		reason = "lease_expired"
+	}
+	if _, err := manager.disconnectLocked(cleanup, reason); err != nil {
+		manager.logger.Warn("expired endpoint cleanup failed", "event", "endpoint_network.expiry.failed")
+	}
+}
+
+func (manager *Manager) Run(ctx context.Context) (retErr error) {
+	if manager.options.Channels != nil {
+		done := make(chan error, 1)
+		go func() { done <- manager.options.Channels.Run(ctx) }()
+		defer func() { retErr = errors.Join(retErr, <-done) }()
+	}
+
+	lifecycleDone := make(chan struct{})
+	go func() { defer close(lifecycleDone); manager.watchNetworkLifecycle(ctx) }()
+	defer func() { <-lifecycleDone }()
 	poll := time.NewTimer(0)
 	defer poll.Stop()
+	if manager.options.Admission != nil {
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			for waitFor(ctx, 10*time.Second) {
+				if err := manager.options.Admission.Check(ctx); err != nil && ctx.Err() == nil {
+					manager.logger.Warn("endpoint admission check failed", "event", "endpoint_admission.check.failed")
+				}
+			}
+		}()
+		defer func() { <-done }()
+	}
+	var presenceDone <-chan struct{}
+	if publisher, ok := manager.control.(EndpointPresenceControl); ok {
+		done := make(chan struct{})
+		presenceDone = done
+		go func() { defer close(done); manager.runPresence(ctx, publisher) }()
+	}
+	defer func() {
+		if presenceDone != nil {
+			<-presenceDone
+		}
+	}()
 	var heartbeatDone <-chan struct{}
 	if manager.telemetry != nil {
 		done := make(chan struct{})
@@ -375,10 +482,19 @@ func (manager *Manager) nextPollDelay(now time.Time) time.Duration {
 	poll, _ := manager.intervals()
 	delay := manager.intervalJitter(poll)
 	manager.stateMu.RLock()
-	validUntil := manager.status.ValidUntil
+	deadlines := []time.Time{manager.status.ValidUntil, manager.sessionUntil, manager.nextRenewAt}
+	active := manager.status.SessionID != ""
 	manager.stateMu.RUnlock()
-	if untilExpiry := validUntil.Sub(now); !validUntil.IsZero() && untilExpiry > 0 && untilExpiry < delay {
-		return untilExpiry
+	if !active {
+		deadlines = deadlines[:1]
+	}
+	for _, deadline := range deadlines {
+		if deadline.IsZero() {
+			continue
+		}
+		if untilDeadline := deadline.Sub(now); untilDeadline > 0 && untilDeadline < delay {
+			delay = untilDeadline
+		}
 	}
 	return delay
 }
@@ -432,11 +548,19 @@ func waitFor(ctx context.Context, delay time.Duration) bool {
 func (manager *Manager) Status() Status {
 	manager.stateMu.RLock()
 	status := manager.status
+	if !manager.sessionUntil.IsZero() && status.SessionID != "" {
+		until := manager.sessionUntil
+		status.SessionValidUntil = &until
+	}
 	manager.stateMu.RUnlock()
 	status.ResourceIDs = slices.Clone(status.ResourceIDs)
 	status.ProbeResults = slices.Clone(status.ProbeResults)
 	for i := range status.ProbeResults {
 		status.ProbeResults[i].RTTSamplesMs = slices.Clone(status.ProbeResults[i].RTTSamplesMs)
+	}
+	if manager.options.Channels != nil {
+		s := manager.options.Channels.Status()
+		status.ChannelControls = &s
 	}
 	status.UptimeSeconds = max(0, int64(manager.now().UTC().Sub(manager.startedAt)/time.Second))
 	return status
@@ -458,13 +582,22 @@ func (manager *Manager) syncConfiguration(ctx context.Context) error {
 		manager.degrade("invalid_configuration_payload")
 		return errors.New("network control returned an invalid endpoint configuration payload")
 	}
-	if manager.managedConfigurationRevoked(desired) {
-		_, err := manager.disconnectLocked(ctx, "authorization_revoked")
-		return err
+	ctx, cancel := context.WithDeadline(ctx, desired.ValidUntil)
+	defer cancel()
+	if err := manager.rememberConfiguration(desired); err != nil {
+		return errors.Join(err, manager.rejectConfiguration(ctx, "configuration_floor_unavailable"))
 	}
+	if manager.options.Admission != nil {
+		if err := manager.options.Admission.Observe(desired.Admission, desired.ValidUntil, message.OccurredAt); err != nil {
+			manager.logger.Warn("endpoint admission configuration rejected", "event", "endpoint_admission.configuration.rejected")
+		}
+	}
+	authorizationRevoked := manager.managedConfigurationRevoked(desired)
 	if err := validateMihomoConfiguration(desired.Mihomo, desired.WireGuard, false); err != nil {
-		manager.degrade("unsafe_mihomo_configuration")
-		return errors.New("network control returned an unsafe mihomo configuration")
+		return manager.rejectConfiguration(ctx, "unsafe_mihomo_configuration")
+	}
+	if desired.Mihomo != nil && desired.Mihomo.Protection.PolicyVersion != desired.PolicyVersion {
+		return manager.rejectConfiguration(ctx, "mihomo_policy_version_mismatch")
 	}
 	if desired.Mihomo != nil && desired.Mihomo.Mode == "managed_follow" {
 		source, sourceErr := manager.control.MihomoSource(ctx, desired.Mihomo.ProfileID)
@@ -477,35 +610,87 @@ func (manager *Manager) syncConfiguration(ctx context.Context) error {
 		desired.Mihomo.ManualNode = source.ManualNode
 	}
 	manager.applyRuntimeIntervals(desired.RuntimeIntervals)
+	configurationBytes, err := endpointEnforcementPayload(desired)
+	if err != nil {
+		return manager.rejectConfiguration(ctx, "invalid_configuration_payload")
+	}
+	configurationHash := fmt.Sprintf("sha256:%x", sha256.Sum256(configurationBytes))
 	manager.stateMu.RLock()
-	currentVersion, appliedVersion := manager.status.ConfigurationVersion, manager.appliedVersion
+	currentVersion, appliedVersion, appliedHash := manager.status.ConfigurationVersion, manager.appliedVersion, manager.appliedHash
 	manager.stateMu.RUnlock()
 	if desired.ConfigurationVersion < currentVersion {
 		manager.degrade("stale_configuration")
 		return errors.New("network control returned a stale endpoint configuration")
 	}
+	if desired.ConfigurationVersion == currentVersion && appliedHash != "" && configurationHash != appliedHash {
+		return manager.rejectConfiguration(ctx, "configuration_version_reused")
+	}
 	if desired.ConfigurationVersion == appliedVersion {
+		if verifier, ok := manager.executor.(interface {
+			Verify(context.Context, ConfigurationDesired, time.Time) ApplyOutcome
+		}); ok {
+			outcome := verifier.Verify(ctx, desired, now)
+			if outcome.Status != "applied" {
+				manager.stateMu.Lock()
+				manager.appliedVersion = 0
+				manager.stateMu.Unlock()
+				manager.degrade(fallback(outcome.ReasonCode, "endpoint_readback_mismatch"))
+				report := ConfigurationApplied{ConfigurationVersion: desired.ConfigurationVersion, PolicyVersion: desired.PolicyVersion, Status: outcome.Status, ReadbackHash: outcome.ReadbackHash, ReasonCode: outcome.ReasonCode}
+				return errors.Join(errors.New("endpoint configuration drifted"), manager.control.Report(ctx, report), manager.rejectConfiguration(ctx, "endpoint_readback_mismatch"))
+			}
+		}
 		manager.update(func(status *Status) { applyDesiredStatus(status, desired) })
 		return nil
+	}
+	if authorizationRevoked {
+		manager.stateMu.RLock()
+		sessionID, oldLeaseIDs := manager.status.SessionID, slices.Clone(manager.leaseIDs)
+		manager.stateMu.RUnlock()
+		if err := manager.beginVPNCleanup(sessionID, oldLeaseIDs, "authorization_revoked"); err != nil {
+			return errors.Join(err, manager.rejectConfiguration(ctx, "authorization_revoked"))
+		}
 	}
 	outcome := manager.executor.Apply(ctx, desired, now)
 	report := ConfigurationApplied{ConfigurationVersion: desired.ConfigurationVersion, PolicyVersion: desired.PolicyVersion, Status: outcome.Status, ReadbackHash: outcome.ReadbackHash, ReasonCode: outcome.ReasonCode}
 	reportErr := manager.control.Report(ctx, report)
 	if outcome.Status != "applied" {
 		manager.degrade(fallback(outcome.ReasonCode, "endpoint_apply_failed"))
-		return errors.Join(fmt.Errorf("endpoint configuration was %s", outcome.Status), reportErr)
+		return errors.Join(fmt.Errorf("endpoint configuration was %s", outcome.Status), reportErr, manager.rejectConfiguration(ctx, "endpoint_apply_failed"))
+	}
+	var revokeErr error
+	if authorizationRevoked {
+		manager.stateMu.RLock()
+		revoke := LeaseRevoke{SessionID: manager.status.SessionID, LeaseIDs: slices.Clone(manager.leaseIDs), ReasonCode: "authorization_revoked", EffectiveAt: manager.now().UTC()}
+		manager.stateMu.RUnlock()
+		revokeErr = manager.control.Revoke(ctx, revoke)
+		if revokeErr == nil {
+			revokeErr = manager.finishVPNCleanup()
+		}
 	}
 	manager.stateMu.Lock()
 	applyDesiredStatus(&manager.status, desired)
 	manager.appliedVersion = desired.ConfigurationVersion
+	manager.appliedHash = configurationHash
 	manager.disabled = desired.WireGuard == nil && desired.Mihomo == nil
-	manager.leaseIDs = leaseIDs(desired.NetworkLeases, desired.ResourceLeases)
+	if revokeErr == nil {
+		manager.leaseIDs = leaseIDs(desired.NetworkLeases, desired.ResourceLeases)
+	}
+	if revokeErr != nil {
+		manager.cleanupReason = "authorization_revoked"
+		manager.status.State, manager.status.Diagnostic = StateDegraded, "revocation_pending"
+	}
+	if authorizationRevoked && revokeErr == nil {
+		manager.sessionUntil, manager.nextRenewAt = time.Time{}, time.Time{}
+		manager.status.SessionID, manager.status.GatewayID, manager.status.TunnelIP = "", "", ""
+		manager.status.ConnectedAt = nil
+		manager.status.Phase, manager.status.Diagnostic = "", "authorization_revoked"
+	}
 	manager.stateMu.Unlock()
 	if reportErr != nil {
 		manager.degrade("configuration_report_failed")
-		return fmt.Errorf("report endpoint configuration: %w", reportErr)
+		return errors.Join(fmt.Errorf("report endpoint configuration: %w", reportErr), revokeErr)
 	}
-	return nil
+	return revokeErr
 }
 
 func (manager *Manager) renew(ctx context.Context, now time.Time) error {
@@ -521,13 +706,7 @@ func (manager *Manager) renew(ctx context.Context, now time.Time) error {
 	}
 	leaseIDs := leaseIDs(result.NetworkLeases, result.ResourceLeases)
 	if result.PolicyVersion < 1 || !result.ValidUntil.After(now) || intersects(request.LeaseIDs, result.RevokedLeaseIDs) || len(leaseIDs) != len(result.NetworkLeases)+len(result.ResourceLeases) || len(leaseIDs) == 0 {
-		_ = manager.executor.Disable(ctx)
-		manager.stateMu.Lock()
-		manager.disabled = true
-		manager.appliedVersion = 0
-		manager.status.State, manager.status.Diagnostic = StateDegraded, "lease_revoked"
-		manager.stateMu.Unlock()
-		return errors.New("endpoint network lease was revoked")
+		return errors.Join(errors.New("endpoint network lease was revoked"), manager.rejectConfiguration(ctx, "lease_revoked"))
 	}
 	manager.stateMu.Lock()
 	manager.sessionUntil = result.ValidUntil.UTC()
@@ -539,11 +718,16 @@ func (manager *Manager) renew(ctx context.Context, now time.Time) error {
 }
 
 func applyDesiredStatus(status *Status, desired ConfigurationDesired) {
+	previousDiagnostic := status.Diagnostic
 	status.ConfigurationVersion, status.PolicyVersion, status.ValidUntil = desired.ConfigurationVersion, desired.PolicyVersion, desired.ValidUntil.UTC()
 	status.State, status.Diagnostic = StateDisconnected, ""
 	status.MihomoMode, status.MihomoProfileID, status.MihomoProfileRevision = "", "", 0
+	status.MihomoPolicyVersion = 0
 	if desired.Mihomo != nil {
 		status.MihomoMode, status.MihomoProfileID, status.MihomoProfileRevision = desired.Mihomo.Mode, desired.Mihomo.ProfileID, desired.Mihomo.ProfileRevision
+		if desired.Mihomo.Protection != nil {
+			status.MihomoPolicyVersion = desired.Mihomo.Protection.PolicyVersion
+		}
 	}
 	if desired.WireGuard != nil || desired.Mihomo != nil {
 		status.State = StateConnected
@@ -554,12 +738,29 @@ func applyDesiredStatus(status *Status, desired ConfigurationDesired) {
 	if desired.WireGuard != nil && len(desired.WireGuard.Addresses) > 0 {
 		status.TunnelIP = desired.WireGuard.Addresses[0]
 	}
+	if desired.WireGuard == nil && status.SessionID == "" && recoverableVPNFailure(previousDiagnostic) {
+		// Keep the failure observable after cleanup while the UI requests a
+		// fresh authorized intent. A proxy-only config is not VPN recovery.
+		status.State, status.Diagnostic = StateDegraded, previousDiagnostic
+	}
+}
+
+func recoverableVPNFailure(reason string) bool {
+	return reason == "vpn_tunnel_unhealthy" || reason == "endpoint_readback_mismatch" || reason == "endpoint_apply_failed"
 }
 
 func (manager *Manager) update(change func(*Status)) {
 	manager.stateMu.Lock()
 	change(&manager.status)
 	manager.stateMu.Unlock()
+}
+
+func (manager *Manager) rejectConfiguration(ctx context.Context, reason string) error {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
+	defer cancel()
+	_, err := manager.disconnectLocked(cleanupCtx, reason)
+	manager.degrade(reason)
+	return errors.Join(errors.New(reason), err)
 }
 
 func (manager *Manager) degrade(reason string) {

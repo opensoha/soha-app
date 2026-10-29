@@ -1,3 +1,4 @@
+import type { EndpointChannelReceipt } from '@opensoha/contracts/gen/ts/sohaapi'
 import type {
   AuthProvider as ContractAuthProvider,
   IdentityApplication as ContractIdentityApplication,
@@ -240,6 +241,38 @@ export interface NetworkConnectionOption {
   policyVersion: number
 }
 
+export interface AdmissionInput {
+  profileId: string;
+  adapterId?: string;
+}
+
+export type AdmissionAction = "prepare" | "check" | "connect" | "open" | "remove";
+
+export interface AdmissionStatus {
+  supported: boolean;
+  profiles: {
+    id: string;
+    siteId: string;
+    accessMedium: "wifi" | "wired";
+    ssid?: string;
+    adapterId?: string;
+    state: "available" | "installation_required" | "activation_pending" | "installed" | "drift" | "authorization_expired";
+    artifactPath?: string;
+  }[];
+  adapters: {
+    id: string;
+    name: string;
+    medium: "wifi" | "wired";
+    macAddress: string;
+    ethernetPosition?: number;
+    enabled: boolean;
+    linkUp: boolean;
+  }[];
+  validUntil?: string;
+  certificateUntil?: string;
+  diagnostic?: string;
+}
+
 export interface NetworkLinkStatus {
   connected: boolean
   medium?: NetworkAccessMedium
@@ -262,6 +295,11 @@ export interface LegacyNetworkConnectInput {
 }
 
 export interface NetworkServiceStatus {
+ channelControls?: { policyVersion: number; policyFresh: boolean; controlReachable: boolean; lastObservedAt: string; channels: EndpointChannelReceipt[]; diagnostic: string }
+
+  presenceState?: 'healthy' | 'unhealthy' | 'unavailable'
+  presenceLastReceivedAt?: string
+  presenceEpoch?: number
   profileId?: string
   profileRevision?: number
   selection?: 'auto' | 'manual'
@@ -288,9 +326,11 @@ export interface NetworkServiceStatus {
   configurationVersion: number
   policyVersion: number
   validUntil?: string
+  sessionValidUntil?: string
   mihomoMode?: 'managed_follow' | 'app_subscription'
   mihomoProfileId?: string
   mihomoProfileRevision?: number
+  mihomoPolicyVersion?: number
   uptimeSeconds: number
   diagnostic?: string
 }

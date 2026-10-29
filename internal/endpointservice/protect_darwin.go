@@ -8,8 +8,8 @@ import (
 	"syscall"
 )
 
-// The launchd service stores secrets in its root-only state directory. Keys are
-// never copied into the desktop user's preferences or exposed through IPC.
+// WireGuard and control secrets stay in the root-only service state directory.
+// The separate EAP identity has its own explicit profile export path.
 func protectSecret(payload []byte, _ string) ([]byte, error) {
 	return append([]byte(nil), payload...), nil
 }

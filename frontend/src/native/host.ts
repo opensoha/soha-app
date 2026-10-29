@@ -1,4 +1,7 @@
 import type {
+	AdmissionAction,
+	AdmissionInput,
+	AdmissionStatus,
   ConnectionCheck,
   HostState,
   MihomoAppStatus,
@@ -63,6 +66,18 @@ export function getNetworkStatus(): Promise<NetworkServiceStatus> {
 
 export function getNetworkLinkStatus(): Promise<NetworkLinkStatus> {
   return hostRequest<NetworkLinkStatus>("/app/v1/network/link", {}, false);
+}
+
+export function getAdmissionStatus(): Promise<AdmissionStatus> {
+  return hostRequest<AdmissionStatus>("/app/v1/network/admission", {}, false);
+}
+
+export function runAdmissionAction(action: AdmissionAction, input?: AdmissionInput): Promise<AdmissionStatus> {
+  return hostRequest<AdmissionStatus>(
+    action === "remove" ? "/app/v1/network/admission" : `/app/v1/network/admission/${action}`,
+    { ...jsonRequest(input ?? {}), method: action === "remove" ? "DELETE" : "POST" },
+    false,
+  );
 }
 
 export function connectNetwork(

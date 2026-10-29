@@ -79,6 +79,7 @@ type ResourceLease struct {
 }
 
 type ConfigurationDesired struct {
+	Admission            *AdmissionConfiguration `json:"admission,omitempty"`
 	ConfigurationVersion int                     `json:"configurationVersion"`
 	PolicyVersion        int                     `json:"policyVersion"`
 	ValidUntil           time.Time               `json:"validUntil"`
@@ -97,23 +98,38 @@ type RuntimeIntervals struct {
 }
 
 type MihomoConfiguration struct {
-	Mode            string   `json:"mode"`
-	SourceType      string   `json:"sourceType,omitempty"`
-	ProfileID       string   `json:"profileId"`
-	ProfileRevision int      `json:"profileRevision"`
-	MixedPort       int      `json:"mixedPort"`
-	ControllerPort  int      `json:"controllerPort"`
-	DNSMode         string   `json:"dnsMode"`
-	FakeIPRange     string   `json:"fakeIpRange,omitempty"`
-	SelectorGroup   string   `json:"selectorGroup"`
-	SelectedProxy   string   `json:"selectedProxy,omitempty"`
-	BypassCIDRs     []string `json:"bypassCidrs"`
-	BypassHosts     []string `json:"bypassHosts"`
-	FailClosed      bool     `json:"failClosed"`
+	DNSRecords                                 []DNSRecord       `json:"-"`
+	EnforcementUntil                           time.Time         `json:"-"`
+	GuardPort, GuardProxyPort, GuardDirectPort int               `json:"-"`
+	GuardProxySecret, GuardDirectSecret        string            `json:"-"`
+	BootstrapNodes                             []map[string]any  `json:"-"`
+	Protection                                 *MihomoProtection `json:"protection,omitempty"`
+	Mode                                       string            `json:"mode"`
+	SourceType                                 string            `json:"sourceType,omitempty"`
+	ProfileID                                  string            `json:"profileId"`
+	ProfileRevision                            int               `json:"profileRevision"`
+	MixedPort                                  int               `json:"mixedPort"`
+	ControllerPort                             int               `json:"controllerPort"`
+	DNSMode                                    string            `json:"dnsMode"`
+	FakeIPRange                                string            `json:"fakeIpRange,omitempty"`
+	SelectorGroup                              string            `json:"selectorGroup"`
+	SelectedProxy                              string            `json:"selectedProxy,omitempty"`
+	BypassCIDRs                                []string          `json:"bypassCidrs"`
+	BypassHosts                                []string          `json:"bypassHosts"`
+	FailClosed                                 bool              `json:"failClosed"`
 
 	// Source secrets are fetched over the runtime's mTLS channel and never serialized.
 	SubscriptionURL string            `json:"-"`
 	ManualNode      *MihomoManualNode `json:"-"`
+	// Filled only after native tunnel readback, never accepted from the wire.
+	VPNInterface string   `json:"-"`
+	VPNRoutes    []string `json:"-"`
+}
+
+type MihomoProtection struct {
+	PolicyVersion int      `json:"policyVersion"`
+	CIDRs         []string `json:"cidrs"`
+	Hosts         []string `json:"hosts"`
 }
 
 type MihomoManualNode struct {
@@ -160,6 +176,7 @@ type WireGuardFirewallRule struct {
 }
 
 type WireGuardConfiguration struct {
+	DNSRecords      []DNSRecord             `json:"dnsRecords,omitempty"`
 	Role            string                  `json:"role"`
 	InterfaceName   string                  `json:"interfaceName"`
 	PublicKey       string                  `json:"publicKey"`
@@ -243,4 +260,10 @@ type IngestEvent struct {
 	Sequence   int64           `json:"sequence"`
 	OccurredAt time.Time       `json:"occurredAt"`
 	Payload    json.RawMessage `json:"payload"`
+}
+
+type DNSRecord struct {
+	Hostname  string    `json:"hostname"`
+	Addresses []string  `json:"addresses"`
+	ExpiresAt time.Time `json:"expiresAt"`
 }

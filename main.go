@@ -87,11 +87,13 @@ func main() {
 		catalog = activeServerSoftwareCatalog{host: host}
 	}
 	runtimeAPI := &appRuntime{
-		version:           appVersion,
-		software:          newSoftwareLibrary(catalog),
-		networkCall:       endpointservice.CallIPC,
-		networkMihomoCall: endpointservice.CallMihomoIPC,
-		networkLinkStatus: collectNetworkLinkStatus,
+		version:              appVersion,
+		software:             newSoftwareLibrary(catalog),
+		networkCall:          endpointservice.CallIPC,
+		networkMihomoCall:    endpointservice.CallMihomoIPC,
+		networkAdmissionCall: endpointservice.CallAdmissionIPC,
+		openAdmissionProfile: openNativeAdmissionProfile,
+		networkLinkStatus:    collectNetworkLinkStatus,
 	}
 	host.setRuntimeAPI(runtimeAPI)
 
@@ -171,6 +173,7 @@ func main() {
 	}
 	companionWindow := newCompanionWindow(app, positions)
 	configureSystemTray(app, window, companionWindow, trayIcon)
+	go endpointservice.RunNativeUIPresence(app.Context())
 
 	if err := app.Run(); err != nil {
 		appLog.Error("application runtime stopped with an error", "component", "runtime", "event", "app.runtime.failed", "error", err, "error_type", logErrorType(err))

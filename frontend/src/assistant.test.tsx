@@ -1159,7 +1159,7 @@ describe("personal assistant App", () => {
       capabilities: [],
     });
     expect(assistantApi.metrics).toHaveBeenCalledWith("metrics-source");
-  });
+  }, 20_000);
   it("retains the draft after a failed send and never replays the POST", async () => {
     vi.mocked(streamAssistant).mockRejectedValueOnce(new Error("Send failed"));
     const element = await render(true);

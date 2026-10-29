@@ -33,6 +33,8 @@ type Config struct {
 	DeviceID                   string  `json:"deviceId"`
 	AllowedUserSID             string  `json:"allowedUserSid,omitempty"`
 	AllowedUserUID             *uint32 `json:"allowedUserUid,omitempty"`
+	UIExecutable               string  `json:"uiExecutable,omitempty"`
+	UICodeIdentity             string  `json:"uiCodeIdentity,omitempty"`
 	ControlURL                 string  `json:"controlUrl"`
 	ControlCAFile              string  `json:"controlCaFile"`
 	ControlCertFile            string  `json:"controlCertFile"`
@@ -73,6 +75,9 @@ func LoadConfig(path string) (Config, error) {
 func (config Config) Validate() error {
 	if config.Version != serviceConfigVersion || !identifierPattern.MatchString(config.RuntimeID) || !identifierPattern.MatchString(config.DeviceID) || !validServiceIdentity(config) {
 		return errors.New("endpoint service version or identity is invalid")
+	}
+	if (config.UIExecutable == "") != (config.UICodeIdentity == "") || config.UIExecutable != "" && (!filepath.IsAbs(config.UIExecutable) || len(config.UIExecutable) > 4096 || len(config.UICodeIdentity) > 80) {
+		return errors.New("trusted UI executable and code identity must be configured together")
 	}
 	if _, err := runtimeOrigin(config.ControlURL); err != nil {
 		return err
