@@ -51,6 +51,36 @@ jobs:
         working-directory: frontend
         run: npm run build
 
+  server-image:
+    name: Server image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend
+        working-directory: frontend
+        run: npm ci
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+      - name: Build server image from clean source
+        shell: bash
+        run: |
+          set -euo pipefail
+          context="${RUNNER_TEMP}/soha-app-server-context"
+          mkdir "$context"
+          git archive HEAD | tar -x -C "$context"
+          cp -R frontend/dist "$context/frontend/dist"
+          docker build -f "$context/build/docker/Dockerfile.server" -t soha-app-server:ci "$context"
+          docker image inspect soha-app-server:ci --format '{{.Id}}'
+
   desktop:
     name: Desktop (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
