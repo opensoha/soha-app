@@ -24,6 +24,7 @@ import (
 const (
 	mihomoProviderName    = "soha-managed"
 	mihomoManualProxyName = "soha-manual"
+	mihomoVPNProxyName    = "soha-vpn"
 )
 
 type MihomoReadback struct {
@@ -34,6 +35,7 @@ type MihomoReadback struct {
 	ControllerPort  int    `json:"controllerPort,omitempty"`
 	DNSMode         string `json:"dnsMode,omitempty"`
 	SelectedProxy   string `json:"selectedProxy,omitempty"`
+	ProtectionHash  string `json:"protectionHash,omitempty"`
 }
 
 type MihomoRuntime interface {
@@ -46,14 +48,15 @@ type MihomoAppRuntime interface {
 }
 
 type CoordinatedExecutor struct {
-	mu             sync.Mutex
-	wireGuard      ConfigurationExecutor
-	mihomo         MihomoRuntime
-	mihomoActive   bool
-	previousMihomo *mihomoAppliedState
-	appStatePath   string
-	appDesired     *MihomoConfiguration
-	appStatus      MihomoAppStatus
+	mu              sync.Mutex
+	wireGuard       ConfigurationExecutor
+	mihomo          MihomoRuntime
+	mihomoActive    bool
+	previousMihomo  *mihomoAppliedState
+	appStatePath    string
+	appClearPending bool
+	appDesired      *MihomoConfiguration
+	appStatus       MihomoAppStatus
 }
 
 type mihomoAppliedState struct {
@@ -76,31 +79,113 @@ func NewCoordinatedExecutor(wireGuard ConfigurationExecutor, mihomo MihomoRuntim
 func (executor *CoordinatedExecutor) Apply(ctx context.Context, desired ConfigurationDesired, now time.Time) ApplyOutcome {
 	executor.mu.Lock()
 	defer executor.mu.Unlock()
+	// No live DIRECT connections may survive removal/replacement of VPN routes.
+	if err := executor.quiesceMihomo(ctx); err != nil {
+		return ApplyOutcome{Status: "rejected", ReadbackHash: executor.currentMihomoReadbackHash(), ReasonCode: "mihomo_disable_failed"}
+	}
+	executor.appDesired, executor.appStatus = nil, MihomoAppStatus{}
 	wireGuard := executor.wireGuard.Apply(ctx, desired, now)
-	mihomo := executor.applyMihomo(ctx, desired)
-	status, reason := "applied", ""
 	if wireGuard.Status != "applied" {
-		status, reason = "rejected", fallback(wireGuard.ReasonCode, "wireguard_apply_failed")
+		return ApplyOutcome{Status: "rejected", ReadbackHash: combinedReadbackHash(wireGuard.ReadbackHash, mihomoReadbackHash(MihomoReadback{})), ReasonCode: fallback(wireGuard.ReasonCode, "wireguard_apply_failed")}
 	}
-	if mihomo.Status != "applied" {
-		status, reason = "rejected", fallback(mihomo.ReasonCode, "mihomo_apply_failed")
+	if desired.Mihomo != nil {
+		configuration := cloneMihomoConfiguration(*desired.Mihomo)
+		configuration.EnforcementUntil = desired.ValidUntil
+		if desired.WireGuard != nil {
+			configuration.DNSRecords = desired.WireGuard.DNSRecords
+			configuration.VPNRoutes = slices.Clone(desired.WireGuard.Routes)
+			if err := executor.bindMihomoVPN(ctx, &configuration); err != nil {
+				return ApplyOutcome{Status: "rejected", ReadbackHash: combinedReadbackHash(wireGuard.ReadbackHash, mihomoReadbackHash(MihomoReadback{})), ReasonCode: "mihomo_vpn_binding_unavailable"}
+			}
+		}
+		desired.Mihomo = &configuration
 	}
-	return ApplyOutcome{Status: status, ReadbackHash: combinedReadbackHash(wireGuard.ReadbackHash, mihomo.ReadbackHash), ReasonCode: reason}
+
+	if desired.Mihomo != nil && (desired.Mihomo.Protection == nil || desired.Mihomo.Protection.PolicyVersion != desired.PolicyVersion) {
+		return executor.recoverMihomo(ctx, "mihomo_policy_version_mismatch")
+	}
+	mihomo := executor.applyMihomo(ctx, desired)
+	return ApplyOutcome{Status: mihomo.Status, ReadbackHash: combinedReadbackHash(wireGuard.ReadbackHash, mihomo.ReadbackHash), ReasonCode: mihomo.ReasonCode}
+}
+
+func (executor *CoordinatedExecutor) Verify(ctx context.Context, desired ConfigurationDesired, now time.Time) ApplyOutcome {
+	executor.mu.Lock()
+	defer executor.mu.Unlock()
+	verifier, ok := executor.wireGuard.(interface {
+		Verify(context.Context, ConfigurationDesired, time.Time) ApplyOutcome
+	})
+	if !ok {
+		return executor.recoverMihomo(ctx, "endpoint_readback_unavailable")
+	}
+	wireGuard := verifier.Verify(ctx, desired, now)
+	if wireGuard.Status != "applied" {
+		return executor.recoverMihomo(ctx, fallback(wireGuard.ReasonCode, "endpoint_readback_mismatch"))
+	}
+	if executor.mihomo == nil {
+		if desired.Mihomo == nil {
+			return wireGuard
+		}
+		return executor.recoverMihomo(ctx, "mihomo_runtime_unavailable")
+	}
+	mihomo, ok := executor.mihomo.(interface {
+		Verify(context.Context, *MihomoConfiguration) error
+	})
+	if !ok {
+		return executor.recoverMihomo(ctx, "mihomo_readback_unavailable")
+	}
+	var configuration *MihomoConfiguration
+	if executor.previousMihomo != nil {
+		current := cloneMihomoConfiguration(executor.previousMihomo.Configuration)
+		if err := executor.bindMihomoVPN(ctx, &current); err != nil {
+			return executor.recoverMihomo(ctx, "mihomo_vpn_binding_unavailable")
+		}
+		configuration = &current
+	}
+	if err := mihomo.Verify(ctx, configuration); err != nil {
+		return executor.recoverMihomo(ctx, "mihomo_readback_mismatch")
+	}
+	return ApplyOutcome{Status: "applied", ReadbackHash: combinedReadbackHash(wireGuard.ReadbackHash, executor.currentMihomoReadbackHash())}
 }
 
 func (executor *CoordinatedExecutor) Disable(ctx context.Context) error {
 	executor.mu.Lock()
 	defer executor.mu.Unlock()
-	wireGuardErr := executor.wireGuard.Disable(ctx)
-	var mihomoErr error
+	if err := executor.quiesceMihomo(ctx); err != nil {
+		return err
+	}
+	executor.appDesired, executor.appStatus = nil, MihomoAppStatus{}
+	return executor.wireGuard.Disable(ctx)
+}
+
+func (executor *CoordinatedExecutor) quiesceMihomo(ctx context.Context) error {
 	if executor.mihomo != nil {
-		mihomoErr = executor.mihomo.Disable(ctx)
+		if err := executor.mihomo.Disable(ctx); err != nil {
+			return err
+		}
 	}
-	if mihomoErr == nil {
-		executor.mihomoActive, executor.previousMihomo = false, nil
-		executor.appDesired, executor.appStatus = nil, MihomoAppStatus{}
+	executor.mihomoActive, executor.previousMihomo = false, nil
+	return nil
+}
+
+func (executor *CoordinatedExecutor) bindMihomoVPN(ctx context.Context, configuration *MihomoConfiguration) error {
+	if len(configuration.VPNRoutes) == 0 {
+		if configuration.VPNInterface != "" {
+			return errors.New("VPN binding without routes")
+		}
+		return nil
 	}
-	return errors.Join(wireGuardErr, mihomoErr)
+	binder, ok := executor.wireGuard.(interface {
+		VPNBinding(context.Context) (string, []string, error)
+	})
+	if !ok {
+		return errors.New("VPN binding readback is unavailable")
+	}
+	name, routes, err := binder.VPNBinding(ctx)
+	if err != nil || !slices.Equal(routes, configuration.VPNRoutes) {
+		return errors.New("VPN binding does not match authorized routes")
+	}
+	configuration.VPNInterface = name
+	return nil
 }
 
 func (executor *CoordinatedExecutor) applyMihomo(ctx context.Context, desired ConfigurationDesired) ApplyOutcome {
@@ -117,7 +202,7 @@ func (executor *CoordinatedExecutor) applyMihomo(ctx context.Context, desired Co
 	}
 	includeSubscription := configuration.Mode == "managed_follow"
 	if err := validateMihomoConfiguration(configuration, desired.WireGuard, includeSubscription); err != nil {
-		return ApplyOutcome{Status: "rejected", ReadbackHash: executor.currentMihomoReadbackHash(), ReasonCode: "unsafe_mihomo_configuration"}
+		return executor.recoverMihomo(ctx, "unsafe_mihomo_configuration")
 	}
 	if executor.mihomo == nil {
 		return ApplyOutcome{Status: "rejected", ReadbackHash: executor.currentMihomoReadbackHash(), ReasonCode: "mihomo_runtime_unavailable"}
@@ -148,7 +233,7 @@ func (executor *CoordinatedExecutor) applyStoredMihomoApp(ctx context.Context, c
 		return ApplyOutcome{Status: "applied", ReadbackHash: mihomoReadbackHash(expectedMihomoReadback(configuration))}
 	}
 	state, err := loadMihomoAppState(executor.appStatePath)
-	if errors.Is(err, os.ErrNotExist) || err == nil && (state.ProfileID != configuration.ProfileID || state.ProfileRevision != configuration.ProfileRevision) {
+	if executor.appClearPending || errors.Is(err, os.ErrNotExist) || err == nil && (state.Cleared || state.ProfileID != configuration.ProfileID || state.ProfileRevision != configuration.ProfileRevision) {
 		if executor.mihomoActive && executor.mihomo != nil {
 			if disableErr := executor.mihomo.Disable(ctx); disableErr != nil {
 				return executor.recoverMihomo(ctx, "mihomo_disable_failed")
@@ -214,15 +299,26 @@ func (executor *CoordinatedExecutor) ClearMihomoApp(ctx context.Context) (Mihomo
 	if err != nil {
 		return executor.currentMihomoAppStatus(), err
 	}
+	cleared := mihomoAppState{Version: mihomoAppStateVersion, ProfileID: configuration.ProfileID, ProfileRevision: configuration.ProfileRevision, Cleared: true}
+	executor.appClearPending = true
+	if err := saveMihomoAppState(executor.appStatePath, cleared); err != nil {
+		removeErr := os.Remove(executor.appStatePath)
+		if errors.Is(removeErr, os.ErrNotExist) {
+			removeErr = nil
+		}
+		disableErr := executor.mihomo.Disable(ctx)
+		if disableErr == nil {
+			executor.mihomoActive, executor.previousMihomo = false, nil
+			executor.appStatus = mihomoAppStatus(configuration, false, "", nil)
+		}
+		return executor.currentMihomoAppStatus(), errors.Join(err, removeErr, disableErr)
+	}
 	if executor.mihomo != nil {
 		if err := executor.mihomo.Disable(ctx); err != nil {
 			return executor.currentMihomoAppStatus(), err
 		}
 	}
-	executor.mihomoActive = false
-	if err := os.Remove(executor.appStatePath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return executor.currentMihomoAppStatus(), err
-	}
+	executor.mihomoActive, executor.previousMihomo = false, nil
 	executor.appStatus = mihomoAppStatus(configuration, false, "", nil)
 	return executor.currentMihomoAppStatus(), nil
 }
@@ -242,7 +338,7 @@ func (executor *CoordinatedExecutor) loadedMihomoAppState() (MihomoConfiguration
 		return MihomoConfiguration{}, mihomoAppState{}, err
 	}
 	state, err := loadMihomoAppState(executor.appStatePath)
-	if err != nil || state.ProfileID != configuration.ProfileID || state.ProfileRevision != configuration.ProfileRevision {
+	if err != nil || executor.appClearPending || state.Cleared || state.ProfileID != configuration.ProfileID || state.ProfileRevision != configuration.ProfileRevision {
 		return MihomoConfiguration{}, mihomoAppState{}, errors.New("mihomo app subscription is not configured")
 	}
 	return configuration, state, nil
@@ -263,6 +359,13 @@ func (executor *CoordinatedExecutor) applyMihomoAppState(ctx context.Context, co
 	if !ok {
 		return executor.currentMihomoAppStatus(), errors.New("mihomo app subscription runtime is unavailable")
 	}
+	if err := executor.quiesceMihomo(ctx); err != nil {
+		return executor.currentMihomoAppStatus(), err
+	}
+	if err := executor.bindMihomoVPN(ctx, &configuration); err != nil {
+		executor.recoverMihomo(ctx, "mihomo_vpn_binding_unavailable")
+		return executor.currentMihomoAppStatus(), err
+	}
 	status, err := runtime.ApplySubscription(ctx, configuration, state.SubscriptionURL, state.SelectedProxy)
 	if err != nil || !validMihomoAppStatus(status, configuration) {
 		executor.recoverMihomo(ctx, "mihomo_apply_failed")
@@ -274,40 +377,17 @@ func (executor *CoordinatedExecutor) applyMihomoAppState(ctx context.Context, co
 		return executor.currentMihomoAppStatus(), err
 	}
 	executor.rememberAppMihomo(configuration, state, status)
+	executor.appClearPending = false
 	return executor.currentMihomoAppStatus(), nil
 }
 
 func (executor *CoordinatedExecutor) recoverMihomo(ctx context.Context, reason string) ApplyOutcome {
-	previous := executor.previousMihomo
-	if previous != nil {
-		configuration := cloneMihomoConfiguration(previous.Configuration)
-		if previous.AppState != nil {
-			if runtime, ok := executor.mihomo.(MihomoAppRuntime); ok {
-				state := *previous.AppState
-				if status, err := runtime.ApplySubscription(ctx, configuration, state.SubscriptionURL, state.SelectedProxy); err == nil && validMihomoAppStatus(status, configuration) {
-					executor.rememberAppMihomo(configuration, state, status)
-					return ApplyOutcome{Status: "rolled-back", ReadbackHash: executor.currentMihomoReadbackHash(), ReasonCode: reason}
-				}
-			}
-		} else if readback, err := executor.mihomo.Apply(ctx, configuration); err == nil && reflect.DeepEqual(readback, expectedMihomoReadback(configuration)) {
-			executor.rememberManagedMihomo(configuration)
-			return ApplyOutcome{Status: "rolled-back", ReadbackHash: mihomoReadbackHash(readback), ReasonCode: reason}
-		}
-		_ = executor.mihomo.Disable(ctx)
-		executor.mihomoActive, executor.previousMihomo = false, nil
-		if executor.appDesired != nil {
-			executor.appStatus = mihomoAppStatus(*executor.appDesired, false, "", nil)
-		} else {
-			executor.appStatus = MihomoAppStatus{}
-		}
-		return ApplyOutcome{Status: "rejected", ReadbackHash: mihomoReadbackHash(MihomoReadback{}), ReasonCode: "mihomo_rollback_failed"}
+	// Old files may be retained for repair, but old policy must never be restarted.
+	if err := executor.quiesceMihomo(ctx); err != nil {
+		reason = "mihomo_disable_failed"
 	}
-	_ = executor.mihomo.Disable(ctx)
-	executor.mihomoActive = false
-	if executor.appDesired != nil {
-		executor.appStatus = mihomoAppStatus(*executor.appDesired, false, "", nil)
-	}
-	return ApplyOutcome{Status: "rejected", ReadbackHash: mihomoReadbackHash(MihomoReadback{}), ReasonCode: reason}
+	executor.appDesired, executor.appStatus = nil, MihomoAppStatus{}
+	return ApplyOutcome{Status: "rejected", ReadbackHash: executor.currentMihomoReadbackHash(), ReasonCode: reason}
 }
 
 func (executor *CoordinatedExecutor) rememberManagedMihomo(configuration MihomoConfiguration) {
@@ -338,6 +418,13 @@ func (executor *CoordinatedExecutor) currentMihomoReadbackHash() string {
 func cloneMihomoConfiguration(configuration MihomoConfiguration) MihomoConfiguration {
 	configuration.BypassCIDRs = slices.Clone(configuration.BypassCIDRs)
 	configuration.BypassHosts = slices.Clone(configuration.BypassHosts)
+	configuration.VPNRoutes = slices.Clone(configuration.VPNRoutes)
+	if configuration.Protection != nil {
+		protection := *configuration.Protection
+		protection.CIDRs = slices.Clone(protection.CIDRs)
+		protection.Hosts = slices.Clone(protection.Hosts)
+		configuration.Protection = &protection
+	}
 	return configuration
 }
 
@@ -382,14 +469,19 @@ func mihomoReadbackHash(readback MihomoReadback) string {
 }
 
 func expectedMihomoReadback(configuration MihomoConfiguration) MihomoReadback {
+	if configuration.SourceType == "manual_node" {
+		configuration.SelectedProxy = mihomoManualProxyName
+	}
 	return MihomoReadback{
 		Mode: configuration.Mode, ProfileID: configuration.ProfileID, ProfileRevision: configuration.ProfileRevision,
 		MixedPort: configuration.MixedPort, ControllerPort: configuration.ControllerPort, DNSMode: configuration.DNSMode,
-		SelectedProxy: configuration.SelectedProxy,
+		SelectedProxy:  configuration.SelectedProxy,
+		ProtectionHash: mihomoProtectionHash(configuration),
 	}
 }
 
 type MihomoController struct {
+	egress    *mihomoEgress
 	mu        sync.Mutex
 	origin    string
 	address   string
@@ -440,85 +532,85 @@ func (controller *MihomoController) ApplySubscription(ctx context.Context, confi
 	}
 	status, err := controller.applySource(ctx, configuration, subscriptionURL, selectedProxy)
 	if err == nil {
-		controller.applied = MihomoReadback{Mode: status.Mode, ProfileID: status.ProfileID, ProfileRevision: status.ProfileRevision, MixedPort: configuration.MixedPort, ControllerPort: configuration.ControllerPort, DNSMode: configuration.DNSMode, SelectedProxy: status.SelectedProxy}
+		controller.applied = expectedMihomoReadback(configuration)
+		controller.applied.SelectedProxy = status.SelectedProxy
 	}
 	return status, err
 }
 
-func (controller *MihomoController) applySource(ctx context.Context, configuration MihomoConfiguration, subscriptionURL, selectedProxy string) (MihomoAppStatus, error) {
+func (controller *MihomoController) applySource(ctx context.Context, configuration MihomoConfiguration, subscriptionURL, selectedProxy string) (status MihomoAppStatus, result error) {
+	defer func() {
+		if result != nil {
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), requestTimeout)
+			defer cancel()
+			result = errors.Join(result, controller.disable(cleanupCtx))
+		}
+	}()
+	if err := controller.disable(ctx); err != nil {
+		return MihomoAppStatus{}, err
+	}
+	if err := prepareMihomoBootstrap(ctx, &configuration, subscriptionURL); err != nil {
+		return MihomoAppStatus{}, err
+	}
+	release, err := controller.prepareEgress(&configuration)
+	if err != nil {
+		return MihomoAppStatus{}, err
+	}
+	defer release()
 	payload, err := renderMihomoConfiguration(configuration, subscriptionURL, controller.address, controller.authority, controller.secret)
-	if err == nil {
-		raw, encodeErr := json.Marshal(struct {
-			Payload string `json:"payload"`
-		}{payload})
-		if encodeErr != nil {
-			err = encodeErr
+	if err != nil {
+		return MihomoAppStatus{}, err
+	}
+	raw, _ := json.Marshal(struct {
+		Payload string `json:"payload"`
+	}{payload})
+	release()
+	if err := controller.request(ctx, http.MethodPut, "/configs?force=true", raw, http.StatusNoContent, nil); err != nil {
+		return MihomoAppStatus{}, err
+	}
+	group, err := controller.proxyGroup(ctx, configuration)
+	if err != nil {
+		return MihomoAppStatus{}, err
+	}
+	if selectedProxy == "" {
+		if slices.Contains(group.All, group.Now) {
+			selectedProxy = group.Now
 		} else {
-			err = controller.request(ctx, http.MethodPut, "/configs?force=true", raw, http.StatusNoContent, nil)
+			selectedProxy = group.All[0]
 		}
 	}
-	if err == nil && configuration.SourceType != "manual_node" {
-		err = controller.request(ctx, http.MethodPut, "/providers/proxies/"+url.PathEscape(mihomoProviderName), nil, http.StatusNoContent, nil)
+	if !slices.Contains(group.All, selectedProxy) {
+		return MihomoAppStatus{}, errors.New("mihomo selected proxy is unavailable")
 	}
-	var group struct {
-		All []string `json:"all"`
-		Now string   `json:"now"`
+	raw, _ = json.Marshal(struct {
+		Name string `json:"name"`
+	}{selectedProxy})
+	if err := controller.request(ctx, http.MethodPut, "/proxies/"+url.PathEscape(configuration.SelectorGroup), raw, http.StatusNoContent, nil); err != nil {
+		return MihomoAppStatus{}, err
 	}
-	if err == nil {
-		err = controller.request(ctx, http.MethodGet, "/proxies/"+url.PathEscape(configuration.SelectorGroup), nil, http.StatusOK, &group)
+	if err := controller.verifyRules(ctx, mihomoRules(configuration)); err != nil {
+		return MihomoAppStatus{}, err
 	}
-	if err == nil {
-		if len(group.All) == 0 || len(group.All) > 2048 {
-			err = errors.New("mihomo proxy group is invalid")
-		}
-		seen := map[string]struct{}{}
-		for _, proxy := range group.All {
-			if !validMihomoName(proxy) {
-				err = errors.New("mihomo proxy group is invalid")
-				break
-			}
-			if _, exists := seen[proxy]; exists {
-				err = errors.New("mihomo proxy group is invalid")
-				break
-			}
-			seen[proxy] = struct{}{}
-		}
-		if err == nil && selectedProxy == "" {
-			if slices.Contains(group.All, group.Now) {
-				selectedProxy = group.Now
-			} else {
-				selectedProxy = group.All[0]
-			}
-		} else if err == nil && !slices.Contains(group.All, selectedProxy) {
-			err = errors.New("mihomo selected proxy is unavailable")
-		}
+	if err := controller.verifyListener(ctx, 0, mihomoIPv6(configuration)); err != nil {
+		return MihomoAppStatus{}, err
 	}
-	if err == nil {
-		raw, _ := json.Marshal(struct {
-			Name string `json:"name"`
-		}{selectedProxy})
-		err = controller.request(ctx, http.MethodPut, "/proxies/"+url.PathEscape(configuration.SelectorGroup), raw, http.StatusNoContent, nil)
+	if err := controller.verifyEgress(ctx); err != nil {
+		return MihomoAppStatus{}, err
 	}
-	var configs struct {
-		MixedPort int    `json:"mixed-port"`
-		Mode      string `json:"mode"`
+	// Open the only ingress after inspecting the staged rules and actual nodes.
+	raw, _ = json.Marshal(map[string]int{"mixed-port": configuration.MixedPort})
+	if err := controller.request(ctx, http.MethodPatch, "/configs", raw, http.StatusNoContent, nil); err != nil {
+		return MihomoAppStatus{}, err
 	}
-	if err == nil {
-		err = controller.request(ctx, http.MethodGet, "/configs", nil, http.StatusOK, &configs)
+	if err := controller.verifyListener(ctx, configuration.MixedPort, mihomoIPv6(configuration)); err != nil {
+		return MihomoAppStatus{}, err
 	}
-	if err == nil {
-		group = struct {
-			All []string `json:"all"`
-			Now string   `json:"now"`
-		}{}
-		err = controller.request(ctx, http.MethodGet, "/proxies/"+url.PathEscape(configuration.SelectorGroup), nil, http.StatusOK, &group)
+	if err := controller.verifyRules(ctx, mihomoRules(configuration)); err != nil {
+		return MihomoAppStatus{}, err
 	}
-	if err != nil || configs.MixedPort != configuration.MixedPort || configs.Mode != "rule" || group.Now != selectedProxy || !slices.Contains(group.All, selectedProxy) {
-		disableErr := controller.disable(ctx)
-		if err == nil {
-			err = errors.New("mihomo controller readback did not match desired state")
-		}
-		return MihomoAppStatus{}, errors.Join(err, disableErr)
+	group, err = controller.proxyGroup(ctx, configuration)
+	if err != nil || group.Now != selectedProxy {
+		return MihomoAppStatus{}, errors.New("mihomo selector readback changed")
 	}
 	return mihomoAppStatus(configuration, true, selectedProxy, group.All), nil
 }
@@ -530,11 +622,17 @@ func (controller *MihomoController) Disable(ctx context.Context) error {
 }
 
 func (controller *MihomoController) disable(ctx context.Context) error {
-	payload := fmt.Sprintf("mixed-port: 0\nallow-lan: false\nbind-address: %s\nmode: direct\nipv6: false\nexternal-controller: %s\nsecret: %s\ntun:\n  enable: false\ndns:\n  enable: false\nproxies: []\nproxy-groups: []\nrules: []\n", yamlString(controller.address), yamlString(controller.authority), yamlString(controller.secret))
+	gateErr := controller.egress.close()
+	controller.egress = nil
+	payload := fmt.Sprintf("mixed-port: 0\nport: 0\nsocks-port: 0\nredir-port: 0\ntproxy-port: 0\nallow-lan: false\nbind-address: %s\nmode: rule\nipv6: false\nexternal-controller: %s\nsecret: %s\ntun:\n  enable: false\ndns:\n  enable: false\nproxies: []\nproxy-groups: []\nrules:\n  - MATCH,REJECT\n", yamlString(controller.address), yamlString(controller.authority), yamlString(controller.secret))
 	raw, _ := json.Marshal(struct {
 		Payload string `json:"payload"`
 	}{payload})
-	if err := controller.request(ctx, http.MethodPut, "/configs?force=true", raw, http.StatusNoContent, nil); err != nil {
+	putErr := controller.request(ctx, http.MethodPut, "/configs?force=true", raw, http.StatusNoContent, nil)
+	closeErr := controller.closeConnections(ctx)
+	listenerErr := controller.verifyListener(ctx, 0)
+	rulesErr := controller.verifyRules(ctx, []mihomoRule{{Type: "Match", Proxy: "REJECT"}})
+	if err := errors.Join(gateErr, putErr, closeErr, listenerErr, rulesErr); err != nil {
 		return err
 	}
 	controller.applied = MihomoReadback{}
@@ -604,40 +702,54 @@ func renderMihomoConfiguration(configuration MihomoConfiguration, subscriptionUR
 		return "", errors.New("unsafe mihomo configuration")
 	}
 	var output strings.Builder
-	fmt.Fprintf(&output, "mixed-port: %d\nallow-lan: false\nbind-address: %s\nmode: rule\nlog-level: warning\nipv6: false\nexternal-controller: %s\nsecret: %s\ntun:\n  enable: false\n", configuration.MixedPort, yamlString(controllerAddress), yamlString(controllerAuthority), yamlString(secret))
+	output.WriteString("mixed-port: 0\nport: 0\nsocks-port: 0\nredir-port: 0\ntproxy-port: 0\n")
+	fmt.Fprintf(&output, "allow-lan: false\nbind-address: %s\nmode: rule\nlog-level: warning\nipv6: %t\nexternal-controller: %s\nsecret: %s\ntun:\n  enable: false\n", yamlString(controllerAddress), mihomoIPv6(configuration), yamlString(controllerAuthority), yamlString(secret))
+	if len(configuration.DNSRecords) > 0 {
+		output.WriteString("hosts:\n")
+		for _, record := range configuration.DNSRecords {
+			if !record.ExpiresAt.After(time.Now()) || !record.ExpiresAt.After(configuration.EnforcementUntil.Add(-time.Second)) || len(record.Addresses) == 0 {
+				return "", errors.New("site DNS record expired")
+			}
+			raw, _ := json.Marshal(record.Addresses)
+			fmt.Fprintf(&output, "  %s: %s\n", yamlString(record.Hostname), raw)
+		}
+	}
 	if configuration.DNSMode == "fake_ip" {
 		fmt.Fprintf(&output, "dns:\n  enable: true\n  enhanced-mode: fake-ip\n  fake-ip-range: %s\n  nameserver:\n    - system\n", yamlString(configuration.FakeIPRange))
 	} else {
 		output.WriteString("dns:\n  enable: false\n")
 	}
-	if configuration.SourceType == "manual_node" {
-		node := configuration.ManualNode
-		proxyType := node.Protocol
-		if proxyType == "https" {
-			proxyType = "http"
-		}
-		fmt.Fprintf(&output, "proxies:\n  - name: %s\n    type: %s\n    server: %s\n    port: %d\n", yamlString(mihomoManualProxyName), yamlString(proxyType), yamlString(node.Server), node.Port)
-		if node.Protocol == "https" {
-			output.WriteString("    tls: true\n")
-		}
-		if node.Username != "" {
-			fmt.Fprintf(&output, "    username: %s\n    password: %s\n", yamlString(node.Username), yamlString(node.Password))
-		}
-		fmt.Fprintf(&output, "proxy-groups:\n  - name: %s\n    type: select\n    proxies:\n      - %s\nrules:\n", yamlString(configuration.SelectorGroup), yamlString(mihomoManualProxyName))
-	} else {
-		fmt.Fprintf(&output, "proxy-providers:\n  %s:\n    type: http\n    url: %s\n    path: ./providers/%s.yaml\n    proxy: DIRECT\n    interval: 3600\nproxy-groups:\n  - name: %s\n    type: select\n    use:\n      - %s\nrules:\n", mihomoProviderName, yamlString(subscriptionURL), mihomoProviderName, yamlString(configuration.SelectorGroup), mihomoProviderName)
+	if configuration.GuardPort < 1 || configuration.GuardProxyPort < 1 || configuration.GuardDirectPort < 1 || len(configuration.GuardProxySecret) < 32 || len(configuration.GuardDirectSecret) < 32 {
+		return "", errors.New("mihomo egress guard is missing")
 	}
-	for _, cidr := range configuration.BypassCIDRs {
-		fmt.Fprintf(&output, "  - %s\n", yamlString("IP-CIDR,"+cidr+",DIRECT,no-resolve"))
+	fmt.Fprintf(&output, "listeners:\n  - name: soha-backend-proxy\n    type: socks\n    listen: 127.0.0.1\n    port: %d\n    udp: false\n    proxy: %s\n    users:\n      - username: proxy\n        password: %s\n  - name: soha-backend-direct\n    type: socks\n    listen: 127.0.0.1\n    port: %d\n    udp: false\n    proxy: DIRECT\n    users:\n      - username: direct\n        password: %s\n", configuration.GuardProxyPort, yamlString(configuration.SelectorGroup), yamlString(configuration.GuardProxySecret), configuration.GuardDirectPort, yamlString(configuration.GuardDirectSecret))
+	output.WriteString("proxies:\n")
+	for _, guard := range []struct{ name, user, secret string }{{mihomoGuardProxyName, "proxy", configuration.GuardProxySecret}, {mihomoGuardDirectName, "direct", configuration.GuardDirectSecret}} {
+		fmt.Fprintf(&output, "  - name: %s\n    type: http\n    server: 127.0.0.1\n    port: %d\n    username: %s\n    password: %s\n", yamlString(guard.name), configuration.GuardPort, yamlString(guard.user), yamlString(guard.secret))
 	}
-	for _, host := range configuration.BypassHosts {
-		if address, err := netip.ParseAddr(host); err == nil {
-			fmt.Fprintf(&output, "  - %s\n", yamlString("IP-CIDR,"+netip.PrefixFrom(address, 32).String()+",DIRECT,no-resolve"))
-		} else {
-			fmt.Fprintf(&output, "  - %s\n", yamlString("DOMAIN,"+host+",DIRECT"))
+
+	if len(configuration.VPNRoutes) > 0 {
+		fmt.Fprintf(&output, "  - name: %s\n    type: direct\n    interface-name: %s\n    ip-version: dual\n", yamlString(mihomoVPNProxyName), yamlString(configuration.VPNInterface))
+	}
+	if len(configuration.BootstrapNodes) == 0 {
+		return "", errors.New("proxy transport nodes were not validated")
+	}
+	for _, node := range configuration.BootstrapNodes {
+		raw, err := json.Marshal(node)
+		if err != nil {
+			return "", err
 		}
+		fmt.Fprintf(&output, "  - %s\n", raw)
 	}
-	fmt.Fprintf(&output, "  - %s\n", yamlString("MATCH,"+configuration.SelectorGroup))
+	fmt.Fprintf(&output, "proxy-groups:\n  - name: %s\n    type: select\n    proxies:\n", yamlString(configuration.SelectorGroup))
+	for _, node := range configuration.BootstrapNodes {
+		fmt.Fprintf(&output, "      - %s\n", yamlString(fmt.Sprint(node["name"])))
+	}
+	output.WriteString("rules:\n")
+
+	for _, rule := range mihomoRules(configuration) {
+		fmt.Fprintf(&output, "  - %s\n", yamlString(rule.configurationLine()))
+	}
 	return output.String(), nil
 }
 
@@ -686,11 +798,14 @@ func validateMihomoConfiguration(configuration *MihomoConfiguration, wireGuard *
 	case "fake_ip":
 		var err error
 		fakeIP, err = canonicalMihomoPrefix(configuration.FakeIPRange)
-		if err != nil {
-			return err
+		if err != nil || !fakeIP.Addr().Is4() {
+			return errors.New("fake-IP range must be IPv4")
 		}
 	default:
 		return errors.New("invalid mihomo DNS mode")
+	}
+	if err := validateMihomoProtection(configuration, fakeIP); err != nil {
+		return err
 	}
 	if len(configuration.BypassCIDRs) > 256 || len(configuration.BypassHosts) > 128 {
 		return errors.New("mihomo bypass limit exceeded")
@@ -738,8 +853,8 @@ func validMihomoName(value string) bool {
 
 func canonicalMihomoPrefix(raw string) (netip.Prefix, error) {
 	prefix, err := netip.ParsePrefix(raw)
-	if err != nil || !prefix.Addr().Is4() || prefix != prefix.Masked() || prefix.Bits() == 0 || prefix.String() != raw {
-		return netip.Prefix{}, errors.New("invalid mihomo IPv4 prefix")
+	if err != nil || prefix.Addr().Is4In6() || !prefix.Addr().IsGlobalUnicast() || prefix != prefix.Masked() || prefix.Bits() == 0 || prefix.String() != raw {
+		return netip.Prefix{}, errors.New("invalid mihomo IP prefix")
 	}
 	return prefix, nil
 }

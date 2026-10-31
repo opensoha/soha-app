@@ -1,4 +1,6 @@
+import { ChannelControlsPanel } from '@/channel-controls-panel'
 import { ManagedVPNPanel } from "@/vpn-panel";
+import { AdmissionPanel } from "@/admission-panel";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   CheckOutlined,
@@ -6,7 +8,6 @@ import {
   DownloadOutlined,
   FolderOpenOutlined,
   LockOutlined,
-  PoweroffOutlined,
   ReloadOutlined,
   SafetyCertificateOutlined,
   SyncOutlined,
@@ -84,7 +85,6 @@ import {
   type AuthProvider,
   type ConnectionCheck,
   type HostState,
-  type NetworkConnectionOption,
   type ProfileUpdate,
   type SoftwarePackage,
   type SoftwareTaskState,
@@ -1038,15 +1038,9 @@ export function ProfilePage() {
 
 type NetworkConnectionMedium = "wifi" | "wired";
 
-function networkConnectionOptionKey(option: NetworkConnectionOption): string {
-  return JSON.stringify([option.siteId, option.ssid || ""]);
-}
-
 export function NetworkPage() {
   const text = useText();
   const host = useAppStore((state) => state.host);
-  const preferences = useAppStore((state) => state.networkConnection);
-  const setNetworkConnection = useAppStore((state) => state.setNetworkConnection);
   const [medium, setMedium] = useState<NetworkConnectionMedium>("wifi");
   const deviceId = host?.app.deviceId || "";
   const optionsQuery = useQuery({
@@ -1061,18 +1055,15 @@ export function NetworkPage() {
     refetchInterval: 10_000,
     retry: false,
   });
+  const serviceQuery = useQuery({
+    queryKey: ["network-status"],
+    queryFn: getNetworkStatus,
+    enabled: host?.app.platform === "windows" || host?.app.platform === "darwin",
+    refetchInterval: 10_000,
+    retry: false,
+  });
+  const matchingPresence = serviceQuery.data?.deviceId === deviceId ? serviceQuery.data : undefined;
   const options = optionsQuery.data || [];
-  const wifiOptions = options.filter((option) => option.accessMedium === "wifi");
-  const wiredOptions = options.filter((option) => option.accessMedium === "wired");
-  const selectedWifi = wifiOptions.find(
-    (option) => networkConnectionOptionKey(option) === preferences.selectedWifiKey,
-  );
-
-  useEffect(() => {
-    if (optionsQuery.isSuccess && preferences.selectedWifiKey && !selectedWifi) {
-      setNetworkConnection({ selectedWifiKey: "", wifiAutoConnect: false });
-    }
-  }, [optionsQuery.isSuccess, preferences.selectedWifiKey, selectedWifi, setNetworkConnection]);
 
   const activeLink = linkQuery.data?.connected && linkQuery.data.medium === medium
     ? linkQuery.data
@@ -1096,18 +1087,6 @@ export function NetworkPage() {
             value={medium}
           />
         </div>
-        <div className="network-connect-control">
-          <Button
-            aria-label={text.networkAutoConnectUnavailable}
-            aria-pressed={false}
-            className="network-connect-button"
-            disabled
-            icon={<PoweroffOutlined />}
-            shape="circle"
-            type="default"
-          />
-          <strong>{text.networkAutoConnectUnavailable}</strong>
-        </div>
         {optionsQuery.isError ? (
           <Alert
             action={<Button onClick={() => optionsQuery.refetch()} size="small">{text.retry}</Button>}
@@ -1116,30 +1095,8 @@ export function NetworkPage() {
             title={text.networkOptionsLoadFailed}
             type="warning"
           />
-        ) : medium === "wifi" ? (
-          <Select
-            aria-label={text.networkChooseWifi}
-            className="network-wifi-select"
-            disabled={!wifiOptions.length}
-            loading={optionsQuery.isPending}
-            onChange={(value) => setNetworkConnection({ selectedWifiKey: value })}
-            options={wifiOptions.map((option) => ({
-              label: `${option.ssid} · ${option.siteName}`,
-              value: networkConnectionOptionKey(option),
-            }))}
-            placeholder={wifiOptions.length ? text.networkChooseWifiFirst : text.networkNoAuthorizedWifi}
-            showSearch={{ optionFilterProp: "label" }}
-            size="large"
-            value={preferences.selectedWifiKey || undefined}
-          />
-        ) : wiredOptions.length > 0 ? (
-          <div className="network-wired-target">
-            <strong>{text.networkWiredAuthentication}</strong>
-            <span>{wiredOptions.map((option) => option.siteName).join(" · ")} · {text.networkRadius8021X}</span>
-          </div>
-        ) : (
-          <Empty description={text.networkNoAuthorizedWired} image={Empty.PRESENTED_IMAGE_SIMPLE} />
-        )}
+        ) : null}
+        <AdmissionPanel medium={medium} options={options} enabled={host?.app.platform === "windows" || host?.app.platform === "darwin"} />
         {activeLink ? (
           <dl aria-label={text.networkLinkDetails} className="network-link-details">
             <div><dt>{text.networkIPAddress}</dt><dd>{activeLink.ipAddress || "-"}</dd></div>
@@ -1147,6 +1104,14 @@ export function NetworkPage() {
             <div><dt>{text.networkDNSServers}</dt><dd>{activeLink.dnsServers.join(", ") || "-"}</dd></div>
           </dl>
         ) : null}
+        <dl aria-label={text.networkPresenceDetails} className="network-link-details">
+          <div><dt>{text.networkProtectionHeartbeat}</dt><dd>{serviceQuery.isError ? text.networkServiceUnavailable : matchingPresence?.presenceState === "healthy" ? text.networkHeartbeatDelivered : matchingPresence?.presenceState === "unhealthy" ? text.networkHeartbeatUnhealthy : text.networkHeartbeatUnknown}</dd></div>
+          <div><dt>{text.networkHeartbeatReceived}</dt><dd>{matchingPresence?.presenceLastReceivedAt ? new Date(matchingPresence.presenceLastReceivedAt).toLocaleString() : "-"}</dd></div>
+          <div><dt>{text.networkUISignal}</dt><dd>{text.networkHeartbeatUnknown}</dd></div>
+          <div><dt>{text.networkNASSignal}</dt><dd>{text.networkNASUnknown}</dd></div>
+        </dl>
+        {serviceQuery.isError && <Alert showIcon type="warning" title={text.networkServiceUnavailable} action={<Button size="small" onClick={() => void serviceQuery.refetch()}>{text.retry}</Button>} description={readableError(serviceQuery.error, text)} />}
+        <Alert description={text.networkPresenceHelp} showIcon type="info" />
         <Alert description={text.networkManagedProfileHelp} showIcon type="info" />
       </section>
     </Page>
@@ -1404,6 +1369,7 @@ export function SettingsPage({ view = "settings" }: { view?: SettingsView }) {
               )}
             </SettingRow>
           </section>
+          <section className="settings-section"><ChannelControlsPanel /></section>
         </>
       ) : null}
       {view !== "settings" ? (
@@ -1482,10 +1448,21 @@ export function SettingsPage({ view = "settings" }: { view?: SettingsView }) {
                       label: text.networkMihomo,
                       children: networkMihomoText,
                     },
+                    ...(view === "proxy"
+                      ? [
+                          { key: "proxy-policy", label: text.networkMihomoPolicyVersion, children: networkStatus?.mihomoPolicyVersion || "-" },
+                          { key: "proxy-coverage", label: text.networkProxyCoverage, children: text.networkProxyCoverageDescription },
+                        ]
+                      : []),
                     {
                       key: "valid-until",
                       label: text.networkValidUntil,
                       children: networkStatus?.validUntil || "-",
+                    },
+                    {
+                      key: "session-valid-until",
+                      label: text.networkSessionValidUntil,
+                      children: networkStatus?.sessionValidUntil || "-",
                     },
                     {
                       key: "diagnostic",

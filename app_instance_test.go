@@ -142,12 +142,16 @@ func TestAppRuntimeDisabledNetworkNeverTouchesHost(t *testing.T) {
 			t.Fatal("disabled instance contacted Mihomo IPC")
 			return endpointservice.MihomoAppStatus{}, nil
 		},
+		networkAdmissionCall: func(context.Context, string, *endpointservice.AdmissionInput) (endpointservice.AdmissionStatus, error) {
+			t.Fatal("disabled instance contacted admission IPC")
+			return endpointservice.AdmissionStatus{}, nil
+		},
 		networkLinkStatus: func() NetworkLinkStatus {
 			t.Fatal("disabled instance inspected native links")
 			return NetworkLinkStatus{}
 		},
 	}
-	for _, path := range []string{"status", "link", "connect", "disconnect", "mihomo", "mihomo/selection", "mihomo/refresh", "future-action"} {
+	for _, path := range []string{"status", "link", "connect", "disconnect", "mihomo", "mihomo/selection", "mihomo/refresh", "admission", "admission/check", "admission/prepare", "admission/open", "admission/cleanup", "future-action"} {
 		for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch} {
 			response := httptest.NewRecorder()
 			runtimeAPI.ServeHTTP(response, httptest.NewRequest(method, "/app/v1/network/"+path, strings.NewReader("invalid JSON")))

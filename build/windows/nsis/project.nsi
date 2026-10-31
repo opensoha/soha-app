@@ -93,6 +93,13 @@ Section
 
     !insertmacro wails.webview2runtime
 
+    InitPluginsDir
+    SetOutPath $PLUGINSDIR
+    File "/oname=soha-channel-preflight.exe" "${ARG_SOHA_SERVICE_BINARY}"
+    ExecWait '"$PLUGINSDIR\soha-channel-preflight.exe" channel-removal-check' $0
+    IntCmp $0 0 native_release_checked
+    Abort "Release native channel controls and confirm cleanup before upgrading. Exit code $0"
+native_release_checked:
     SetOutPath $INSTDIR
     
     !insertmacro wails.files

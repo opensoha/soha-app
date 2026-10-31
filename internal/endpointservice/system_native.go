@@ -12,7 +12,7 @@ import (
 	"strconv"
 )
 
-func interfaceIPv4Addresses(adapter *net.Interface) ([]string, error) {
+func interfaceIPAddresses(adapter *net.Interface) ([]string, error) {
 	values, err := adapter.Addrs()
 	if err != nil {
 		return nil, fmt.Errorf("read WireGuard addresses: %w", err)
@@ -20,7 +20,7 @@ func interfaceIPv4Addresses(adapter *net.Interface) ([]string, error) {
 	addresses := make([]string, 0, len(values))
 	for _, value := range values {
 		prefix, err := netip.ParsePrefix(value.String())
-		if err == nil && prefix.Addr().Is4() {
+		if err == nil && !prefix.Addr().Is4In6() && prefix.Addr().IsGlobalUnicast() {
 			addresses = append(addresses, prefix.Masked().String())
 		}
 	}
@@ -28,11 +28,11 @@ func interfaceIPv4Addresses(adapter *net.Interface) ([]string, error) {
 	return slices.Compact(addresses), nil
 }
 
-func allowedIPv4Prefixes(values []net.IPNet) ([]string, error) {
+func allowedIPPrefixes(values []net.IPNet) ([]string, error) {
 	result := make([]string, 0, len(values))
 	for _, value := range values {
 		prefix, err := netip.ParsePrefix(value.String())
-		if err != nil || !prefix.Addr().Is4() || prefix.Bits() == 0 {
+		if err != nil || prefix.Addr().Is4In6() || prefix.Bits() == 0 {
 			return nil, errors.New("WireGuard AllowedIPs contain an unsafe route")
 		}
 		result = append(result, prefix.Masked().String())
@@ -53,7 +53,7 @@ func endpointMatches(ctx context.Context, expected string, actual *net.UDPAddr) 
 	if address, err := netip.ParseAddr(host); err == nil {
 		return address.Unmap() == netip.MustParseAddr(actual.IP.String()).Unmap()
 	}
-	addresses, err := net.DefaultResolver.LookupNetIP(ctx, "ip4", host)
+	addresses, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 	if err != nil {
 		return false
 	}

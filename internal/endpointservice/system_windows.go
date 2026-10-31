@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"syscall"
 	"time"
 	"unsafe"
@@ -89,6 +90,9 @@ func (system *WindowsSystem) Apply(ctx context.Context, plan TunnelPlan) error {
 }
 
 func (system *WindowsSystem) Readback(ctx context.Context) (TunnelReadback, error) {
+	if err := system.verifyServiceOwnership(); err != nil {
+		return TunnelReadback{}, err
+	}
 	client, err := wgctrl.New()
 	if err != nil {
 		return TunnelReadback{}, fmt.Errorf("open WireGuard control client: %w", err)
@@ -111,7 +115,7 @@ func (system *WindowsSystem) Readback(ctx context.Context) (TunnelReadback, erro
 	if err != nil || adapter.Flags&net.FlagUp == 0 || adapter.MTU < 1 {
 		return TunnelReadback{}, errors.New("WireGuard adapter is not operational")
 	}
-	addresses, err := interfaceIPv4Addresses(adapter)
+	addresses, err := interfaceIPAddresses(adapter)
 	if err != nil {
 		return TunnelReadback{}, err
 	}
@@ -119,9 +123,12 @@ func (system *WindowsSystem) Readback(ctx context.Context) (TunnelReadback, erro
 	if !validVPNHandshake(peer.LastHandshakeTime, time.Now()) {
 		return TunnelReadback{}, errors.New("WireGuard handshake is missing or stale")
 	}
-	allowedIPs, err := allowedIPv4Prefixes(peer.AllowedIPs)
+	allowedIPs, err := allowedIPPrefixes(peer.AllowedIPs)
 	if err != nil || peer.Endpoint == nil || peer.PersistentKeepaliveInterval%time.Second != 0 {
 		return TunnelReadback{}, errors.New("WireGuard peer state is invalid")
+	}
+	if err := rejectWindowsForeignRoutes(adapter.Index, allowedIPs); err != nil {
+		return TunnelReadback{}, err
 	}
 	if err := verifyInterfaceRoutes(adapter.Index, allowedIPs, addresses); err != nil {
 		return TunnelReadback{}, err
@@ -140,6 +147,14 @@ func (system *WindowsSystem) Readback(ctx context.Context) (TunnelReadback, erro
 	return TunnelReadback{PublicKey: device.PublicKey.String(), Addresses: addresses, MTU: adapter.MTU, Peer: TunnelPeer{PublicKey: peer.PublicKey.String(), Endpoint: endpoint, AllowedIPs: allowedIPs, PersistentKeepaliveSeconds: int(peer.PersistentKeepaliveInterval / time.Second)}, Routes: slices.Clone(allowedIPs), DNSServers: dnsServers}, nil
 }
 
+func (system *WindowsSystem) TunnelInterface(ctx context.Context) (string, error) {
+	state, err := system.Readback(ctx)
+	if err != nil || system.expected == nil || !reflect.DeepEqual(state, system.expected.Readback()) {
+		return "", errors.New("Windows VPN interface is not verified")
+	}
+	return endpointInterfaceName, nil
+}
+
 func (system *WindowsSystem) Disable(ctx context.Context) error {
 	operationCtx, cancel := context.WithTimeout(ctx, wireGuardTimeout)
 	defer cancel()
@@ -149,6 +164,9 @@ func (system *WindowsSystem) Disable(ctx context.Context) error {
 	}
 	var uninstallErr error
 	if exists {
+		if err := system.verifyServiceOwnership(); err != nil {
+			return err
+		}
 		uninstallErr = system.run(operationCtx, "/uninstalltunnelservice", endpointInterfaceName)
 		for exists && operationCtx.Err() == nil {
 			time.Sleep(wireGuardPollPeriod)
@@ -268,8 +286,8 @@ func rejectWindowsRouteConflicts(plan TunnelPlan) error {
 
 func windowsRouteTable() ([]netip.Prefix, error) {
 	var table *windows.MibIpForwardTable2
-	if err := windows.GetIpForwardTable2(windows.AF_INET, &table); err != nil {
-		return nil, fmt.Errorf("read Windows IPv4 route table: %w", err)
+	if err := windows.GetIpForwardTable2(windows.AF_UNSPEC, &table); err != nil {
+		return nil, fmt.Errorf("read Windows IP route table: %w", err)
 	}
 	if table == nil {
 		return nil, nil
@@ -277,24 +295,35 @@ func windowsRouteTable() ([]netip.Prefix, error) {
 	defer windows.FreeMibTable(unsafe.Pointer(table))
 	routes := make([]netip.Prefix, 0, table.NumEntries)
 	for _, row := range table.Rows() {
-		if prefix, ok := rowIPv4Prefix(row); ok {
+		if prefix, ok := rowIPPrefix(row); ok {
 			routes = append(routes, prefix)
 		}
 	}
 	return routes, nil
 }
 
-func rowIPv4Prefix(row windows.MibIpForwardRow2) (netip.Prefix, bool) {
-	if row.DestinationPrefix.Prefix.Family != windows.AF_INET || row.DestinationPrefix.PrefixLength > 32 {
+func rowIPPrefix(row windows.MibIpForwardRow2) (netip.Prefix, bool) {
+	var address netip.Addr
+	switch row.DestinationPrefix.Prefix.Family {
+	case windows.AF_INET:
+		raw := (*windows.RawSockaddrInet4)(unsafe.Pointer(&row.DestinationPrefix.Prefix))
+		address = netip.AddrFrom4(raw.Addr)
+	case windows.AF_INET6:
+		raw := (*windows.RawSockaddrInet6)(unsafe.Pointer(&row.DestinationPrefix.Prefix))
+		address = netip.AddrFrom16(raw.Addr)
+	default:
 		return netip.Prefix{}, false
 	}
-	raw := (*windows.RawSockaddrInet4)(unsafe.Pointer(&row.DestinationPrefix.Prefix))
-	return netip.PrefixFrom(netip.AddrFrom4(raw.Addr), int(row.DestinationPrefix.PrefixLength)).Masked(), true
+	bits := int(row.DestinationPrefix.PrefixLength)
+	if bits > address.BitLen() || address.Is4In6() || (bits > 0 && !address.IsGlobalUnicast()) {
+		return netip.Prefix{}, false
+	}
+	return netip.PrefixFrom(address, bits).Masked(), true
 }
 
 func verifyInterfaceRoutes(interfaceIndex int, expected, allowedExtras []string) error {
 	var table *windows.MibIpForwardTable2
-	if err := windows.GetIpForwardTable2(windows.AF_INET, &table); err != nil {
+	if err := windows.GetIpForwardTable2(windows.AF_UNSPEC, &table); err != nil {
 		return fmt.Errorf("read WireGuard routes: %w", err)
 	}
 	if table == nil {
@@ -306,7 +335,7 @@ func verifyInterfaceRoutes(interfaceIndex int, expected, allowedExtras []string)
 		if int(row.InterfaceIndex) != interfaceIndex {
 			continue
 		}
-		if prefix, ok := rowIPv4Prefix(row); ok {
+		if prefix, ok := rowIPPrefix(row); ok {
 			actual = append(actual, prefix)
 		}
 	}
@@ -318,7 +347,7 @@ func interfaceDNSServers(interfaceIndex uint32) ([]string, error) {
 	for {
 		buffer := make([]byte, size)
 		addresses := (*windows.IpAdapterAddresses)(unsafe.Pointer(&buffer[0]))
-		err := windows.GetAdaptersAddresses(uint32(windows.AF_INET), windows.GAA_FLAG_SKIP_ANYCAST|windows.GAA_FLAG_SKIP_MULTICAST, 0, addresses, &size)
+		err := windows.GetAdaptersAddresses(uint32(windows.AF_UNSPEC), windows.GAA_FLAG_SKIP_ANYCAST|windows.GAA_FLAG_SKIP_MULTICAST, 0, addresses, &size)
 		if errors.Is(err, windows.ERROR_BUFFER_OVERFLOW) {
 			continue
 		}
@@ -326,12 +355,12 @@ func interfaceDNSServers(interfaceIndex uint32) ([]string, error) {
 			return nil, fmt.Errorf("read WireGuard DNS servers: %w", err)
 		}
 		for adapter := addresses; adapter != nil; adapter = adapter.Next {
-			if adapter.IfIndex != interfaceIndex {
+			if adapter.IfIndex != interfaceIndex && adapter.Ipv6IfIndex != interfaceIndex {
 				continue
 			}
 			servers := []string{}
 			for dns := adapter.FirstDnsServerAddress; dns != nil; dns = dns.Next {
-				if address, ok := netip.AddrFromSlice(dns.Address.IP()); ok && address.Unmap().Is4() {
+				if address, ok := netip.AddrFromSlice(dns.Address.IP()); ok && address.Unmap().IsGlobalUnicast() {
 					servers = append(servers, address.Unmap().String())
 				}
 			}
@@ -345,4 +374,59 @@ func interfaceDNSServers(interfaceIndex uint32) ([]string, error) {
 func (system *WindowsSystem) CheckVPNHealth(ctx context.Context) error {
 	_, err := system.Readback(ctx)
 	return err
+}
+
+func rejectWindowsForeignRoutes(ownedIndex int, routes []string) error {
+	var table *windows.MibIpForwardTable2
+	if err := windows.GetIpForwardTable2(windows.AF_UNSPEC, &table); err != nil {
+		return err
+	}
+	if table == nil {
+		return errors.New("route table unavailable")
+	}
+	defer windows.FreeMibTable(unsafe.Pointer(table))
+	for _, row := range table.Rows() {
+		if int(row.InterfaceIndex) == ownedIndex {
+			continue
+		}
+		prefix, ok := rowIPPrefix(row)
+		if !ok || prefix.Bits() == 0 {
+			continue
+		}
+		for _, raw := range routes {
+			wanted := netip.MustParsePrefix(raw)
+			if prefix.Overlaps(wanted) {
+				return errors.New("another interface now overlaps the Soha tunnel")
+			}
+		}
+	}
+	return nil
+}
+
+func (system *WindowsSystem) verifyServiceOwnership() error {
+	manager, err := mgr.Connect()
+	if err != nil {
+		return fmt.Errorf("open service manager: %w", err)
+	}
+	defer manager.Disconnect()
+	service, err := manager.OpenService(tunnelServiceName)
+	if errors.Is(err, windows.ERROR_SERVICE_DOES_NOT_EXIST) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer service.Close()
+	config, err := service.Config()
+	if err != nil {
+		return err
+	}
+	args, err := windows.DecomposeCommandLine(config.BinaryPathName)
+	if err != nil || len(args) != 3 || !strings.EqualFold(filepath.Clean(args[0]), filepath.Clean(system.executable)) || args[1] != "/tunnelservice" || !strings.EqualFold(filepath.Clean(args[2]), filepath.Clean(system.configPath)) {
+		return errors.New("the existing WireGuard service is not owned by this Soha installation")
+	}
+	if err := regularFile(system.configPath); err != nil {
+		return errors.New("owned WireGuard service configuration is missing")
+	}
+	return secureStateDirectory(filepath.Dir(system.configPath))
 }

@@ -88,12 +88,14 @@ func main() {
 		catalog = activeServerSoftwareCatalog{host: host}
 	}
 	runtimeAPI := &appRuntime{
-		version:           appVersion,
-		software:          newSoftwareLibrary(catalog),
-		networkDisabled:   instance.networkDisabled,
-		networkCall:       endpointservice.CallIPC,
-		networkMihomoCall: endpointservice.CallMihomoIPC,
-		networkLinkStatus: collectNetworkLinkStatus,
+		networkDisabled:      instance.networkDisabled,
+		version:              appVersion,
+		software:             newSoftwareLibrary(catalog),
+		networkCall:          endpointservice.CallIPC,
+		networkMihomoCall:    endpointservice.CallMihomoIPC,
+		networkAdmissionCall: endpointservice.CallAdmissionIPC,
+		openAdmissionProfile: openNativeAdmissionProfile,
+		networkLinkStatus:    collectNetworkLinkStatus,
 	}
 	runtimeAPI.software.downloadDir = instance.downloadDir
 	host.setRuntimeAPI(runtimeAPI)
@@ -171,6 +173,9 @@ func main() {
 	positions := &windowPositionStore{path: instance.companionPath}
 	companionWindow := newCompanionWindow(app, positions)
 	configureSystemTray(app, window, companionWindow, trayIcon)
+	if !instance.networkDisabled {
+		go endpointservice.RunNativeUIPresence(app.Context())
+	}
 
 	if err := app.Run(); err != nil {
 		appLog.Error("application runtime stopped with an error", "component", "runtime", "event", "app.runtime.failed", "error", err, "error_type", logErrorType(err))

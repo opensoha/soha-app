@@ -28,7 +28,8 @@ export function ManagedVPNPanel() {
   const profile = profiles.find(p => p.profileId === profileId) || profiles[0]
   const current = useQuery({ queryKey: ['vpn-current', user, deviceId], queryFn: () => getVPNCurrentConnection(deviceId), enabled: Boolean(user && deviceId && status?.sessionId), retry: false, refetchInterval: 10000, refetchIntervalInBackground: false })
   const details = current.data?.sessionId === status?.sessionId ? current.data : null
-  const active = Boolean(status?.sessionId || status?.state === "degraded" || status?.state === "connected")
+  const active = Boolean(status?.sessionId)
+  const needsCleanup = active || status?.state === 'degraded'
   const connected = active && status?.state === 'connected'
   const operation = useMutation({
  mutationKey:["vpn-connect"],
@@ -63,7 +64,7 @@ export function ManagedVPNPanel() {
     {profiles.length > 1 ? <Select aria-label={label('连接方案', 'Connection profile')} value={profile?.profileId} disabled={busy} onChange={id => { setProfileId(id); setSelection('auto') }} options={profiles.map(p => ({ value: p.profileId, label: p.name }))} /> : null}
     {profile ? <div className="vpn-entrance-picker"><label htmlFor="vpn-entrance">{label('接入点', 'Entrance')}</label><Select id="vpn-entrance" value={selection} disabled={busy || !profile.allowManualSelection} onChange={setSelection} options={[{ value: 'auto', label: `Auto · ${profile.selectionStrategy === 'latency' ? label('延迟优先','Latency first') : profile.selectionStrategy === 'provider' ? label('供应商优先','Provider first') : label('固定优先级','Priority')}` }, ...profile.candidates.map(c => ({ value: c.gatewayId, label: `${c.name} · ${c.providerName || c.providerCode} · ${latency(c.gatewayId)}${c.available ? '' : ` · ${c.reasonCode}`}`, disabled: !c.available }))]} /></div> : null}
     <div className="network-connect-control">
-      <Button aria-label={active ? text.networkDisconnect : text.networkConnect} aria-pressed={connected} className="network-connect-button" disabled={!supported || busy || statusQuery.isError || (!active && !profile?.available)} icon={<PoweroffOutlined />} loading={operation.isPending || status?.state === 'connecting'} onClick={() => operation.mutate({ disconnect: active })} shape="circle" type={connected ? 'primary' : 'default'} />
+      <Button aria-label={needsCleanup ? text.networkDisconnect : text.networkConnect} aria-pressed={connected} className="network-connect-button" disabled={!supported || busy || statusQuery.isError || (!needsCleanup && !profile?.available)} icon={<PoweroffOutlined />} loading={operation.isPending || status?.state === 'connecting'} onClick={() => operation.mutate({ disconnect: needsCleanup })} shape="circle" type={connected ? 'primary' : 'default'} />
       <strong aria-live="polite">{!supported ? text.networkVPNUnavailable : switching ? label('切换中', 'Switching') : busy ? phase : statusQuery.isPending || optionsQuery.isFetching ? text.checking : statusQuery.isError ? text.networkServiceUnavailable : connected ? text.networkConnected : !profile ? text.networkVPNWaitingPolicy : text.networkDisconnected}</strong>
       <span className="vpn-connect-hint">{text.networkVPNHelp}</span>
       {active && profile ? <Button disabled={busy} onClick={() => { setSwitching(true); operation.mutate({}) }}>{label('重新连接以切换', 'Reconnect to switch')}</Button> : null}

@@ -53,16 +53,18 @@ type updateEngine interface {
 }
 
 type appRuntime struct {
-	version           string
-	networkDisabled   bool
-	updater           updateEngine
-	software          *softwareLibrary
-	networkCall       func(context.Context, string, *endpointservice.ConnectInput) (endpointservice.Status, error)
-	networkMihomoCall func(context.Context, string, *endpointservice.MihomoAppInput) (endpointservice.MihomoAppStatus, error)
-	networkLinkStatus func() NetworkLinkStatus
-	checkMu           sync.Mutex
-	statusMu          sync.RWMutex
-	status            updateStatus
+	networkDisabled      bool
+	version              string
+	updater              updateEngine
+	software             *softwareLibrary
+	networkCall          func(context.Context, string, *endpointservice.ConnectInput) (endpointservice.Status, error)
+	networkMihomoCall    func(context.Context, string, *endpointservice.MihomoAppInput) (endpointservice.MihomoAppStatus, error)
+	networkAdmissionCall func(context.Context, string, *endpointservice.AdmissionInput) (endpointservice.AdmissionStatus, error)
+	openAdmissionProfile func(context.Context, string) error
+	networkLinkStatus    func() NetworkLinkStatus
+	checkMu              sync.Mutex
+	statusMu             sync.RWMutex
+	status               updateStatus
 }
 
 var (
@@ -141,6 +143,18 @@ func (runtimeAPI *appRuntime) ServeHTTP(writer http.ResponseWriter, request *htt
 		runtimeAPI.handleNetworkMihomo(writer, request, "mihomo_select")
 	case request.Method == http.MethodPost && request.URL.Path == "/app/v1/network/mihomo/refresh":
 		runtimeAPI.handleNetworkMihomo(writer, request, "mihomo_refresh")
+	case request.Method == http.MethodGet && request.URL.Path == "/app/v1/network/admission":
+		runtimeAPI.handleAdmission(writer, request, "admission_status")
+	case request.Method == http.MethodPost && request.URL.Path == "/app/v1/network/admission/prepare":
+		runtimeAPI.handleAdmission(writer, request, "admission_prepare")
+	case request.Method == http.MethodPost && request.URL.Path == "/app/v1/network/admission/check":
+		runtimeAPI.handleAdmission(writer, request, "admission_check")
+	case request.Method == http.MethodPost && request.URL.Path == "/app/v1/network/admission/connect":
+		runtimeAPI.handleAdmission(writer, request, "admission_connect")
+	case request.Method == http.MethodPost && request.URL.Path == "/app/v1/network/admission/open":
+		runtimeAPI.handleAdmission(writer, request, "admission_open")
+	case request.Method == http.MethodDelete && request.URL.Path == "/app/v1/network/admission":
+		runtimeAPI.handleAdmission(writer, request, "admission_remove")
 	default:
 		writeError(writer, http.StatusNotFound, "runtime_not_found", "Runtime endpoint was not found")
 	}

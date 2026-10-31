@@ -7,16 +7,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	ec "github.com/opensoha/soha-contracts/endpointcontrol"
 	"io"
 	"log/slog"
 	"net"
+	"strings"
 	"time"
 )
 
 const (
 	IPCVersion          = 1
 	PipeName            = `\\.\pipe\OpenSoha.Soha.NetworkService`
-	maxIPCMessageBytes  = 32 << 10
+	maxIPCMessageBytes  = 128 << 10
 	ipcOperationTimeout = 125 * time.Second
 )
 
@@ -28,6 +30,7 @@ type IPCRequest struct {
 	Action    string          `json:"action"`
 	Connect   *ConnectInput   `json:"connect,omitempty"`
 	Mihomo    *MihomoAppInput `json:"mihomo,omitempty"`
+	Admission *AdmissionInput `json:"admission,omitempty"`
 }
 
 type IPCResponse struct {
@@ -36,6 +39,7 @@ type IPCResponse struct {
 	OK           bool             `json:"ok"`
 	Status       Status           `json:"status"`
 	Mihomo       *MihomoAppStatus `json:"mihomo,omitempty"`
+	Admission    *AdmissionStatus `json:"admission,omitempty"`
 	ErrorCode    string           `json:"errorCode,omitempty"`
 	ErrorMessage string           `json:"errorMessage,omitempty"`
 }
@@ -96,7 +100,19 @@ func serveIPCConnection(parent context.Context, connection net.Conn, manager *Ma
 			if request.Version != IPCVersion || !identifierPattern.MatchString(request.RequestID) {
 				err = errors.New("invalid IPC envelope")
 			} else {
-				response.Status, response.Mihomo, err = runIPCAction(requestCtx, manager, request)
+				if request.Action == "ui_presence" {
+					if request.Connect != nil || request.Mihomo != nil || request.Admission != nil {
+						err = errors.New("UI presence cannot include renderer parameters")
+					} else {
+						err = manager.options.UIPresence.Observe(connection, manager.now().UTC())
+					}
+				} else if strings.HasPrefix(request.Action, "admission_") {
+					response.Admission, err = runAdmissionIPCAction(requestCtx, manager, request)
+				} else if request.Admission != nil {
+					err = errors.New("admission parameters require an admission action")
+				} else {
+					response.Status, response.Mihomo, err = runIPCAction(requestCtx, manager, request)
+				}
 			}
 		}
 	}
@@ -191,7 +207,7 @@ func CallIPC(ctx context.Context, action string, input *ConnectInput) (Status, e
 		return Status{}, fmt.Errorf("read endpoint IPC response: %w", err)
 	}
 	var response IPCResponse
-	if err := decodeStrict(raw, &response); err != nil || response.Version != IPCVersion || response.RequestID != requestID || !validIPCStatus(response.Status) || response.Mihomo != nil {
+	if err := decodeStrict(raw, &response); err != nil || response.Version != IPCVersion || response.RequestID != requestID || !validIPCStatus(response.Status) || response.Mihomo != nil || response.Admission != nil {
 		return Status{}, errors.New("endpoint IPC response is invalid")
 	}
 	if !response.OK {
@@ -225,7 +241,7 @@ func CallMihomoIPC(ctx context.Context, action string, input *MihomoAppInput) (M
 		return MihomoAppStatus{}, fmt.Errorf("read endpoint IPC response: %w", err)
 	}
 	var response IPCResponse
-	if err := decodeStrict(raw, &response); err != nil || response.Version != IPCVersion || response.RequestID != requestID || !validIPCStatus(response.Status) || response.Mihomo == nil || !validIPCMihomoStatus(*response.Mihomo) {
+	if err := decodeStrict(raw, &response); err != nil || response.Version != IPCVersion || response.RequestID != requestID || !validIPCStatus(response.Status) || response.Mihomo == nil || !validIPCMihomoStatus(*response.Mihomo) || response.Admission != nil {
 		return MihomoAppStatus{}, errors.New("endpoint IPC response is invalid")
 	}
 	if !response.OK {
@@ -239,7 +255,7 @@ func CallMihomoIPC(ctx context.Context, action string, input *MihomoAppInput) (M
 
 func validIPCStatus(status Status) bool {
 	validMihomo := status.MihomoMode == "" && status.MihomoProfileID == "" && status.MihomoProfileRevision == 0 || slicesContains([]string{"managed_follow", "app_subscription"}, status.MihomoMode) && identifierPattern.MatchString(status.MihomoProfileID) && status.MihomoProfileRevision > 0
-	return slicesContains([]string{StateDisconnected, StateConnecting, StateConnected, StateDegraded}, status.State) && identifierPattern.MatchString(status.RuntimeID) && identifierPattern.MatchString(status.DeviceID) && status.ConfigurationVersion >= 0 && status.PolicyVersion >= 0 && status.UptimeSeconds >= 0 && validMihomo
+	return slicesContains([]string{StateDisconnected, StateConnecting, StateConnected, StateDegraded}, status.State) && identifierPattern.MatchString(status.RuntimeID) && identifierPattern.MatchString(status.DeviceID) && status.ConfigurationVersion >= 0 && status.PolicyVersion >= 0 && status.MihomoPolicyVersion >= 0 && status.UptimeSeconds >= 0 && validMihomo && validIPCChannelStatus(status.ChannelControls)
 }
 
 func validIPCMihomoStatus(status MihomoAppStatus) bool {
@@ -290,4 +306,24 @@ func writeIPCFrame(writer io.Writer, payload []byte) error {
 	copy(frame[4:], payload)
 	_, err := io.Copy(writer, bytes.NewReader(frame))
 	return err
+}
+
+func validIPCChannelStatus(s *ChannelStatus) bool {
+	if s == nil {
+		return true
+	}
+	if s.PolicyVersion < 0 || len(s.Channels) > 3 {
+		return false
+	}
+	if len(s.Channels) == 0 {
+		return s.LastObservedAt.IsZero()
+	}
+	seen := map[string]bool{}
+	for _, c := range s.Channels {
+		if !ec.ValidChannel(c) || seen[c.Name] {
+			return false
+		}
+		seen[c.Name] = true
+	}
+	return len(seen) == 3
 }

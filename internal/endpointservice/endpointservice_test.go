@@ -195,6 +195,7 @@ func TestManagerAppliesManagedMihomoWithoutVPNSession(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 3, 8, 0, 0, 0, time.UTC)
 	desired := ConfigurationDesired{ConfigurationVersion: 5, PolicyVersion: 3, ValidUntil: now.Add(2 * time.Minute), AccessProfile: "full", ProtectedResourceIDs: []string{}, NetworkLeases: []NetworkLease{}, ResourceLeases: []ResourceLease{}, Mihomo: ptrMihomo(managedMihomoConfiguration(9090))}
+	desired.Mihomo.Protection.PolicyVersion = desired.PolicyVersion
 	desired.Mihomo.SubscriptionURL = ""
 	raw, _ := json.Marshal(desired)
 	control := &fakeControl{
@@ -287,29 +288,38 @@ func TestValidConnectScopeRequiresGrantForZTNA(t *testing.T) {
 
 func TestManagerExpiresTunnelWhenControlIsUnavailable(t *testing.T) {
 	t.Parallel()
-	privateKey, _ := wgtypes.GeneratePrivateKey()
-	peerKey, _ := wgtypes.GeneratePrivateKey()
-	now := time.Date(2026, 9, 3, 8, 0, 0, 0, time.UTC)
-	desired := desiredConfiguration(privateKey.PublicKey(), peerKey.PublicKey(), 2, now.Add(time.Minute))
-	raw, _ := json.Marshal(desired)
-	control := &fakeControl{
-		connectResult: VPNConnectResult{RequestID: "request-1", Decision: "allow", ReasonCode: "policy_allowed", SessionID: "session-1", GatewayID: "gateway-1", ConfigurationVersion: 2, PolicyVersion: 3, ValidUntil: desired.ValidUntil, NetworkLeases: desired.NetworkLeases},
-		configuration: RuntimeMessage{SchemaVersion: RuntimeSchemaVersion, MessageID: "message-1", MessageType: MessageConfiguration, ProducerID: "network-control", RuntimeID: "endpoint-1", RuntimeKind: "endpoint", OccurredAt: now, ExpiresAt: desired.ValidUntil, Payload: raw},
-	}
-	system := &fakeSystem{}
-	executor, _ := NewExecutor(privateKey, system)
-	manager, _ := NewManager(ManagerOptions{RuntimeID: "endpoint-1", DeviceID: "device-1", PollInterval: time.Second, HeartbeatInterval: time.Minute, RenewBefore: 10 * time.Second, MaxClockSkew: time.Minute}, control, executor, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	manager.now = func() time.Time { return now }
-	if _, err := manager.Connect(context.Background(), ConnectInput{SiteID: "site-1", NetworkSpaceID: "space-1"}); err != nil {
-		t.Fatal(err)
-	}
-	control.configurationErr = errors.New("offline")
-	manager.now = func() time.Time { return now.Add(61 * time.Second) }
-	if err := manager.Cycle(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if system.disableCalls == 0 || control.revokeCalls != 1 || control.lastRevoke.ReasonCode != "configuration_expired" || manager.Status().State != StateDisconnected {
-		t.Fatalf("expiry disable=%d revoke=%#v status=%#v", system.disableCalls, control.lastRevoke, manager.Status())
+	for _, scenario := range []struct {
+		name     string
+		leaseTTL time.Duration
+		reason   string
+	}{{"configuration first", 5 * time.Minute, "configuration_expired"}, {"same deadline", time.Minute, "lease_expired"}} {
+		t.Run(scenario.name, func(t *testing.T) {
+			privateKey, _ := wgtypes.GeneratePrivateKey()
+			peerKey, _ := wgtypes.GeneratePrivateKey()
+			now := time.Date(2026, 9, 3, 8, 0, 0, 0, time.UTC)
+			desired := desiredConfiguration(privateKey.PublicKey(), peerKey.PublicKey(), 2, now.Add(time.Minute))
+			desired.NetworkLeases[0].ExpiresAt = now.Add(scenario.leaseTTL)
+			raw, _ := json.Marshal(desired)
+			control := &fakeControl{
+				connectResult: VPNConnectResult{RequestID: "request-1", Decision: "allow", ReasonCode: "policy_allowed", SessionID: "session-1", GatewayID: "gateway-1", ConfigurationVersion: 2, PolicyVersion: 3, ValidUntil: now.Add(scenario.leaseTTL), NetworkLeases: desired.NetworkLeases},
+				configuration: RuntimeMessage{SchemaVersion: RuntimeSchemaVersion, MessageID: "message-1", MessageType: MessageConfiguration, ProducerID: "network-control", RuntimeID: "endpoint-1", RuntimeKind: "endpoint", OccurredAt: now, ExpiresAt: desired.ValidUntil, Payload: raw},
+			}
+			system := &fakeSystem{}
+			executor, _ := NewExecutor(privateKey, system)
+			manager, _ := NewManager(ManagerOptions{RuntimeID: "endpoint-1", DeviceID: "device-1", PollInterval: time.Second, HeartbeatInterval: time.Minute, RenewBefore: 10 * time.Second, MaxClockSkew: time.Minute}, control, executor, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			manager.now = func() time.Time { return now }
+			if _, err := manager.Connect(context.Background(), ConnectInput{SiteID: "site-1", NetworkSpaceID: "space-1"}); err != nil {
+				t.Fatal(err)
+			}
+			control.configurationErr = errors.New("offline")
+			manager.now = func() time.Time { return now.Add(61 * time.Second) }
+			if err := manager.Cycle(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if system.disableCalls == 0 || control.revokeCalls != 1 || control.lastRevoke.ReasonCode != scenario.reason || manager.Status().State != StateDisconnected {
+				t.Fatalf("expiry disable=%d revoke=%#v status=%#v", system.disableCalls, control.lastRevoke, manager.Status())
+			}
+		})
 	}
 }
 

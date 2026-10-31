@@ -69,7 +69,7 @@ func (s *DarwinSystem) Apply(ctx context.Context, plan TunnelPlan) (result error
 			}
 		}
 	}
-	endpoint, err := net.ResolveUDPAddr("udp4", plan.Peer.Endpoint)
+	endpoint, err := net.ResolveUDPAddr("udp", plan.Peer.Endpoint)
 	if err != nil {
 		return errors.New("could not resolve WireGuard endpoint")
 	}
@@ -113,7 +113,11 @@ func (s *DarwinSystem) Apply(ctx context.Context, plan TunnelPlan) (result error
 	for _, prefix := range plan.Addresses {
 		address := netip.MustParsePrefix(prefix).Addr().String()
 		addresses = append(addresses, address)
-		if err := nativeCommand(ctx, "/sbin/ifconfig", s.name, "inet", address, address, "netmask", "255.255.255.255", "alias"); err != nil {
+		args := []string{s.name, "inet", address, address, "netmask", "255.255.255.255", "alias"}
+		if strings.Contains(address, ":") {
+			args = []string{s.name, "inet6", address, "prefixlen", "128", "alias"}
+		}
+		if err := nativeCommand(ctx, "/sbin/ifconfig", args...); err != nil {
 			return err
 		}
 	}
@@ -121,7 +125,11 @@ func (s *DarwinSystem) Apply(ctx context.Context, plan TunnelPlan) (result error
 		return err
 	}
 	for _, prefix := range plan.Routes {
-		if err := nativeCommand(ctx, "/sbin/route", "-n", "add", "-net", prefix, "-interface", s.name); err != nil {
+		args := []string{"-n", "add", "-net", prefix, "-interface", s.name}
+		if strings.Contains(prefix, ":") {
+			args = []string{"-n", "add", "-inet6", "-net", prefix, "-interface", s.name}
+		}
+		if err := nativeCommand(ctx, "/sbin/route", args...); err != nil {
 			return err
 		}
 	}
@@ -161,6 +169,16 @@ func (s *DarwinSystem) Readback(ctx context.Context) (TunnelReadback, error) {
 	defer s.mu.Unlock()
 	return s.readback(ctx)
 }
+
+func (s *DarwinSystem) TunnelInterface(ctx context.Context) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, err := s.readback(ctx)
+	if err != nil || s.expected == nil || !reflect.DeepEqual(state, s.expected.Readback()) {
+		return "", errors.New("macOS VPN interface is not verified")
+	}
+	return s.name, nil
+}
 func (s *DarwinSystem) readback(ctx context.Context) (TunnelReadback, error) {
 	if s.device == nil {
 		if s.dns != nil || s.name != "" {
@@ -182,7 +200,7 @@ func (s *DarwinSystem) readback(ctx context.Context) (TunnelReadback, error) {
 		return TunnelReadback{}, errors.New("macOS VPN interface is not operational")
 	}
 	state.MTU = adapter.MTU
-	state.Addresses, err = interfaceIPv4Addresses(adapter)
+	state.Addresses, err = interfaceIPAddresses(adapter)
 	if err != nil {
 		return TunnelReadback{}, err
 	}
@@ -194,13 +212,19 @@ func (s *DarwinSystem) readback(ctx context.Context) (TunnelReadback, error) {
 	for _, entry := range table {
 		if entry.index == adapter.Index {
 			actual = append(actual, entry.prefix)
+		} else if entry.prefix.Bits() > 0 {
+			for _, raw := range state.Peer.AllowedIPs {
+				if entry.prefix.Overlaps(netip.MustParsePrefix(raw)) {
+					return TunnelReadback{}, errors.New("another interface now overlaps the Soha tunnel")
+				}
+			}
 		}
 	}
 	if err := verifyRouteSet(actual, state.Peer.AllowedIPs, state.Addresses); err != nil {
 		return TunnelReadback{}, err
 	}
 	state.Routes = slices.Clone(state.Peer.AllowedIPs)
-	endpoint, err := net.ResolveUDPAddr("udp4", state.Peer.Endpoint)
+	endpoint, err := net.ResolveUDPAddr("udp", state.Peer.Endpoint)
 	if err != nil || s.expected == nil || !endpointMatches(ctx, s.expected.Peer.Endpoint, endpoint) {
 		return TunnelReadback{}, errors.New("macOS WireGuard endpoint changed")
 	}
@@ -251,23 +275,25 @@ type darwinRoute struct {
 }
 
 func darwinRoutes() ([]darwinRoute, error) {
-	rib, err := route.FetchRIB(syscall.AF_INET, route.RIBTypeRoute, 0)
-	if err != nil {
-		return nil, err
-	}
-	messages, err := route.ParseRIB(route.RIBTypeRoute, rib)
-	if err != nil {
-		return nil, err
-	}
 	result := []darwinRoute{}
-	for _, message := range messages {
-		m, ok := message.(*route.RouteMessage)
-		if !ok {
-			continue
+	for _, family := range []int{syscall.AF_INET, syscall.AF_INET6} {
+		rib, err := route.FetchRIB(family, route.RIBTypeRoute, 0)
+		if err != nil {
+			return nil, err
 		}
-		p, ok := darwinRoutePrefix(m)
-		if ok {
-			result = append(result, darwinRoute{m.Index, p})
+		messages, err := route.ParseRIB(route.RIBTypeRoute, rib)
+		if err != nil {
+			return nil, err
+		}
+		for _, message := range messages {
+			m, ok := message.(*route.RouteMessage)
+			if !ok {
+				continue
+			}
+			p, ok := darwinRoutePrefix(m)
+			if ok {
+				result = append(result, darwinRoute{m.Index, p})
+			}
 		}
 	}
 	return result, nil
@@ -276,26 +302,38 @@ func darwinRoutePrefix(m *route.RouteMessage) (netip.Prefix, bool) {
 	if len(m.Addrs) <= syscall.RTAX_DST {
 		return netip.Prefix{}, false
 	}
-	dst, ok := m.Addrs[syscall.RTAX_DST].(*route.Inet4Addr)
-	if !ok {
+	var address netip.Addr
+	var mask net.IPMask
+	switch dst := m.Addrs[syscall.RTAX_DST].(type) {
+	case *route.Inet4Addr:
+		address = netip.AddrFrom4(dst.IP)
+		if len(m.Addrs) > syscall.RTAX_NETMASK {
+			if v, ok := m.Addrs[syscall.RTAX_NETMASK].(*route.Inet4Addr); ok {
+				mask = net.IPMask(v.IP[:])
+			}
+		}
+	case *route.Inet6Addr:
+		address = netip.AddrFrom16(dst.IP)
+		if len(m.Addrs) > syscall.RTAX_NETMASK {
+			if v, ok := m.Addrs[syscall.RTAX_NETMASK].(*route.Inet6Addr); ok {
+				mask = net.IPMask(v.IP[:])
+			}
+		}
+	default:
 		return netip.Prefix{}, false
 	}
-	bits := 32
+	bits := address.BitLen()
 	if m.Flags&syscall.RTF_HOST == 0 {
-		if len(m.Addrs) <= syscall.RTAX_NETMASK {
-			return netip.Prefix{}, false
-		}
-		mask, ok := m.Addrs[syscall.RTAX_NETMASK].(*route.Inet4Addr)
-		if !ok {
-			return netip.Prefix{}, false
-		}
 		var total int
-		bits, total = net.IPMask(mask.IP[:]).Size()
-		if total != 32 {
+		bits, total = mask.Size()
+		if total != address.BitLen() {
 			return netip.Prefix{}, false
 		}
 	}
-	return netip.PrefixFrom(netip.AddrFrom4(dst.IP), bits).Masked(), true
+	if bits > 0 && !address.IsGlobalUnicast() {
+		return netip.Prefix{}, false
+	}
+	return netip.PrefixFrom(address, bits).Masked(), true
 }
 
 func parseDarwinWireGuard(raw []byte, now time.Time) (TunnelReadback, error) {
