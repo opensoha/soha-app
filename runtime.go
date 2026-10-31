@@ -54,6 +54,7 @@ type updateEngine interface {
 
 type appRuntime struct {
 	version           string
+	networkDisabled   bool
 	updater           updateEngine
 	software          *softwareLibrary
 	networkCall       func(context.Context, string, *endpointservice.ConnectInput) (endpointservice.Status, error)
@@ -71,6 +72,10 @@ var (
 
 func (runtimeAPI *appRuntime) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if runtimeAPI.networkDisabled && strings.HasPrefix(request.URL.Path, "/app/v1/network/") {
+		writeError(writer, http.StatusServiceUnavailable, "network_control_disabled", "当前 App 实例已禁用本机网络控制")
+		return
+	}
 	if runtimeAPI.software != nil && runtimeAPI.software.ServeHTTP(writer, request) {
 		return
 	}

@@ -30,20 +30,6 @@ type configStore struct {
 	mu   sync.Mutex
 }
 
-func appPaths() (configPath string, logDir string, err error) {
-	configHome, err := os.UserConfigDir()
-	if err != nil {
-		return "", "", fmt.Errorf("resolve config directory: %w", err)
-	}
-	cacheHome, err := os.UserCacheDir()
-	if err != nil {
-		return "", "", fmt.Errorf("resolve cache directory: %w", err)
-	}
-
-	return filepath.Join(configHome, "OpenSoha", "Soha", "config.json"),
-		filepath.Join(cacheHome, "OpenSoha", "Soha", "logs"), nil
-}
-
 func newConfigStore(path string) *configStore {
 	return &configStore{path: path}
 }

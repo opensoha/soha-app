@@ -26,11 +26,12 @@ var assets embed.FS
 var trayIcon []byte
 
 func main() {
-	configPath, logDirectory, err := appPaths()
+	instance, err := loadAppInstance()
 	if err != nil {
 		appLog.Error("application paths unavailable", "component", "startup", "event", "app.paths.unavailable", "error", err, "error_type", logErrorType(err))
 		os.Exit(1)
 	}
+	configPath, logDirectory := instance.configPath, instance.logDirectory
 	appVersion := resolvedAppVersion()
 	logCloser, err := configureAppLogging(logDirectory, appVersion)
 	if err != nil {
@@ -71,7 +72,7 @@ func main() {
 			LogDirectory:    logDirectory,
 			UpdateSupported: false,
 		},
-		systemKeyring{},
+		instance.keyring(systemKeyring{}),
 	)
 	if err != nil {
 		appLog.Error("server configuration invalid", "component", "startup", "event", "app.server.configuration_invalid", "error", err, "error_type", logErrorType(err))
@@ -89,18 +90,20 @@ func main() {
 	runtimeAPI := &appRuntime{
 		version:           appVersion,
 		software:          newSoftwareLibrary(catalog),
+		networkDisabled:   instance.networkDisabled,
 		networkCall:       endpointservice.CallIPC,
 		networkMihomoCall: endpointservice.CallMihomoIPC,
 		networkLinkStatus: collectNetworkLinkStatus,
 	}
+	runtimeAPI.software.downloadDir = instance.downloadDir
 	host.setRuntimeAPI(runtimeAPI)
 
 	var window *application.WebviewWindow
 	app := application.New(application.Options{
-		Name:        "Soha",
+		Name:        instance.title,
 		Description: "Soha endpoint client",
 		SingleInstance: &application.SingleInstanceOptions{
-			UniqueID: "com.opensoha.app",
+			UniqueID: instance.id,
 			OnSecondInstanceLaunch: func(application.SecondInstanceData) {
 				appLog.Info("second application instance received", "component", "runtime", "event", "app.second_instance.received")
 				if window == nil {
@@ -115,6 +118,7 @@ func main() {
 		Mac: application.MacOptions{
 			ApplicationShouldTerminateAfterLastWindowClosed: false,
 		},
+		Windows: application.WindowsOptions{WebviewUserDataPath: instance.webviewDir},
 	})
 	runtimeAPI.software.openFile = app.Browser.OpenFile
 	if err := configureAppUpdater(app.Context(), runtimeAPI, app.Updater); err != nil {
@@ -139,7 +143,7 @@ func main() {
 	}
 
 	window = app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Title:                      "Soha",
+		Title:                      instance.title,
 		Width:                      1100,
 		Height:                     760,
 		MinWidth:                   960,
@@ -164,11 +168,7 @@ func main() {
 			event.Cancel()
 		})
 	}
-	positions, err := defaultWindowPositionStore()
-	if err != nil {
-		appLog.Error("companion window state initialization failed", "component", "companion", "event", "app.companion.state_initialization_failed", "error", err, "error_type", logErrorType(err))
-		os.Exit(1)
-	}
+	positions := &windowPositionStore{path: instance.companionPath}
 	companionWindow := newCompanionWindow(app, positions)
 	configureSystemTray(app, window, companionWindow, trayIcon)
 

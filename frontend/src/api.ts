@@ -270,8 +270,6 @@ export function logoutServer(): Promise<void> {
   return request(
     "/auth/logout",
     { method: "POST", body: "{}" },
-    true,
-    false,
   ).then(() => undefined);
 }
 

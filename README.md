@@ -24,6 +24,10 @@ wails3 task dev
 
 The Vite development proxy and packaged App default to `http://127.0.0.1:8080`. Set `VITE_API_PROXY_TARGET` for frontend-only development. `SOHA_SERVER_URL` is an optional read-only host override; otherwise the server can be changed in App settings.
 
+For isolated desktop acceptance, set `SOHA_APP_PROFILE=task115-test` when launching the built App. A named profile has its own config, device ID, logs, companion position, software downloads, system credential namespace and single-instance ID. Names must start with a lowercase letter and contain at most 48 lowercase letters, digits or hyphens. No default-profile credentials are read or migrated. On macOS, use a separate `.app` bundle with `CFBundleIdentifier=com.opensoha.app.profile.task115-test`; a mismatch is rejected before reading saved state, because WebKit also owns persistent renderer data. On Windows, the profile explicitly sets a separate WebView2 data directory. Named profiles are not yet supported on Linux/mobile/server builds. Launching without a profile preserves the existing paths and instance identity.
+
+Set `SOHA_APP_NATIVE_NETWORK=disabled` on the acceptance process to disable all native network runtime endpoints, including automatic VPN recovery and Mihomo operations. Requests return `network_control_disabled` without contacting the shared network service or inspecting local links. This setting does not modify the service or existing connections. It does not disable ordinary authenticated HTTP requests to the selected Soha server. Other nonempty values are rejected at startup. Use this with a named profile when another App instance owns the current VPN connection.
+
 ```sh
 SOHA_SERVER_URL=https://soha.example.com wails3 build
 ```

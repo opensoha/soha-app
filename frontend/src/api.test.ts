@@ -307,6 +307,47 @@ describe('API transport', () => {
     ])
   })
 
+  it.each([200, 401])('refreshes an expired access token before retrying logout once (%i)', async (logoutStatus) => {
+    const logoutAuthorizations: string[] = []
+    let refreshCalls = 0
+    let bootstrapCalls = 0
+    const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const path = String(input)
+      const authorization = new Headers(init?.headers).get('Authorization')
+      if (path.endsWith('/auth/logout')) {
+        logoutAuthorizations.push(authorization || '')
+        expect(decodedRequestBody(init!)).toBe('{}')
+        expect(init?.method).toBe('POST')
+        expect(init?.credentials).toBe('include')
+        const status = authorization === 'Bearer expired-token' ? 401 : logoutStatus
+        return Promise.resolve(jsonResponse(status === 200 ? { status: 'ok' } : { error: { code: 'unauthorized', message: 'Expired' } }, status))
+      }
+      if (path.endsWith('/auth/refresh')) {
+        refreshCalls++
+        expect(authorization).toBeNull()
+        return Promise.resolve(jsonResponse({ data: { user: principal, tokens: { accessToken: 'renewed-token' } } }))
+      }
+      if (path.endsWith('/auth/bootstrap')) {
+        bootstrapCalls++
+        expect(authorization).toBe('Bearer renewed-token')
+        return Promise.resolve(jsonResponse({ data: {
+          user: principal, currentUser: principal, permissionSnapshot: { permissionKeys: [] }, branding: {},
+        } }))
+      }
+      throw new Error(`unexpected request: ${path}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    setAccessToken('expired-token')
+
+    if (logoutStatus === 200) await expect(logoutServer()).resolves.toBeUndefined()
+    else await expect(logoutServer()).rejects.toMatchObject({ status: 401 })
+
+    expect(logoutAuthorizations).toEqual(['Bearer expired-token', 'Bearer renewed-token'])
+    expect(refreshCalls).toBe(1)
+    expect(bootstrapCalls).toBe(1)
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+  })
+
   it.each([401, 403, 503, 'mismatched-user'] as const)('rejects a refreshed authority snapshot (%s) without a refresh loop or stale session', async (failure) => {
     const listener = vi.fn()
     setSessionListener(listener)

@@ -32,14 +32,6 @@ type windowPositionStore struct {
 	path string
 }
 
-func defaultWindowPositionStore() (*windowPositionStore, error) {
-	root, err := os.UserConfigDir()
-	if err != nil {
-		return nil, fmt.Errorf("resolve user config directory: %w", err)
-	}
-	return &windowPositionStore{path: filepath.Join(root, "OpenSoha", "companion-window.json")}, nil
-}
-
 func (s *windowPositionStore) load() (windowPosition, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

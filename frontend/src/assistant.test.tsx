@@ -1,3 +1,4 @@
+import { StyleProvider, createCache } from "@ant-design/cssinjs";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { App, ConfigProvider } from "antd";
@@ -212,31 +213,37 @@ async function render(
   node = document.createElement("div");
   document.body.appendChild(node);
   root = createRoot(node);
+  // DOM interaction tests do not measure CSS/layout. Keep generated styles
+  // outside the document so jsdom does not rematch every rule on each event.
+  const interactionStyles = document.createElement("div");
+  const interactionStyleCache = createCache();
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   await act(async () => {
     root!.render(
-      <QueryClientProvider client={client!}>
-        <ConfigProvider>
-          <App>
-            <MemoryRouter initialEntries={[entry]}>
-              <AssistantPage />
-            </MemoryRouter>
-          </App>
-        </ConfigProvider>
-      </QueryClientProvider>,
+      <StyleProvider container={interactionStyles} cache={interactionStyleCache}>
+        <QueryClientProvider client={client!}>
+          <ConfigProvider>
+            <App>
+              <MemoryRouter initialEntries={[entry]}>
+                <AssistantPage />
+              </MemoryRouter>
+            </App>
+          </ConfigProvider>
+        </QueryClientProvider>
+      </StyleProvider>,
     );
-    await new Promise((resolve) => setTimeout(resolve, 20));
   });
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  });
+  await settleQueries();
+  return node;
+}
+
+async function settleQueries() {
   for (let attempt = 0, stable = 0; attempt < 40 && stable < 2; attempt++) {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
     });
-    stable = client.isFetching() ? 0 : stable + 1;
+    stable = client?.isFetching() ? 0 : stable + 1;
   }
-  return node;
 }
 
 async function click(label: string) {
@@ -257,8 +264,8 @@ async function click(label: string) {
   expect(button).toBeTruthy();
   await act(async () => {
     button!.click();
-    await new Promise((resolve) => setTimeout(resolve, 20));
   });
+  await settleQueries();
 }
 
 async function waitForAssistantText(element: HTMLElement, text: string) {
@@ -284,9 +291,8 @@ async function selectOption(label: string, text: string) {
     select.dispatchEvent(
       new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }),
     );
-    await new Promise((resolve) => setTimeout(resolve, 20));
   });
-  const option = [
+  const findOption = () => [
     ...document.body.querySelectorAll<HTMLElement>(".ant-select-item-option"),
   ].find(
     (item) =>
@@ -295,11 +301,17 @@ async function selectOption(label: string, text: string) {
         ? item.querySelector(".ant-select-item-option-content")?.textContent ===
           text
         : item.textContent?.includes(text)),
-  )!;
+  );
+  let option = findOption();
+  for (let attempt = 0; attempt < 40 && !option; attempt++) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    });
+    option = findOption();
+  }
   expect(option).toBeTruthy();
   await act(async () => {
-    option.click();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    option!.click();
   });
 }
 
@@ -369,7 +381,7 @@ describe("personal assistant App", () => {
     });
     await click("申请开通");
     expect(assistantApi.requestAccess).toHaveBeenCalledOnce();
-    expect(element.textContent).toContain("等待管理员批准");
+    await waitForAssistantText(element, "等待管理员批准");
   });
   it("does not read an ordinary session passed through a Heya URL", async () => {
     const element = await render(true, [], "/?session=ordinary-chat");
@@ -1091,7 +1103,6 @@ describe("personal assistant App", () => {
       expect(checkbox).toBeTruthy();
       await act(async () => {
         checkbox.click();
-        await new Promise((resolve) => setTimeout(resolve, 20));
       });
     }
     await selectOption("根因分析模板", "发布根因模板");
@@ -1121,9 +1132,11 @@ describe("personal assistant App", () => {
     ].find((button) => button.textContent?.replace(/ /g, "") === "开始分析")!;
     await act(async () => {
       start.click();
-      await new Promise((resolve) => setTimeout(resolve, 30));
     });
-    expect(streamAssistant).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(streamAssistant).toHaveBeenCalledTimes(1), {
+      interval: 5,
+      timeout: 1000,
+    });
     expect(vi.mocked(streamAssistant).mock.calls[0][1]).toMatchObject({
       content: "调查发布失败",
       agentProviderId: "internal",
@@ -1155,6 +1168,10 @@ describe("personal assistant App", () => {
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
     await click("发送");
+    await vi.waitFor(() => expect(streamAssistant).toHaveBeenCalledTimes(2), {
+      interval: 5,
+      timeout: 1000,
+    });
     expect(vi.mocked(streamAssistant).mock.calls[1][1].taskIntent).toEqual({
       capabilities: [],
     });
