@@ -1,4 +1,4 @@
-//go:build windows || darwin
+//go:build windows || darwin || linux
 
 package main
 
@@ -18,6 +18,7 @@ type endpointRuntime struct {
 	manager  *endpointservice.Manager
 	listener net.Listener
 	logger   *slog.Logger
+	native   *endpointservice.CoordinatedExecutor
 }
 
 func newEndpointRuntime(configPath, version string, logger *slog.Logger) (*endpointRuntime, error) {
@@ -47,23 +48,41 @@ func newEndpointRuntime(configPath, version string, logger *slog.Logger) (*endpo
 		if err != nil {
 			return nil, err
 		}
-		mihomo, err = endpointservice.NewMihomoController(config.MihomoControllerURL, secret)
+		mihomo, err = endpointservice.NewConfiguredMihomoController(config, secret)
 		if err != nil {
 			return nil, err
 		}
 		capabilities = append(capabilities, "mihomo", "mihomo-policy-v1", "mihomo-dns-pin-v1")
 	}
+	var eapSystem endpointservice.EAPSystem
 	if endpointservice.NativeEAPSupported() {
-		capabilities = append(capabilities, "eap-profile-v1", "radius-eap-tls-v1")
+		eapSystem, err = endpointservice.NewNativeEAPSystem(config)
+		if err != nil {
+			return nil, err
+		}
+		capabilities = append(capabilities, "eap-profile-v1", "eap-certificate-lifecycle-v1")
+		tlsSupported := true
+		capabilityCtx, cancelCapability := context.WithTimeout(context.Background(), 3*time.Second)
+		if tlsSystem, ok := eapSystem.(interface {
+			TLSSupport(context.Context, endpointservice.AdmissionProfile) (bool, string)
+		}); ok {
+			tlsSupported, _ = tlsSystem.TLSSupport(capabilityCtx, endpointservice.AdmissionProfile{WifiSecurity: "wpa2-enterprise"})
+		}
+		if tlsSupported {
+			capabilities = append(capabilities, "radius-eap-tls-v1")
+		}
+		defer cancelCapability()
+		if passwordSystem, ok := eapSystem.(endpointservice.EAPPasswordSystem); ok {
+			if supported, _ := passwordSystem.PasswordSupport(capabilityCtx, endpointservice.AdmissionProfile{EAPMethod: "ttls", InnerMethod: "pap", WifiSecurity: "wpa2-enterprise"}); supported {
+				capabilities = append(capabilities, "radius-eap-ttls-pap-v1")
+			}
+		}
 	}
 	if uiPresence != nil {
 		capabilities = append(capabilities, "endpoint-ui-presence-v1")
 	}
 	control, err := endpointservice.NewControlClient(config.ControlURL, config.RuntimeID, controlHTTP, 5*time.Minute, capabilities...)
 	if err != nil {
-		return nil, err
-	}
-	if err := ensureEnrollment(config, privateKey.PublicKey().String(), devicePublicKey, version, control); err != nil {
 		return nil, err
 	}
 	system, err := newPlatformSystem(config)
@@ -75,23 +94,51 @@ func newEndpointRuntime(configPath, version string, logger *slog.Logger) (*endpo
 		return nil, err
 	}
 	var executor endpointservice.ConfigurationExecutor = wireGuard
+	var native *endpointservice.CoordinatedExecutor
 	if mihomo != nil {
-		executor, err = endpointservice.NewCoordinatedExecutor(wireGuard, mihomo, config.MihomoAppStatePath())
+		native, err = endpointservice.NewCoordinatedExecutor(wireGuard, mihomo, config.MihomoAppStatePath())
+		executor = native
 		if err != nil {
 			return nil, err
+		}
+	}
+	if native != nil {
+		if err = native.ConfigureNativeInterception(config, uiPresence, controlHTTP); err != nil {
+			logger.Warn("native recovery pending", "event", "endpoint_native.recovery.pending")
 		}
 	}
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	err = executor.Disable(cleanupCtx)
 	cancel()
 	if err != nil {
-		return nil, fmt.Errorf("disable stale endpoint tunnel: %w", err)
+		if native == nil || !native.LocalProxyInterception().CleanupPending {
+			return nil, fmt.Errorf("disable stale endpoint tunnel: %w", err)
+		}
+		// Keep IPC available to report/retry precise native recovery. The old VPN
+		// must still be disabled before any fresh authorization can be accepted.
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		wgErr := wireGuard.Disable(cleanupCtx)
+		cancel()
+		if wgErr != nil {
+			return nil, wgErr
+		}
 	}
+	if native == nil || !native.LocalProxyInterception().CleanupPending {
+		if err := ensureEnrollment(config, privateKey.PublicKey().String(), devicePublicKey, version, control); err != nil {
+			return nil, err
+		}
+	}
+
 	var telemetry endpointservice.Telemetry
 	if config.IngestURL != "" {
 		ingestHTTP, err := config.IngestHTTPClient()
 		if err != nil {
 			return nil, err
+		}
+		if native != nil {
+			if err = native.AttachNativeHTTPClient(ingestHTTP); err != nil {
+				return nil, err
+			}
 		}
 		if proxyMetrics, ok := mihomo.(endpointservice.ProxyMetricsSource); ok {
 			telemetry, err = endpointservice.NewTelemetryClient(config.IngestURL, config.RuntimeID, ingestHTTP, proxyMetrics)
@@ -103,11 +150,7 @@ func newEndpointRuntime(configPath, version string, logger *slog.Logger) (*endpo
 		}
 	}
 	var admission *endpointservice.AdmissionManager
-	if endpointservice.NativeEAPSupported() {
-		eapSystem, err := endpointservice.NewNativeEAPSystem(config)
-		if err != nil {
-			return nil, err
-		}
+	if eapSystem != nil {
 		admission, err = endpointservice.NewAdmissionManager(config.StateDirectory, config.DeviceID, control, eapSystem)
 		if err != nil {
 			return nil, err
@@ -132,7 +175,7 @@ func newEndpointRuntime(configPath, version string, logger *slog.Logger) (*endpo
 	if err != nil {
 		return nil, err
 	}
-	return &endpointRuntime{manager: manager, listener: listener, logger: logger}, nil
+	return &endpointRuntime{manager: manager, listener: listener, logger: logger, native: native}, nil
 }
 
 func ensureEnrollment(config endpointservice.Config, wireGuardPublicKey, devicePublicKey, version string, control *endpointservice.ControlClient) error {
@@ -167,6 +210,9 @@ func ensureEnrollment(config endpointservice.Config, wireGuardPublicKey, deviceP
 func (runtime *endpointRuntime) Run(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	if runtime.native != nil {
+		go runtime.native.RunInterceptionMonitor(runCtx)
+	}
 	errorsChannel := make(chan error, 2)
 	go func() { errorsChannel <- runtime.manager.Run(runCtx) }()
 	go func() {

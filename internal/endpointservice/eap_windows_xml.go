@@ -26,6 +26,9 @@ func renderEAPWindowsProfile(profile AdmissionProfile, deviceID string, certific
 	if err := validateAdmissionProfile(profile, now); err != nil {
 		return eapWindowsProfile{}, err
 	}
+	if admissionMethod(profile) == "ttls" {
+		return renderEAPWindowsTTLS(profile, deviceID)
+	}
 	leaf, err := parseEAPCertificate(certificate.CertificatePEM)
 	if err != nil {
 		return eapWindowsProfile{}, err
@@ -55,4 +58,27 @@ func renderEAPWindowsProfile(profile AdmissionProfile, deviceID string, certific
 	thumbprint := sha1.Sum(leaf.Raw)
 	user := `<EapHostUserCredentials xmlns="http://www.microsoft.com/provisioning/EapHostUserCredentials" xmlns:eapCommon="http://www.microsoft.com/provisioning/EapCommon"><EapMethod><eapCommon:Type>13</eapCommon:Type><eapCommon:AuthorId>0</eapCommon:AuthorId></EapMethod><Credentials><Eap xmlns="http://www.microsoft.com/provisioning/BaseEapUserPropertiesV1"><Type>13</Type><EapType xmlns="http://www.microsoft.com/provisioning/EapTlsUserPropertiesV1"><Username>` + eapXMLText(profile.Identity) + `</Username><UserCert>` + fmt.Sprintf("%x", thumbprint) + `</UserCert></EapType></Eap></Credentials></EapHostUserCredentials>`
 	return eapWindowsProfile{Name: name, XML: []byte(xml.Header + configuration), UserData: []byte(xml.Header + user)}, nil
+}
+
+func renderEAPWindowsTTLS(profile AdmissionProfile, deviceID string) (eapWindowsProfile, error) {
+	var roots strings.Builder
+	for _, raw := range profile.CACertificates {
+		ca, err := parseEAPCertificate(raw)
+		if err != nil {
+			return eapWindowsProfile{}, err
+		}
+		digest := sha1.Sum(ca.Raw)
+		fmt.Fprintf(&roots, "<TrustedRootCAHashes>%x</TrustedRootCAHashes>", digest)
+	}
+	eap := `<OneX xmlns="http://www.microsoft.com/networking/OneX/v1"><cacheUserData>false</cacheUserData><authMode>user</authMode><EAPConfig><EapHostConfig xmlns="http://www.microsoft.com/provisioning/EapHostConfig"><EapMethod><Type xmlns="http://www.microsoft.com/provisioning/EapCommon">21</Type><AuthorId xmlns="http://www.microsoft.com/provisioning/EapCommon">311</AuthorId></EapMethod><Config><eapTtls xmlns="http://www.microsoft.com/provisioning/EapTtlsConnectionPropertiesV1"><ServerValidation><ServerNames>` + eapXMLText(strings.Join(profile.ServerNames, ";")) + `</ServerNames>` + roots.String() + `<DisablePrompt>true</DisablePrompt></ServerValidation><Phase2Authentication><PAPAuthentication/></Phase2Authentication><Phase1Identity><IdentityPrivacy>true</IdentityPrivacy><AnonymousIdentity>anonymous</AnonymousIdentity></Phase1Identity></eapTtls></Config></EapHostConfig></EAPConfig></OneX>`
+	name := "Soha-EAP-" + eapPayloadUUID(deviceID+"/"+profile.ID)
+	configuration := `<LANProfile xmlns="http://www.microsoft.com/networking/LAN/profile/v1"><MSM><security><OneXEnforced>true</OneXEnforced><OneXEnabled>true</OneXEnabled>` + eap + `</security></MSM></LANProfile>`
+	if profile.AccessMedium == "wifi" {
+		authentication := "WPA2"
+		if profile.WifiSecurity == "wpa3-enterprise" {
+			authentication = "WPA3ENT"
+		}
+		configuration = `<WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1"><name>` + name + `</name><SSIDConfig><SSID><hex>` + hex.EncodeToString([]byte(profile.SSID)) + `</hex></SSID><nonBroadcast>false</nonBroadcast></SSIDConfig><connectionType>ESS</connectionType><connectionMode>manual</connectionMode><MSM><security><authEncryption><authentication>` + authentication + `</authentication><encryption>AES</encryption><useOneX>true</useOneX></authEncryption>` + eap + `</security></MSM></WLANProfile>`
+	}
+	return eapWindowsProfile{Name: name, XML: []byte(xml.Header + configuration)}, nil
 }

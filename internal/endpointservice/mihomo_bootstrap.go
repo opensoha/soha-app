@@ -21,8 +21,11 @@ import (
 // Fetch and pin transport nodes before handing anything to the engine. The
 // subscription can supply nodes, never providers, DNS, routes, or rule sources.
 func prepareMihomoBootstrap(ctx context.Context, configuration *MihomoConfiguration, subscriptionURL string) error {
+	if configuration.Projection != nil {
+		return nil
+	}
 	var nodes []map[string]any
-	if configuration.SourceType == "manual_node" {
+	if configuration.SourceType == "manual_node" && configuration.DirectProjection == nil {
 		node := configuration.ManualNode
 		if node == nil {
 			return errors.New("manual proxy node missing")
@@ -40,7 +43,13 @@ func prepareMihomoBootstrap(ctx context.Context, configuration *MihomoConfigurat
 		}
 		nodes = []map[string]any{value}
 	} else {
-		raw, err := fetchMihomoSubscription(ctx, subscriptionURL, configuration.Protection)
+		var raw []byte
+		var err error
+		if configuration.DirectProjection != nil {
+			raw = []byte(configuration.DirectProjection.Content)
+		} else {
+			raw, err = fetchMihomoSubscription(ctx, subscriptionURL, configuration.Protection, configuration.Egress)
+		}
 		if err != nil {
 			return err
 		}
@@ -49,6 +58,9 @@ func prepareMihomoBootstrap(ctx context.Context, configuration *MihomoConfigurat
 			Proxies []map[string]any `yaml:"proxies"`
 		}
 		decoder := yaml.NewDecoder(bytes.NewReader(raw))
+		if configuration.DirectProjection != nil {
+			decoder.KnownFields(true)
+		}
 		if decoder.Decode(&document) != nil || decoder.Decode(&struct{}{}) != io.EOF {
 			return errors.New("subscription must contain one bounded proxy document")
 		}
@@ -58,21 +70,42 @@ func prepareMihomoBootstrap(ctx context.Context, configuration *MihomoConfigurat
 		return errors.New("subscription node count is invalid")
 	}
 	seen := map[string]bool{}
+	configuration.GuardUDPExplicit = map[string]bool{}
+	configuration.GuardSourceNodes = map[string]map[string]any{}
 	for _, node := range nodes {
 		name, _ := node["name"].(string)
-		if !validMihomoName(name) || seen[name] || name == configuration.SelectorGroup || reservedMihomoName(name) && !(configuration.SourceType == "manual_node" && name == mihomoManualProxyName) {
+		if configuration.DirectProjection != nil && !identifierPattern.MatchString(name) {
+			return errors.New("direct projection node identity is invalid")
+		}
+		if strings.HasPrefix(name, "soha-owned-outbound-") || !validMihomoName(name) || seen[name] || name == configuration.SelectorGroup || reservedMihomoName(name) && !(configuration.SourceType == "manual_node" && name == mihomoManualProxyName) {
 			return errors.New("subscription node identity is unsafe")
 		}
 		seen[name] = true
-		if err := pinMihomoNode(ctx, node, configuration.Protection); err != nil {
+		configuration.GuardUDPExplicit[name] = node["udp"] == true
+		if node["type"] == "socks5" {
+			original := map[string]any{}
+			for key, value := range node {
+				original[key] = value
+			}
+			if node["tls"] == true && node["servername"] == nil && node["sni"] == nil {
+				original["servername"] = node["server"]
+			}
+			configuration.GuardSourceNodes[name] = original
+		}
+		if err := pinMihomoNode(ctx, node, configuration.Protection, configuration.Egress); err != nil {
 			return err
+		}
+		if configuration.DirectProjection != nil {
+			if err := normalizeDirectUDP(node); err != nil {
+				return err
+			}
 		}
 	}
 	configuration.BootstrapNodes = nodes
 	return nil
 }
 
-func fetchMihomoSubscription(ctx context.Context, rawURL string, protection *MihomoProtection) ([]byte, error) {
+func fetchMihomoSubscription(ctx context.Context, rawURL string, protection *MihomoProtection, egress ...guardedEgress) ([]byte, error) {
 	if !validSubscriptionURL(rawURL) {
 		return nil, errors.New("invalid subscription URL")
 	}
@@ -81,11 +114,11 @@ func fetchMihomoSubscription(ctx context.Context, rawURL string, protection *Mih
 		if err != nil {
 			return nil, err
 		}
-		ip, err := mihomoBootstrapAddress(ctx, host, protection)
+		ip, err := mihomoBootstrapAddress(ctx, host, protection, egress...)
 		if err != nil {
 			return nil, err
 		}
-		return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+		return nativeDial(bootstrapConfiguration(egress), ctx, network, net.JoinHostPort(ip.String(), port))
 	}}
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
@@ -108,7 +141,7 @@ func fetchMihomoSubscription(ctx context.Context, rawURL string, protection *Mih
 	return raw, nil
 }
 
-func pinMihomoNode(ctx context.Context, node map[string]any, protection *MihomoProtection) error {
+func pinMihomoNode(ctx context.Context, node map[string]any, protection *MihomoProtection, egress ...guardedEgress) error {
 	kind, _ := node["type"].(string)
 	if !slices.Contains([]string{"http", "socks5", "ss", "ssr", "snell", "vmess", "vless", "trojan", "hysteria", "hysteria2", "tuic", "anytls"}, kind) {
 		return errors.New("unsupported subscription node type")
@@ -133,7 +166,7 @@ func pinMihomoNode(ctx context.Context, node map[string]any, protection *MihomoP
 	if err != nil || port < 1 || port > 65535 {
 		return errors.New("subscription node port is invalid")
 	}
-	address, err := mihomoBootstrapAddress(ctx, host, protection)
+	address, err := mihomoBootstrapAddress(ctx, host, protection, egress...)
 	if err != nil {
 		return err
 	}
@@ -149,13 +182,21 @@ func pinMihomoNode(ctx context.Context, node map[string]any, protection *MihomoP
 	return nil
 }
 
-func mihomoBootstrapAddress(ctx context.Context, host string, protection *MihomoProtection) (netip.Addr, error) {
+func mihomoBootstrapAddress(ctx context.Context, host string, protection *MihomoProtection, egress ...guardedEgress) (netip.Addr, error) {
 	if protection == nil {
 		return netip.Addr{}, errors.New("bootstrap protected scope missing")
 	}
-	scope, err := proxytransport.NewScope(protection.CIDRs, protection.Hosts)
+	scope, err := proxytransport.NewScopeWithResolver(protection.CIDRs, protection.Hosts, nativeLookup(bootstrapConfiguration(egress)))
 	if err != nil {
 		return netip.Addr{}, err
 	}
 	return scope.Resolve(ctx, host)
+}
+
+func bootstrapConfiguration(egress []guardedEgress) MihomoConfiguration {
+	c := MihomoConfiguration{}
+	if len(egress) > 0 {
+		c.Egress = egress[0]
+	}
+	return c
 }

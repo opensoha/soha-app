@@ -244,6 +244,7 @@ export interface NetworkConnectionOption {
 export interface AdmissionInput {
   profileId: string;
   adapterId?: string;
+  password?: string;
 }
 
 export type AdmissionAction = "prepare" | "check" | "connect" | "open" | "remove";
@@ -256,8 +257,13 @@ export interface AdmissionStatus {
     accessMedium: "wifi" | "wired";
     ssid?: string;
     adapterId?: string;
-    state: "available" | "installation_required" | "activation_pending" | "installed" | "drift" | "authorization_expired";
+    state: "available" | "installation_required" | "activation_pending" | "installed" | "drift" | "authorization_expired" | "action_required";
     artifactPath?: string;
+    eapMethod?: "tls" | "ttls";
+    innerMethod?: "pap";
+    supported?: boolean;
+    unsupportedReason?: string;
+    credentialInteraction?: "system-prompt" | "app-input";
   }[];
   adapters: {
     id: string;
@@ -405,4 +411,45 @@ export function displayName(user: Principal | null | undefined): string {
 export function avatarURL(user: Principal | null | undefined): string | undefined {
   const value = user?.avatarUrl
   return typeof value === 'string' && value ? value : undefined
+}
+
+// App-private readback from the native proxy owner. No controller secrets.
+export interface ProxyRule {
+  ruleId: string; source: 'protection' | 'organization_required' | 'personal' | 'organization_default' | 'fallback'; order: number; enabled: boolean;
+  matcher: { type: 'domain' | 'domain_suffix' | 'cidr' | 'process_name' | 'process_path' | 'all'; value?: string };
+  action: { type: 'reject' | 'direct' | 'node' | 'group'; targetId?: string };
+}
+export interface ProxyRulesInput { expectedOrgRevision: number; expectedPersonalRevision: number; rules: ProxyRule[] }
+export interface ProxyAction { kind: 'start' | 'stop' | 'restart' | 'select' | 'probe' | 'close' | 'refresh_subscription' | 'refresh_status' | 'repair'; groupId?: string; nodeId?: string; probeProfileId?: string; connectionId?: string; processEpoch?: string }
+export interface ProxyWorkbench {
+ engine: string; mode: string; deliveryMode: string; profileId: string; bundleId: string; revision: number; orgRevision: number; personalRevision: number; state: string; reasonCode?: string;
+ process: { ownership: string; state: string; pid?: number; processEpoch: string; desiredRunning: boolean; startedAt?: string };
+ capabilities: {name: string; state: string; reasonCode?: string}[];
+ nodes: {nodeId: string; label: string}[];
+ groups: {groupId: string; label: string; nodeIds: string[]; selectedNodeId?: string; type: string}[];
+ rules: {orgRevision: number; personalRevision: number; rules: ProxyRule[]; effectiveRules: ProxyRule[]; conflicts: {ruleId: string; blockingRuleId: string; reasonCode: string}[]}; maskedRules: ProxyRule[];
+ traffic: {processEpoch: string; observedAt: string; uploadTotal: number; downloadTotal: number; uploadBytesPerSecond: number | null; downloadBytesPerSecond: number | null; state: string};
+ connections: {processEpoch: string; observedAt: string; totalActive: number; returnedCount: number; truncated: boolean; items: {connectionId: string; destination?: string; network?: string; upload: number; download: number; startedAt?: string}[]};
+ logs: {sequence: number; occurredAt: string; level: string; message: string}[]; diagnostics: {code: string; state: string; message: string}[]; dns: {name: string; addresses: string[]; expiresAt: string}[];
+ probe?: {nodeId: string; latencyMilliseconds: number};
+}
+
+export interface LocalProxyInterceptionIntent {
+  requestId: string;
+  expectedGeneration: number;
+  systemProxy: boolean;
+  tun: boolean;
+}
+export interface LocalProxyInterceptionStatus {
+  generation: number;
+  desiredSystemProxy: boolean;
+  desiredTUN: boolean;
+  systemProxy: boolean;
+  tun: boolean;
+  state: 'inactive' | 'preparing' | 'active' | 'stopping' | 'suspended' | 'cleanup_pending' | 'failed';
+  reasonCode?: string;
+  cleanupPending: boolean;
+  observedAt: string;
+  capabilities: { systemProxy: boolean; tun: boolean; reasonCode?: string };
+  impact: { systemProxyScope?: string; networkService?: string; ipv4: boolean; ipv6: boolean; dns: boolean };
 }

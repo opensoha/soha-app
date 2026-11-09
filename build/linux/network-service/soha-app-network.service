@@ -1,0 +1,38 @@
+[Unit]
+Description=Soha native network admission service
+After=network-online.target NetworkManager.service
+Requisite=NetworkManager.service
+ConditionPathExists=/var/lib/opensoha/network-service/service.json
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/opensoha/soha-app-service run
+User=root
+Group=root
+UMask=0077
+StateDirectory=opensoha/network-service
+StateDirectoryMode=0700
+RuntimeDirectory=opensoha
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_CHOWN
+AmbientCapabilities=
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/opensoha/network-service /run/opensoha
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=yes
+SystemCallArchitectures=native
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

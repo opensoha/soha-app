@@ -89,7 +89,11 @@ func (system *DarwinEAPSystem) Remove(ctx context.Context, profile AdmissionProf
 	if err != nil || installed == nil {
 		return err
 	}
-	if err := matchDarwinEAPRemoval(installed, profile, adapter, system.deviceID, identities); err != nil {
+	if admissionMethod(profile) == "ttls" {
+		if err := system.ReadbackPassword(ctx, "", profile, adapter); err != nil {
+			return err
+		}
+	} else if err := matchDarwinEAPRemoval(installed, profile, adapter, system.deviceID, identities); err != nil {
 		return err
 	}
 	if _, err := eapCommandOutput(ctx, 4096, "/usr/bin/profiles", "remove", "-identifier", identifier); err != nil {

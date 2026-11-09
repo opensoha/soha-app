@@ -29,6 +29,13 @@ func renderEAPMobileconfig(profile AdmissionProfile, deviceID string, certificat
 	if err := validateAdmissionProfile(profile, now); err != nil {
 		return nil, err
 	}
+	if admissionMethod(profile) == "ttls" {
+		bundle, err := eapMobileconfigPayload(profile, deviceID, "", nil, "", ethernetPosition)
+		if err != nil {
+			return nil, err
+		}
+		return marshalEAPMobileconfig(bundle)
+	}
 	if !identifierPattern.MatchString(deviceID) || !validReadbackHash(certificate.Fingerprint) || len(pkcs12) < 1 || len(pkcs12) > 65536 || len(password) < 32 || len(password) > 128 {
 		return nil, errors.New("EAP profile certificate material is invalid")
 	}
@@ -57,6 +64,9 @@ func eapMobileconfigPayload(profile AdmissionProfile, deviceID, fingerprint stri
 	identity["KeyIsExtractable"], identity["AllowAllAppsAccess"] = false, false
 	identity["PayloadDisplayName"] = "Soha EAP identity"
 	payloads := []any{identity}
+	if admissionMethod(profile) == "ttls" {
+		payloads = nil
+	}
 	anchors := []any{}
 	for index, raw := range profile.CACertificates {
 		ca, err := parseEAPCertificate(raw)
@@ -71,6 +81,11 @@ func eapMobileconfigPayload(profile AdmissionProfile, deviceID, fingerprint stri
 	}
 	eap := map[string]any{"AcceptEAPTypes": []any{13}, "UserName": profile.Identity, "PayloadCertificateAnchorUUID": anchors,
 		"TLSTrustedServerNames": profile.ServerNames, "TLSAllowTrustExceptions": false, "TLSCertificateIsRequired": true, "TLSMinimumVersion": "1.2"}
+	if admissionMethod(profile) == "ttls" {
+		eap["AcceptEAPTypes"] = []any{21}
+		eap["TTLSInnerAuthentication"] = "PAP"
+		eap["TLSCertificateIsRequired"] = false
+	}
 	kind := "com.apple.wifi.managed"
 	ethernet := ""
 	if profile.AccessMedium == "wired" {
@@ -92,6 +107,10 @@ func eapMobileconfigPayload(profile AdmissionProfile, deviceID, fingerprint stri
 		}
 	} else {
 		network["Interface"] = ethernet
+	}
+	if admissionMethod(profile) == "ttls" {
+		delete(network, "PayloadCertificateUUID")
+		network["SetupModes"] = []string{"User"}
 	}
 	payloads = append(payloads, network)
 	bundle := eapPayload("Configuration", identifier, eapPayloadUUID(identifier))

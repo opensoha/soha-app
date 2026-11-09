@@ -37,6 +37,11 @@ import {
 } from "@/api";
 import {
   HostError,
+  proxyStatus,
+  proxyAction,
+  proxyRules,
+  getLocalProxyInterception,
+  setLocalProxyInterception,
   activateServerSwitch,
   checkForUpdates,
   checkServer,
@@ -62,7 +67,7 @@ import {
   selectMihomoApp,
 } from "@/native/host";
 import { useAppStore } from "@/store";
-import type { HostState } from "@/types";
+import type { HostState, ProxyWorkbench, LocalProxyInterceptionStatus } from "@/types";
 
 vi.mock("@/native/host", () => ({
   HostError: class HostError extends Error {
@@ -123,6 +128,11 @@ vi.mock("@/native/host", () => ({
   runAdmissionAction: vi.fn(),
   connectNetwork: vi.fn(),
   disconnectNetwork: vi.fn(),
+  proxyStatus: vi.fn(),
+  proxyAction: vi.fn(),
+  proxyRules: vi.fn(),
+  getLocalProxyInterception: vi.fn(),
+  setLocalProxyInterception: vi.fn(),
   getMihomoAppStatus: vi.fn(),
   configureMihomoApp: vi.fn(),
   selectMihomoApp: vi.fn(),
@@ -298,6 +308,25 @@ const availableUpdateStatus = {
   releaseURL: "https://github.com/opensoha/soha-app/releases/tag/v0.2.1",
 };
 
+const proxyWorkbench: ProxyWorkbench = {
+  engine: "mihomo", mode: "app_subscription", deliveryMode: "mapped_nodes",
+  profileId: "mihomo-1", bundleId: "bundle-1", revision: 1, orgRevision: 1, personalRevision: 1,
+  state: "inactive",
+  process: { ownership: "soha_owned", state: "stopped", processEpoch: "test-process", desiredRunning: false },
+  capabilities: [], nodes: [], groups: [],
+  rules: { orgRevision: 1, personalRevision: 1, rules: [], effectiveRules: [], conflicts: [] },
+  maskedRules: [],
+  traffic: { processEpoch: "test-process", observedAt: "2026-11-08T00:00:00Z", uploadTotal: 0, downloadTotal: 0, uploadBytesPerSecond: null, downloadBytesPerSecond: null, state: "unavailable" },
+  connections: { processEpoch: "test-process", observedAt: "2026-11-08T00:00:00Z", totalActive: 0, returnedCount: 0, truncated: false, items: [] },
+  logs: [], diagnostics: [], dns: [],
+};
+const inactiveInterception: LocalProxyInterceptionStatus = {
+  generation: 0, desiredSystemProxy: false, desiredTUN: false, systemProxy: false, tun: false,
+  state: "inactive", cleanupPending: false, observedAt: "2026-11-08T00:00:00Z",
+  capabilities: { systemProxy: false, tun: false, reasonCode: "native_interception_not_configured" },
+  impact: { ipv4: false, ipv6: false, dns: false },
+};
+
 const bootstrap = {
   user: principal,
   currentUser: principal,
@@ -349,6 +378,11 @@ describe("desktop app", () => {
       sessionId: "session-1",
     });
     vi.mocked(disconnectNetwork).mockResolvedValue(disconnectedNetworkStatus);
+    vi.mocked(proxyStatus).mockResolvedValue(proxyWorkbench);
+    vi.mocked(proxyAction).mockResolvedValue(proxyWorkbench);
+    vi.mocked(proxyRules).mockResolvedValue(proxyWorkbench);
+    vi.mocked(getLocalProxyInterception).mockResolvedValue(inactiveInterception);
+    vi.mocked(setLocalProxyInterception).mockResolvedValue(inactiveInterception);
     vi.mocked(getMihomoAppStatus).mockResolvedValue({
       mode: "app_subscription",
       profileId: "mihomo-1",
@@ -981,6 +1015,58 @@ describe("desktop app", () => {
     await waitForUI(() => expect(runAdmissionAction).toHaveBeenCalledWith("connect", { profileId: "eap-1" }));
     expect(container.querySelector('[aria-label="准入健康信号"]')?.textContent).toContain("等待 NAS 侧会话观测");
     expect(localStorage.getItem("soha-app-preferences") ?? "").not.toContain("mobileconfig");
+  });
+
+  it("uses a transient TTLS admission password without caching it and clears it after failure", async () => {
+    const profile = { id: "ttls-1", siteId: "site-1", accessMedium: "wifi" as const, ssid: "Staff-password", adapterId: "wifi-1", state: "installed" as const, eapMethod: "ttls" as const, innerMethod: "pap" as const, credentialInteraction: "app-input" as const, supported: true };
+    const status = { supported: true, profiles: [profile], adapters: [{ id: "wifi-1", name: "en0", medium: "wifi" as const, macAddress: "02:00:00:00:00:01", enabled: true, linkUp: true }] };
+    vi.mocked(getAdmissionStatus).mockResolvedValue(status);
+    const client = await renderAppToHome();
+    await clickNavigation("网络连接");
+    await chooseAdmissionProfile("Staff-password");
+    expect(findButton(container, "连接 Wi-Fi")?.disabled).toBe(true);
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="本次网络接入密码"]');
+    await setInput(input, "  test password  ");
+    expect(findButton(container, "连接 Wi-Fi")?.disabled).toBe(false);
+    vi.mocked(runAdmissionAction).mockRejectedValueOnce(new Error("connection rejected"));
+    await act(async () => findButton(container, "连接 Wi-Fi")?.click());
+    await waitForUI(() => expect(runAdmissionAction).toHaveBeenCalledWith("connect", { profileId: "ttls-1", password: "  test password  " }));
+    await waitForUI(() => expect(input?.value).toBe(""));
+    expect(JSON.stringify(client.getMutationCache().getAll().map((mutation) => mutation.state.variables))).not.toContain("test password");
+    expect(JSON.stringify(client.getQueryCache().getAll().map((query) => query.state.data))).not.toContain("test password");
+    expect(localStorage.getItem("soha-app-preferences") ?? "").not.toContain("test password");
+    await setInput(input, "密".repeat(25));
+    expect(findButton(container, "连接 Wi-Fi")?.disabled).toBe(true);
+    expect(container.textContent).toContain("1至72字节");
+  });
+
+  it("uses the system TTLS password prompt without collecting a password", async () => {
+    const status = { supported: true, profiles: [{ id: "ttls-prompt", siteId: "site-1", accessMedium: "wifi" as const, ssid: "Staff-prompt", adapterId: "wifi-1", state: "action_required" as const, eapMethod: "ttls" as const, innerMethod: "pap" as const, credentialInteraction: "system-prompt" as const, supported: true }], adapters: [{ id: "wifi-1", name: "en0", medium: "wifi" as const, macAddress: "02:00:00:00:00:01", enabled: true, linkUp: true }] };
+    vi.mocked(getAdmissionStatus).mockResolvedValue(status);
+    vi.mocked(runAdmissionAction).mockResolvedValueOnce(status);
+    await renderAppToHome();
+    await clickNavigation("网络连接");
+    await chooseAdmissionProfile("Staff-prompt");
+    expect(container.querySelector('input[type="password"]')).toBeNull();
+    expect(container.textContent).toContain("等待系统认证");
+    expect(findButton(container, "连接 Wi-Fi")?.disabled).toBe(false);
+    await act(async () => findButton(container, "连接 Wi-Fi")?.click());
+    await waitForUI(() => expect(runAdmissionAction).toHaveBeenCalledWith("connect", { profileId: "ttls-prompt" }));
+    expect(container.textContent).toContain("请在系统界面完成密码认证");
+  });
+
+  it("does not offer unsupported TTLS admission while retaining precise removal", async () => {
+    const status = { supported: true, profiles: [{ id: "ttls-1", siteId: "site-1", accessMedium: "wifi" as const, ssid: "Staff-password", adapterId: "wifi-1", state: "installed" as const, eapMethod: "ttls" as const, innerMethod: "pap" as const, supported: false, unsupportedReason: "method_unsupported" }], adapters: [{ id: "wifi-1", name: "en0", medium: "wifi" as const, macAddress: "02:00:00:00:00:01", enabled: true, linkUp: true }] };
+    vi.mocked(getAdmissionStatus).mockResolvedValue(status);
+    await renderAppToHome();
+    await clickNavigation("网络连接");
+    await chooseAdmissionProfile("Staff-password");
+    expect(findButton(container, "准备接入配置")?.disabled).toBe(true);
+    expect(findButton(container, "连接 Wi-Fi")?.disabled).toBe(true);
+    expect(container.querySelector('input[type="password"]')).toBeNull();
+    expect(container.textContent).toContain("不支持组织指定的认证方式");
+    expect(findButton(container, "移除本机配置")?.disabled).toBe(false);
+    expect(runAdmissionAction).not.toHaveBeenCalled();
   });
 
   it("requires a new explicit choice when the selected admission profile disappears", async () => {

@@ -28,6 +28,12 @@ const (
 )
 
 type Config struct {
+	NativeUIServerURL     string              `json:"nativeUiServerUrl,omitempty"`
+	NativeUIUserID        string              `json:"nativeUiUserId,omitempty"`
+	MihomoProcess         MihomoProcessConfig `json:"mihomoProcess,omitempty"`
+	MihomoTransportCAFile string              `json:"mihomoTransportCaFile,omitempty"`
+	MihomoProbeProfiles   map[string]string   `json:"mihomoProbeProfiles,omitempty"`
+
 	Version                    int     `json:"version"`
 	RuntimeID                  string  `json:"runtimeId"`
 	DeviceID                   string  `json:"deviceId"`
@@ -99,6 +105,22 @@ func (config Config) Validate() error {
 	}
 	if (config.MihomoControllerURL == "") != (config.MihomoControllerSecretFile == "") {
 		return errors.New("mihomo controller URL and secret file must be configured together")
+	}
+	if err := config.MihomoProcess.validate(config.MihomoConfigured()); err != nil {
+		return err
+	}
+	if config.MihomoTransportCAFile != "" {
+		if err := regularFile(config.MihomoTransportCAFile); err != nil {
+			return err
+		}
+	}
+	if len(config.MihomoProbeProfiles) > 32 {
+		return errors.New("too many operator probe profiles")
+	}
+	for id, rawURL := range config.MihomoProbeProfiles {
+		if !identifierPattern.MatchString(id) || !validSubscriptionURL(rawURL) {
+			return errors.New("invalid operator probe profile")
+		}
 	}
 	if config.MihomoControllerURL != "" {
 		if _, _, err := mihomoOrigin(config.MihomoControllerURL); err != nil {
@@ -232,7 +254,7 @@ func (config Config) ControlHTTPClient() (*http.Client, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("marshal endpoint certificate public key: %w", err)
 	}
-	return client, string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicKey})), nil
+	return client, strings.TrimSpace(string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicKey}))), nil
 }
 
 func (config Config) IngestHTTPClient() (*http.Client, error) {

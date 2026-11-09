@@ -70,12 +70,14 @@ func (h *appHost) handleDesktopAuth(writer http.ResponseWriter, request *http.Re
 		return
 	}
 	defer h.desktopAuthMu.Unlock()
+	h.sessionMu.Lock()
+	target, generation := h.target.Load(), h.nativeScope.Generation
+	h.sessionMu.Unlock()
 	if h.hasPendingSwitch() {
 		writeError(writer, http.StatusServiceUnavailable, "server_switch_pending", "Server switch is pending")
 		return
 	}
 
-	target := h.target.Load()
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		writeError(writer, http.StatusServiceUnavailable, "desktop_auth_listener_unavailable", "Unable to start the desktop login callback")
@@ -157,7 +159,7 @@ func (h *appHost) handleDesktopAuth(writer http.ResponseWriter, request *http.Re
 			writeError(writer, http.StatusBadGateway, "desktop_auth_contract_mismatch", "Invalid Soha Server desktop login response")
 			return
 		}
-		if !h.markAuthenticated(target, refreshToken) {
+		if !h.markAuthenticated(target, refreshToken, verifiedAuthUserID(exchange.Body), generation) {
 			writeError(writer, http.StatusConflict, "desktop_auth_server_changed", "Soha Server changed during desktop login")
 			return
 		}

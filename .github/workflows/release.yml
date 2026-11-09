@@ -366,6 +366,9 @@ jobs:
           test "$(dpkg-deb --field "${deb}" Architecture)" = 'amd64'
           mkdir -p release
           cp "${deb}" "release/soha-app-v${VERSION}-linux-amd64.deb"
+          companion=bin/soha-app-network-service-linux-amd64.tar.gz
+          python3 build/linux/network-service/verify_companion.py "${companion}" --package-config build/linux/nfpm/nfpm.yaml
+          cp "${companion}" "release/soha-app-network-service-v${VERSION}-linux-amd64.tar.gz"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-linux

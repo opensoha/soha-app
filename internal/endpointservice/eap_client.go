@@ -50,6 +50,11 @@ func (client *ControlClient) ActivateEAPCertificate(ctx context.Context, payload
 	if !identifierPattern.MatchString(payload.CredentialID) || !validReadbackHash(payload.Fingerprint) {
 		return EAPCertificateActivateResult{}, errors.New("EAP activation request is invalid")
 	}
+	if payload.RequestID != "" || payload.ProfileID != "" || payload.ProfileRevision != "" {
+		if !identifierPattern.MatchString(payload.RequestID) || !identifierPattern.MatchString(payload.ProfileID) || !validReadbackHash(payload.ProfileRevision) {
+			return EAPCertificateActivateResult{}, errors.New("EAP activation profile binding is invalid")
+		}
+	}
 	raw, err := client.runtimeMessage(MessageEAPCertificateActivateRequest, payload)
 	if err != nil {
 		return EAPCertificateActivateResult{}, err
@@ -71,4 +76,23 @@ func (client *ControlClient) ActivateEAPCertificate(ctx context.Context, payload
 func eapStaleResponse(err error) bool {
 	var responseError *RuntimeHTTPError
 	return errors.As(err, &responseError) && responseError.StatusCode == http.StatusConflict && responseError.Code == "eap_certificate_stale"
+}
+
+func (client *ControlClient) RevokeEAPCertificate(ctx context.Context, payload EAPCertificateRevokeRequest) (EAPCertificateRevokeResult, error) {
+	if !identifierPattern.MatchString(payload.RequestID) || !identifierPattern.MatchString(payload.CredentialID) || !validReadbackHash(payload.Fingerprint) || !slicesContains([]string{"installation_failed", "user_requested", "rotation_failed"}, payload.ReasonCode) {
+		return EAPCertificateRevokeResult{}, errors.New("EAP revocation request is invalid")
+	}
+	raw, err := client.runtimeMessage("eap.certificate.revoke.request", payload)
+	if err != nil {
+		return EAPCertificateRevokeResult{}, err
+	}
+	message, err := client.postMessage(ctx, client.runtimeURL("eap:revoke"), raw, "", http.StatusOK)
+	if err != nil {
+		return EAPCertificateRevokeResult{}, err
+	}
+	var result EAPCertificateRevokeResult
+	if err := client.decodeResponse(message, "eap.certificate.revoke.result", &result); err != nil || result.RequestID != payload.RequestID || result.CredentialID != payload.CredentialID || result.Fingerprint != payload.Fingerprint || result.Status != "revoked" {
+		return result, errors.New("EAP revocation receipt does not match")
+	}
+	return result, nil
 }

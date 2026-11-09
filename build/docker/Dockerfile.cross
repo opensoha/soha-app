@@ -18,6 +18,9 @@ FROM golang:1.27.3-trixie
 
 ARG TARGETARCH
 ARG GARBLE_VERSION=v0.18.0
+ARG SOHA_CROSS_TARGET=all
+ENV SOHA_CROSS_TARGET=${SOHA_CROSS_TARGET}
+RUN test "$SOHA_CROSS_TARGET" = all || test "$SOHA_CROSS_TARGET" = linux
 
 # Install base tools, GCC, and GTK/WebKit dev packages
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -32,7 +35,9 @@ RUN go install mvdan.cc/garble@${GARBLE_VERSION}
 # The SHA-256 is fetched from Zig's official download manifest and verified
 # before extraction to protect against MITM or corrupted downloads.
 ARG ZIG_VERSION=0.14.0
-RUN ZIG_ARCH=$(case "${TARGETARCH}" in arm64) echo "aarch64" ;; *) echo "x86_64" ;; esac) && \
+RUN if [ "$SOHA_CROSS_TARGET" = "linux" ]; then \
+    echo "Linux-only builder: Zig is not required"; \
+    else ZIG_ARCH=$(case "${TARGETARCH}" in arm64) echo "aarch64" ;; *) echo "x86_64" ;; esac) && \
     ZIG_FILE="zig-linux-${ZIG_ARCH}-${ZIG_VERSION}.tar.xz" && \
     curl -fSL "https://ziglang.org/download/${ZIG_VERSION}/${ZIG_FILE}" -o "/tmp/${ZIG_FILE}" && \
     EXPECTED=$(curl -fsSL "https://ziglang.org/download/index.json" | \
@@ -41,13 +46,17 @@ RUN ZIG_ARCH=$(case "${TARGETARCH}" in arm64) echo "aarch64" ;; *) echo "x86_64"
     echo "${EXPECTED}  /tmp/${ZIG_FILE}" | sha256sum -c - && \
     tar -xJ -f "/tmp/${ZIG_FILE}" -C /opt && \
     rm "/tmp/${ZIG_FILE}" && \
-    ln -s /opt/zig-linux-${ZIG_ARCH}-${ZIG_VERSION}/zig /usr/local/bin/zig
+    ln -s /opt/zig-linux-${ZIG_ARCH}-${ZIG_VERSION}/zig /usr/local/bin/zig; \
+    fi
 
 # Download macOS SDK (required for darwin targets)
 ARG MACOS_SDK_VERSION=14.5
-RUN curl -L "https://github.com/joseluisq/macosx-sdks/releases/download/${MACOS_SDK_VERSION}/MacOSX${MACOS_SDK_VERSION}.sdk.tar.xz" \
+RUN if [ "$SOHA_CROSS_TARGET" = "linux" ]; then \
+    echo "Linux-only builder: macOS SDK is not required"; \
+    else curl -L "https://github.com/joseluisq/macosx-sdks/releases/download/${MACOS_SDK_VERSION}/MacOSX${MACOS_SDK_VERSION}.sdk.tar.xz" \
     | tar -xJ -C /opt \
-    && mv /opt/MacOSX${MACOS_SDK_VERSION}.sdk /opt/macos-sdk
+    && mv /opt/MacOSX${MACOS_SDK_VERSION}.sdk /opt/macos-sdk; \
+    fi
 
 ENV MACOS_SDK_PATH=/opt/macos-sdk
 
@@ -142,6 +151,11 @@ set -e
 OS=${1:-darwin}
 ARCH=${2:-arm64}
 
+if [ "${SOHA_CROSS_TARGET:-all}" = "linux" ] && [ "$OS" != "linux" ]; then
+    echo "This Linux-only builder cannot build Windows or macOS" >&2
+    exit 1
+fi
+
 case "${OS}-${ARCH}" in
     darwin-arm64|darwin-aarch64)
         export CC=zcc-darwin-arm64
@@ -198,6 +212,11 @@ LDFLAGS="-s -w"
 if [ "$GOOS" = "windows" ]; then
     EXT=".exe"
     LDFLAGS="-s -w -H windowsgui"
+fi
+
+# SOHA_LINUX_RELEASE_FLAGS_V1: keep other platform defaults unchanged.
+if [ "$GOOS" = "linux" ] && [ -n "${RELEASE_LDFLAGS:-}" ]; then
+    LDFLAGS="$LDFLAGS $RELEASE_LDFLAGS"
 fi
 
 TAGS="production"

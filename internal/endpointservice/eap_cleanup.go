@@ -65,7 +65,7 @@ func (manager *AdmissionManager) detachSelection(index int) {
 	}
 	manager.queueCleanup(job)
 	manager.state.Selections = slices.Delete(manager.state.Selections, index, index+1)
-	if len(manager.state.Selections) == 0 {
+	if !slices.ContainsFunc(manager.state.Selections, func(selection eapSelection) bool { return admissionMethod(selection.Profile) == "tls" }) {
 		for _, identity := range []*eapIdentity{manager.state.Active, manager.state.Pending} {
 			if identity != nil {
 				manager.queueCleanup(EAPCleanup{RequestID: identity.RequestID, Certificate: identity.Certificate})
@@ -92,6 +92,17 @@ func (manager *AdmissionManager) cleanup(ctx context.Context) error {
 		job.CACertificates = slices.DeleteFunc(slices.Clone(job.CACertificates), func(encoded string) bool {
 			return retained[eapCertificateHash(encoded)]
 		})
+		if job.Certificate != nil {
+			if control, ok := manager.control.(interface {
+				RevokeEAPCertificate(context.Context, EAPCertificateRevokeRequest) (EAPCertificateRevokeResult, error)
+			}); ok {
+				_, err := control.RevokeEAPCertificate(ctx, EAPCertificateRevokeRequest{RequestID: job.RequestID, CredentialID: job.Certificate.CredentialID, Fingerprint: job.Certificate.Fingerprint, ReasonCode: "user_requested"})
+				if err != nil {
+					manager.diagnostic = "revocation_retry_pending"
+					return err
+				}
+			}
+		}
 		if err := manager.system.Cleanup(ctx, job); err != nil {
 			manager.diagnostic = "cleanup_retry_pending"
 			return err

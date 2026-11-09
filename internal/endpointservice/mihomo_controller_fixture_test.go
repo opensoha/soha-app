@@ -2,6 +2,7 @@ package endpointservice
 
 import (
 	"encoding/json"
+	socksproxy "golang.org/x/net/proxy"
 	"io"
 	"net"
 	"net/http"
@@ -143,6 +144,19 @@ func (f *mihomoControllerFixture) serveHTTP(w http.ResponseWriter, r *http.Reque
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"downloadTotal": 4096, "uploadTotal": 1024, "connections": connections})
 	default:
+		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/proxies/") && !strings.HasSuffix(r.URL.Path, "/delay") {
+			name := strings.TrimPrefix(r.URL.Path, "/proxies/")
+			for _, group := range f.document.ProxyGroups {
+				if group.Name == name {
+					selected := f.selected
+					if selected == "" && len(group.Proxies) > 0 {
+						selected = group.Proxies[0]
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{"now": selected, "all": group.Proxies, "type": "Selector"})
+					return
+				}
+			}
+		}
 		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/proxies/") && strings.HasSuffix(r.URL.Path, "/delay") && f.probe(r) {
 			f.probes++
 			_ = json.NewEncoder(w).Encode(map[string]int{"delay": 1})
@@ -159,11 +173,19 @@ func (f *mihomoControllerFixture) probe(r *http.Request) bool {
 	}
 	name := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/proxies/"), "/delay")
 	for _, proxy := range f.document.Proxies {
-		if proxy.Name != name || proxy.Server != "127.0.0.1" || proxy.Type != "http" {
+		if proxy.Name != name || proxy.Server != "127.0.0.1" || proxy.Type != "http" && proxy.Type != "socks5" {
 			continue
 		}
 		front := &url.URL{Scheme: "http", Host: net.JoinHostPort(proxy.Server, strconv.Itoa(proxy.Port)), User: url.UserPassword(proxy.Username, proxy.Password)}
 		transport := &http.Transport{Proxy: http.ProxyURL(front), DisableKeepAlives: true}
+		if proxy.Type == "socks5" {
+			dialer, err := socksproxy.SOCKS5("tcp", front.Host, &socksproxy.Auth{User: proxy.Username, Password: proxy.Password}, &net.Dialer{Timeout: time.Second})
+			if err != nil {
+				return false
+			}
+			transport.Proxy = nil
+			transport.DialContext = dialer.(socksproxy.ContextDialer).DialContext
+		}
 		defer transport.CloseIdleConnections()
 		client := &http.Client{Transport: transport, Timeout: time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 		response, err := client.Get(target.String())

@@ -123,6 +123,9 @@ func TestAppHostDesktopAuthCompletesThroughSystemBrowser(t *testing.T) {
 	if strings.Contains(response.Body.String(), "refreshToken") || strings.Contains(response.Body.String(), "must-not-reach-renderer") {
 		t.Fatalf("desktop auth response exposed the refresh token: %s", response.Body.String())
 	}
+	if scope := host.nativeUIScopeSnapshot(); !scope.Authenticated || scope.UserID != "user-1" || scope.ServerURL != upstream.URL {
+		t.Fatalf("provider scope = %+v", scope)
+	}
 	if stored, err := ring.Get(sessionKeyringService, refreshCredentialAccount(host.target.Load())); err != nil || stored != "refresh" {
 		t.Fatal("desktop auth did not persist its refresh credential")
 	}

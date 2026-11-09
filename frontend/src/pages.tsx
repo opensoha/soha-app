@@ -1,3 +1,4 @@
+import { ProxyWorkbenchPanel } from '@/proxy/workbench'
 import { ChannelControlsPanel } from '@/channel-controls-panel'
 import { ManagedVPNPanel } from "@/vpn-panel";
 import { AdmissionPanel } from "@/admission-panel";
@@ -1125,7 +1126,7 @@ export function VPNPage() {
 }
 
 export function ProxyPage() {
-  return <SettingsPage view="proxy" />;
+  return <><ProxyWorkbenchPanel /><details><summary>订阅与兼容设置 / Subscription settings</summary><SettingsPage view="proxy" /></details></>;
 }
 
 export function SettingsPage({ view = "settings" }: { view?: SettingsView }) {

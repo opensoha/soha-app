@@ -65,6 +65,7 @@ type ApplyOutcome struct {
 }
 
 type Executor struct {
+	nativeDNS  []nativeChange
 	mu         sync.Mutex
 	privateKey wgtypes.Key
 	publicKey  string
@@ -91,7 +92,7 @@ func (executor *Executor) VPNBinding(ctx context.Context) (string, []string, err
 		return "", nil, errors.New("native VPN interface readback is unavailable")
 	}
 	readback, err := executor.system.Readback(ctx)
-	if err != nil || !reflect.DeepEqual(readback, executor.previous.Readback()) {
+	if err != nil || !executor.nativeReadbackMatches(readback, executor.previous.Readback()) {
 		return "", nil, errors.New("native VPN state changed")
 	}
 	name, err := native.TunnelInterface(ctx)
@@ -118,6 +119,9 @@ func validVPNInterfaceName(name string) bool {
 func (executor *Executor) Apply(ctx context.Context, desired ConfigurationDesired, now time.Time) ApplyOutcome {
 	executor.mu.Lock()
 	defer executor.mu.Unlock()
+	if len(executor.nativeDNS) > 0 {
+		return ApplyOutcome{Status: "rejected", ReasonCode: "native_dns_restore_required"}
+	}
 	if desired.WireGuard == nil {
 		if err := executor.disable(ctx); err != nil {
 			return ApplyOutcome{Status: "rejected", ReadbackHash: emptyReadbackHash(), ReasonCode: "endpoint_disable_failed"}
@@ -151,10 +155,10 @@ func (executor *Executor) Verify(ctx context.Context, desired ConfigurationDesir
 		expected = plan.Readback()
 	}
 	actual, err := executor.system.Readback(ctx)
-	if err != nil || !reflect.DeepEqual(actual, expected) {
+	if err != nil || !executor.nativeReadbackMatches(actual, expected) {
 		return ApplyOutcome{Status: "rejected", ReadbackHash: emptyReadbackHash(), ReasonCode: "endpoint_readback_mismatch"}
 	}
-	return ApplyOutcome{Status: "applied", ReadbackHash: readbackHash(actual)}
+	return ApplyOutcome{Status: "applied", ReadbackHash: readbackHash(expected)}
 }
 
 func (executor *Executor) Disable(ctx context.Context) error {
@@ -164,6 +168,9 @@ func (executor *Executor) Disable(ctx context.Context) error {
 }
 
 func (executor *Executor) disable(ctx context.Context) error {
+	if len(executor.nativeDNS) > 0 {
+		return errors.New("native DNS must be restored before WG disable")
+	}
 	err := executor.system.Disable(ctx)
 	readback, readErr := executor.system.Readback(ctx)
 	if readErr == nil && !reflect.DeepEqual(readback, TunnelReadback{}) {
@@ -418,3 +425,152 @@ func readbackHash(readback TunnelReadback) string {
 }
 
 func emptyReadbackHash() string { return readbackHash(TunnelReadback{}) }
+
+func (e *Executor) nativeReadback(ctx context.Context) (TunnelReadback, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	r, err := e.system.Readback(ctx)
+	if err != nil {
+		return TunnelReadback{}, err
+	}
+	if e.previous == nil {
+		if !reflect.DeepEqual(r, TunnelReadback{}) {
+			return TunnelReadback{}, errors.New("unexpected native VPN state")
+		}
+		return r, nil
+	}
+	if !e.nativeReadbackMatches(r, e.previous.Readback()) {
+		return TunnelReadback{}, errors.New("native VPN readback changed")
+	}
+	return r, nil
+}
+
+func (e *Executor) nativeReadbackMatches(actual, grant TunnelReadback) bool {
+	expected := grant
+	expected.DNSServers = slices.Clone(grant.DNSServers)
+	for _, c := range e.nativeDNS {
+		if c.After.DNS == nil || !nativeStringsMatchAddresses(nativeDNSFamily(grant.DNSServers, c.Scope.Family), nativeBeforeServers(c)) {
+			return false
+		}
+		kept := []string{}
+		for _, v := range expected.DNSServers {
+			a, err := netip.ParseAddr(v)
+			if err != nil {
+				return false
+			}
+			if c.Scope.Family != 0 && a.Is4() != (c.Scope.Family == 4) {
+				kept = append(kept, v)
+			}
+		}
+		for _, a := range c.After.DNS.Servers {
+			kept = append(kept, a.String())
+		}
+		slices.Sort(kept)
+		expected.DNSServers = slices.Compact(kept)
+	}
+	return reflect.DeepEqual(actual, expected)
+}
+func nativeDNSFamily(servers []string, family uint8) []string {
+	values := []string{}
+	for _, v := range servers {
+		a, err := netip.ParseAddr(v)
+		if err == nil && (family == 0 || a.Is4() == (family == 4)) {
+			values = append(values, v)
+		}
+	}
+	return values
+}
+func nativeStringsMatchAddresses(text []string, addresses []netip.Addr) bool {
+	if len(text) != len(addresses) {
+		return false
+	}
+	for i, s := range text {
+		a, err := netip.ParseAddr(s)
+		if err != nil || a != addresses[i] {
+			return false
+		}
+	}
+	return true
+}
+func (e *Executor) prepareNativeDNS(ctx context.Context, s nativeSession, servers []netip.Addr) ([]nativeChange, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.previous == nil || len(e.previous.DNSServers) == 0 {
+		return nil, nil
+	}
+	actual, err := e.system.Readback(ctx)
+	if err != nil || !e.nativeReadbackMatches(actual, e.previous.Readback()) {
+		return nil, errors.New("WG grant changed before native DNS delegation")
+	}
+	owner, ok := e.system.(nativeWGDNSOwner)
+	if !ok {
+		return nil, errors.New("WG DNS ownership unavailable")
+	}
+	changes, err := owner.PrepareNativeDNS(ctx, s, servers)
+	if err != nil {
+		return nil, err
+	}
+	if len(changes) == 0 || len(changes) > 2 {
+		return nil, errors.New("invalid WG DNS change count")
+	}
+	seen := map[uint8]bool{}
+	for _, c := range changes {
+		if seen[c.Scope.Family] || c.Kind != "dns" || !validNativeChange(c) || c.After.DNS == nil || !nativeStringsMatchAddresses(nativeDNSFamily(e.previous.DNSServers, c.Scope.Family), nativeBeforeServers(c)) {
+			return nil, errors.New("WG DNS plan does not match original grant")
+		}
+		seen[c.Scope.Family] = true
+		expected := []netip.Addr{}
+		for _, a := range servers {
+			if c.Scope.Family == 0 || a.Is4() == (c.Scope.Family == 4) {
+				expected = append(expected, a)
+			}
+		}
+		if len(expected) == 0 || !reflect.DeepEqual(c.After.DNS.Servers, expected) {
+			return nil, errors.New("WG DNS target is not owned loopback")
+		}
+	}
+	return changes, nil
+}
+func (e *Executor) readNativeDNS(ctx context.Context, s nativeSession, c nativeChange) (nativeValue, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	owner, ok := e.system.(nativeWGDNSOwner)
+	if !ok {
+		return nativeValue{}, errors.New("WG DNS owner unavailable")
+	}
+	return owner.ReadNativeDNS(ctx, s, c)
+}
+func (e *Executor) compareNativeDNS(ctx context.Context, s nativeSession, c nativeChange, restore bool) (nativeReceipt, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	owner, ok := e.system.(nativeWGDNSOwner)
+	if !ok {
+		return nativeReceipt{}, errors.New("WG DNS owner unavailable")
+	}
+	if !restore {
+		if e.previous == nil || !nativeStringsMatchAddresses(nativeDNSFamily(e.previous.DNSServers, c.Scope.Family), nativeBeforeServers(c)) {
+			return nativeReceipt{}, errors.New("WG DNS grant changed")
+		}
+		found := false
+		for _, v := range e.nativeDNS {
+			if v.ID == c.ID {
+				found = true
+			}
+		}
+		if !found {
+			e.nativeDNS = append(e.nativeDNS, c)
+		}
+	}
+	receipt, err := owner.CompareNativeDNS(ctx, s, c, restore)
+	if restore && err == nil && (nativeValuesEqual(receipt.Current, c.Before) || receipt.Outcome == "absent" && !receipt.Current.Present) {
+		e.nativeDNS = slices.DeleteFunc(e.nativeDNS, func(v nativeChange) bool { return v.ID == c.ID })
+	}
+	return receipt, err
+}
+
+func nativeBeforeServers(c nativeChange) []netip.Addr {
+	if !c.Before.Present || c.Before.DNS == nil {
+		return nil
+	}
+	return c.Before.DNS.Servers
+}

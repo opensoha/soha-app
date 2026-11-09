@@ -44,7 +44,7 @@ func TestMihomoControllerAppliesSafeProxyOnlyConfiguration(t *testing.T) {
 	}
 	snapshot, err := controller.ProxyFlowSnapshot(context.Background())
 	encoded, _ := json.Marshal(snapshot)
-	if err != nil || snapshot.DownloadTotal != 4096 || snapshot.UploadTotal != 1024 || snapshot.ActiveConnections != 1 || snapshot.SelectedProxy != mihomoManualProxyName || strings.Contains(string(encoded), "must-not-leave-endpoint") {
+	if !errors.Is(err, errBusinessCounterEpoch) || snapshot.Active || snapshot.UploadTotal != 0 || strings.Contains(string(encoded), "must-not-leave-endpoint") {
 		t.Fatalf("ProxyFlowSnapshot() = %#v, %v", snapshot, err)
 	}
 	for _, required := range []string{"mixed-port: 0", "allow-lan: false", `bind-address: "127.0.0.1"`, "enable: false", "10.20.0.0/16,soha-egress-direct", "DOMAIN-SUFFIX,protected.example,REJECT", "IP-CIDR,10.30.0.0/16,REJECT", "192.0.2.8"} {
@@ -65,8 +65,8 @@ func TestMihomoControllerAppliesSafeProxyOnlyConfiguration(t *testing.T) {
 		t.Fatal("expected the controller reset to fail")
 	}
 	snapshot, err = controller.ProxyFlowSnapshot(context.Background())
-	if err != nil || !snapshot.Active || snapshot.DownloadTotal != 4096 {
-		t.Fatalf("failed reset lost proxy metrics: %#v, %v", snapshot, err)
+	if !errors.Is(err, errBusinessCounterEpoch) || controller.applied.Mode == "" {
+		t.Fatalf("failed reset lost controller state or exposed untrusted business counters: %#v, %v", snapshot, err)
 	}
 	fixture.mu.Lock()
 	fixture.failReset = false

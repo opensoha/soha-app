@@ -32,16 +32,22 @@ type EAPSystem interface {
 type AdmissionInput struct {
 	ProfileID string `json:"profileId"`
 	AdapterID string `json:"adapterId"`
+	Password  string `json:"password,omitempty"`
 }
 
 type AdmissionProfileStatus struct {
-	ID           string `json:"id"`
-	SiteID       string `json:"siteId"`
-	AccessMedium string `json:"accessMedium"`
-	SSID         string `json:"ssid,omitempty"`
-	AdapterID    string `json:"adapterId,omitempty"`
-	State        string `json:"state"`
-	ArtifactPath string `json:"artifactPath,omitempty"`
+	CredentialInteraction string `json:"credentialInteraction,omitempty"`
+	ID                    string `json:"id"`
+	EAPMethod             string `json:"eapMethod"`
+	InnerMethod           string `json:"innerMethod,omitempty"`
+	Supported             bool   `json:"supported"`
+	UnsupportedReason     string `json:"unsupportedReason,omitempty"`
+	SiteID                string `json:"siteId"`
+	AccessMedium          string `json:"accessMedium"`
+	SSID                  string `json:"ssid,omitempty"`
+	AdapterID             string `json:"adapterId,omitempty"`
+	State                 string `json:"state"`
+	ArtifactPath          string `json:"artifactPath,omitempty"`
 }
 
 type AdmissionStatus struct {
@@ -76,11 +82,19 @@ type eapSelection struct {
 }
 
 type eapIdentity struct {
-	RequestID   string                `json:"requestId"`
-	CSR         string                `json:"csr"`
-	Certificate *EAPCertificateResult `json:"certificate,omitempty"`
-	Stale       bool                  `json:"stale,omitempty"`
-	ActivatedAt time.Time             `json:"activatedAt,omitempty"`
+	RequestID        string                `json:"requestId"`
+	CSR              string                `json:"csr"`
+	Certificate      *EAPCertificateResult `json:"certificate,omitempty"`
+	Stale            bool                  `json:"stale,omitempty"`
+	ActivatedAt      time.Time             `json:"activatedAt,omitempty"`
+	ActivationAnchor *eapActivationAnchor  `json:"activationAnchor,omitempty"`
+}
+
+// Persist before submitting activation: a lost response must retry the same binding.
+type eapActivationAnchor struct {
+	ProfileID       string `json:"profileId"`
+	ProfileRevision string `json:"profileRevision,omitempty"`
+	ProfileSHA256   string `json:"profileSha256"`
 }
 
 type eapState struct {
@@ -139,6 +153,12 @@ func NewAdmissionManager(directory, deviceID string, control EAPControl, system 
 		if identity != nil && (!identifierPattern.MatchString(identity.RequestID) || len(identity.CSR) > 4096) {
 			return nil, errors.New("stored EAP identity is invalid")
 		}
+		if identity != nil && identity.ActivationAnchor != nil {
+			a := identity.ActivationAnchor
+			if !identifierPattern.MatchString(a.ProfileID) || !validReadbackHash("sha256:"+a.ProfileSHA256) || a.ProfileRevision != "" && !validReadbackHash(a.ProfileRevision) {
+				return nil, errors.New("stored EAP activation anchor is invalid")
+			}
+		}
 	}
 	manager.savedState = slices.Clone(raw)
 	return manager, nil
@@ -178,7 +198,8 @@ func (manager *AdmissionManager) Status(ctx context.Context) (AdmissionStatus, e
 		status.CertificateUntil = manager.state.Active.Certificate.ExpiresAt
 	}
 	for _, profile := range manager.profiles {
-		item := AdmissionProfileStatus{ID: profile.ID, SiteID: profile.SiteID, AccessMedium: profile.AccessMedium, SSID: profile.SSID, State: "available"}
+		supported, reason := manager.methodSupport(ctx, profile)
+		item := AdmissionProfileStatus{CredentialInteraction: credentialInteraction(manager.system, profile), EAPMethod: admissionMethod(profile), InnerMethod: profile.InnerMethod, Supported: supported, UnsupportedReason: reason, ID: profile.ID, SiteID: profile.SiteID, AccessMedium: profile.AccessMedium, SSID: profile.SSID, State: "available"}
 		for _, selection := range manager.state.Selections {
 			if selection.Profile.ID != profile.ID {
 				continue
@@ -190,6 +211,15 @@ func (manager *AdmissionManager) Status(ctx context.Context) (AdmissionStatus, e
 			}
 			if eapProfileHash(selection.Profile) != eapProfileHash(profile) {
 				item.State = "drift"
+				break
+			}
+			if admissionMethod(profile) == "ttls" {
+				if passwordSystem, ok := manager.system.(EAPPasswordSystem); ok && passwordSystem.ReadbackPassword(ctx, selection.RequestID, profile, selection.Adapter) == nil {
+					item.State = "installed"
+					if item.CredentialInteraction == "system-prompt" {
+						item.State = "action_required"
+					}
+				}
 				break
 			}
 			if certificate := manager.targetCertificate(); certificate != nil && selection.Fingerprint == certificate.Fingerprint {
@@ -216,6 +246,12 @@ func (manager *AdmissionManager) Prepare(ctx context.Context, input AdmissionInp
 	if err != nil {
 		return err
 	}
+	if input.Password != "" {
+		return errors.New("password is accepted only when connecting")
+	}
+	if supported, _ := manager.methodSupport(ctx, profile); !supported {
+		return errors.New("EAP method is unavailable on this platform")
+	}
 	adapters, err := manager.system.Adapters(ctx)
 	if err != nil {
 		return err
@@ -232,6 +268,9 @@ func (manager *AdmissionManager) Prepare(ctx context.Context, input AdmissionInp
 		}
 	}
 	selected := slices.IndexFunc(manager.state.Selections, func(selection eapSelection) bool { return selection.Profile.ID == profile.ID })
+	if selected >= 0 && eapProfileHash(manager.state.Selections[selected].Profile) != eapProfileHash(profile) {
+		return errors.New("EAP policy changed; remove the old configuration before preparing again")
+	}
 	if selected < 0 {
 		if len(manager.state.Selections) >= 8 {
 			return errors.New("at most eight managed EAP profiles may be installed")
@@ -240,6 +279,22 @@ func (manager *AdmissionManager) Prepare(ctx context.Context, input AdmissionInp
 		if err := manager.save(); err != nil {
 			return err
 		}
+	}
+	if admissionMethod(profile) == "ttls" {
+		i := slices.IndexFunc(manager.state.Selections, func(s eapSelection) bool { return s.Profile.ID == profile.ID })
+		selection := &manager.state.Selections[i]
+		if selection.RequestID == "" {
+			selection.RequestID = randomID()
+			if err := manager.save(); err != nil {
+				return err
+			}
+		}
+		artifact, err := manager.system.(EAPPasswordSystem).StagePassword(ctx, selection.RequestID, profile, selection.Adapter)
+		if err != nil {
+			return err
+		}
+		selection.ArtifactPath, selection.ArtifactSHA256 = artifact.Path, artifact.SHA256
+		return manager.save()
 	}
 	if err := manager.ensureIdentity(ctx, profile.Identity); err != nil {
 		return err
@@ -304,6 +359,9 @@ func (manager *AdmissionManager) stage(ctx context.Context, forceProfileID strin
 	}
 	for index := range manager.state.Selections {
 		selection := &manager.state.Selections[index]
+		if admissionMethod(selection.Profile) == "ttls" {
+			continue
+		}
 		profile, err := manager.currentProfile(selection.Profile.ID)
 		if err != nil || eapProfileHash(profile) != eapProfileHash(selection.Profile) {
 			return errors.New("EAP policy changed; remove the old configuration before preparing it again")
@@ -341,6 +399,13 @@ func (manager *AdmissionManager) Check(ctx context.Context) (checkErr error) {
 	defer manager.mu.Unlock()
 	defer func() { checkErr = errors.Join(checkErr, manager.recoverArtifacts(ctx)) }()
 	manager.diagnostic = ""
+	if pending := manager.state.Pending; pending != nil && pending.ActivationAnchor != nil && !manager.activationAnchorCurrent(pending.ActivationAnchor) {
+		pending.Stale = true
+		manager.diagnostic = "certificate_prepare_required"
+		if err := manager.save(); err != nil {
+			return err
+		}
+	}
 	for index := len(manager.state.Selections) - 1; index >= 0; index-- {
 		selection := manager.state.Selections[index]
 		profile, err := manager.currentProfile(selection.Profile.ID)
@@ -355,7 +420,29 @@ func (manager *AdmissionManager) Check(ctx context.Context) (checkErr error) {
 			}
 		}
 	}
-	if len(manager.state.Selections) == 0 {
+	var tlsSubject string
+	for i := range manager.state.Selections {
+		selection := &manager.state.Selections[i]
+		if admissionMethod(selection.Profile) != "ttls" {
+			tlsSubject = selection.Profile.Identity
+			continue
+		}
+		passwordSystem, ok := manager.system.(EAPPasswordSystem)
+		if !ok || passwordSystem.ReadbackPassword(ctx, selection.RequestID, selection.Profile, selection.Adapter) != nil {
+			if manager.diagnostic == "" {
+				manager.diagnostic = "installation_or_readback_required"
+			}
+			continue
+		}
+		if selection.ArtifactPath != "" {
+			manager.queueCleanup(EAPCleanup{Artifacts: []EAPArtifact{{Path: selection.ArtifactPath, SHA256: selection.ArtifactSHA256}}})
+			selection.ArtifactPath, selection.ArtifactSHA256 = "", ""
+			if err := manager.save(); err != nil {
+				return err
+			}
+		}
+	}
+	if tlsSubject == "" {
 		return manager.cleanup(ctx)
 	}
 	if manager.state.Pending != nil && manager.state.Pending.Stale {
@@ -363,7 +450,7 @@ func (manager *AdmissionManager) Check(ctx context.Context) (checkErr error) {
 		return nil
 	}
 	if manager.state.Pending == nil && manager.state.Active != nil && manager.state.Active.Certificate != nil && (!manager.activeCurrent() || !manager.state.Active.Certificate.ExpiresAt.After(manager.now().Add(time.Hour))) {
-		if err := manager.ensureIdentity(ctx, manager.state.Selections[0].Profile.Identity); err != nil {
+		if err := manager.ensureIdentity(ctx, tlsSubject); err != nil {
 			manager.diagnostic = "certificate_renewal_failed"
 			return err
 		}
@@ -378,6 +465,9 @@ func (manager *AdmissionManager) Check(ctx context.Context) (checkErr error) {
 		return errors.New("EAP certificate expired; prepare the network again")
 	}
 	for _, selection := range manager.state.Selections {
+		if admissionMethod(selection.Profile) == "ttls" {
+			continue
+		}
 		if selection.Fingerprint != certificate.Fingerprint || manager.system.Readback(ctx, selection.RequestID, selection.Profile, *certificate, selection.Adapter) != nil {
 			manager.diagnostic = "installation_or_readback_required"
 			return nil
@@ -386,6 +476,9 @@ func (manager *AdmissionManager) Check(ctx context.Context) (checkErr error) {
 	artifactsInstalled := false
 	for index := range manager.state.Selections {
 		selection := &manager.state.Selections[index]
+		if admissionMethod(selection.Profile) == "ttls" {
+			continue
+		}
 		if len(selection.PriorIdentities) > 0 {
 			selection.PriorIdentities = nil
 			artifactsInstalled = true
@@ -402,18 +495,45 @@ func (manager *AdmissionManager) Check(ctx context.Context) (checkErr error) {
 		}
 	}
 	if manager.state.Pending != nil {
-		result, err := manager.control.ActivateEAPCertificate(ctx, EAPCertificateActivateRequest{CredentialID: certificate.CredentialID, Fingerprint: certificate.Fingerprint})
-		if err != nil {
-			manager.diagnostic = "activation_retry_pending"
-			if errors.Is(err, ErrEAPCertificateStale) {
-				manager.state.Pending.Stale = true
-				manager.diagnostic = "certificate_prepare_required"
-				return errors.Join(err, manager.save())
+		pending := manager.state.Pending
+		if pending.ActivationAnchor == nil {
+			for _, selection := range manager.state.Selections {
+				if admissionMethod(selection.Profile) != "tls" {
+					continue
+				}
+				p := selection.Profile
+				anchor := pending.ActivationAnchor
+				if anchor == nil || anchor.ProfileRevision == "" && p.ProfileRevision != "" || (anchor.ProfileRevision == "") == (p.ProfileRevision == "") && p.ID < anchor.ProfileID {
+					pending.ActivationAnchor = &eapActivationAnchor{ProfileID: p.ID, ProfileRevision: p.ProfileRevision, ProfileSHA256: eapProfileHash(p)}
+				}
 			}
-			return err
+			if pending.ActivationAnchor == nil {
+				return errors.New("EAP activation requires an installed TLS profile")
+			}
+			if err := manager.save(); err != nil {
+				return err
+			}
 		}
-		if result.CredentialID != certificate.CredentialID || result.Fingerprint != certificate.Fingerprint || result.Status != "active" || !result.ExpiresAt.Equal(certificate.ExpiresAt) {
-			return errors.New("EAP activation receipt does not match the installed identity")
+		anchor := pending.ActivationAnchor
+		activation := EAPCertificateActivateRequest{CredentialID: certificate.CredentialID, Fingerprint: certificate.Fingerprint}
+		// Legacy TLS configurations predate profile-bound activation.
+		if anchor.ProfileRevision != "" {
+			activation.RequestID, activation.ProfileID, activation.ProfileRevision = pending.RequestID, anchor.ProfileID, anchor.ProfileRevision
+		}
+		{
+			result, err := manager.control.ActivateEAPCertificate(ctx, activation)
+			if err != nil {
+				manager.diagnostic = "activation_retry_pending"
+				if errors.Is(err, ErrEAPCertificateStale) {
+					manager.state.Pending.Stale = true
+					manager.diagnostic = "certificate_prepare_required"
+					return errors.Join(err, manager.save())
+				}
+				return err
+			}
+			if result.CredentialID != certificate.CredentialID || result.Fingerprint != certificate.Fingerprint || result.Status != "active" || !result.ExpiresAt.Equal(certificate.ExpiresAt) {
+				return errors.New("EAP activation receipt does not match the installed identity")
+			}
 		}
 		certificate.Status = "active"
 		if manager.state.Active != nil {
@@ -426,6 +546,16 @@ func (manager *AdmissionManager) Check(ctx context.Context) (checkErr error) {
 		}
 	}
 	return manager.cleanup(ctx)
+}
+
+func (manager *AdmissionManager) activationAnchorCurrent(anchor *eapActivationAnchor) bool {
+	profile, err := manager.currentProfile(anchor.ProfileID)
+	if err != nil || admissionMethod(profile) != "tls" || profile.ProfileRevision != anchor.ProfileRevision || eapProfileHash(profile) != anchor.ProfileSHA256 {
+		return false
+	}
+	return slices.ContainsFunc(manager.state.Selections, func(s eapSelection) bool {
+		return s.Profile.ID == anchor.ProfileID && admissionMethod(s.Profile) == "tls" && eapProfileHash(s.Profile) == anchor.ProfileSHA256
+	})
 }
 
 func (manager *AdmissionManager) Remove(ctx context.Context, profileID string) (removeErr error) {
@@ -448,16 +578,46 @@ func (manager *AdmissionManager) Remove(ctx context.Context, profileID string) (
 }
 
 func (manager *AdmissionManager) Connect(ctx context.Context, profileID string) error {
+	return manager.ConnectInput(ctx, AdmissionInput{ProfileID: profileID})
+}
+
+func (manager *AdmissionManager) ConnectInput(ctx context.Context, input AdmissionInput) error {
+	profileID := input.ProfileID
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
-	if manager.state.Pending != nil || !manager.activeCurrent() {
-		return errors.New("EAP identity must be installed and activated before connecting")
-	}
 	profile, err := manager.currentProfile(profileID)
 	if err != nil {
 		return err
 	}
+	if supported, _ := manager.methodSupport(ctx, profile); !supported {
+		return errors.New("EAP method is unavailable on this platform")
+	}
 	for _, selection := range manager.state.Selections {
+		if selection.Profile.ID != profileID {
+			continue
+		}
+		if selection.Profile.ID == profileID && admissionMethod(profile) == "ttls" && eapProfileHash(selection.Profile) == eapProfileHash(profile) {
+			if credentialInteraction(manager.system, profile) == "system-prompt" {
+				if input.Password != "" {
+					return errors.New("system EAP interaction does not accept an App password")
+				}
+			} else if err := validateEAPPassword(input.Password); err != nil {
+				return err
+			}
+			system := manager.system.(EAPPasswordSystem)
+			if err := system.ReadbackPassword(ctx, selection.RequestID, profile, selection.Adapter); err != nil {
+				return err
+			}
+			password := []byte(input.Password)
+			defer clear(password)
+			return system.ConnectPassword(ctx, selection.RequestID, profile, selection.Adapter, password)
+		}
+		if input.Password != "" {
+			return errors.New("certificate authentication has no password input")
+		}
+		if manager.state.Pending != nil || !manager.activeCurrent() {
+			return errors.New("EAP identity must be installed and activated before connecting")
+		}
 		if selection.Profile.ID == profileID && eapProfileHash(selection.Profile) == eapProfileHash(profile) {
 			if err := manager.system.Readback(ctx, selection.RequestID, profile, *manager.state.Active.Certificate, selection.Adapter); err != nil {
 				return err
@@ -477,6 +637,9 @@ func (manager *AdmissionManager) activeCurrent() bool {
 		return true
 	}
 	for _, selection := range manager.state.Selections {
+		if admissionMethod(selection.Profile) == "ttls" {
+			continue
+		}
 		profile, err := manager.currentProfile(selection.Profile.ID)
 		if err != nil || profile.ClientCertificateFingerprint != active.Certificate.Fingerprint {
 			return false

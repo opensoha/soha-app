@@ -311,3 +311,20 @@ async function hostRequest<T>(
   }
   return expectsDataEnvelope ? envelope!.data : (payload as T);
 }
+
+export function proxyStatus(): Promise<import('@/types').ProxyWorkbench> {
+  return hostRequest('/app/v1/network/proxy', {}, false);
+}
+export function proxyAction(input: import('@/types').ProxyAction): Promise<import('@/types').ProxyWorkbench> {
+  return hostRequest('/app/v1/network/proxy/actions', jsonRequest(input), false);
+}
+export function proxyRules(input: import('@/types').ProxyRulesInput): Promise<import('@/types').ProxyWorkbench> {
+  return hostRequest('/app/v1/network/proxy/rules', { ...jsonRequest(input), method: 'PUT' }, false);
+}
+
+export function getLocalProxyInterception(): Promise<import('@/types').LocalProxyInterceptionStatus> {
+  return hostRequest('/app/v1/network/proxy/interception', {}, false);
+}
+export function setLocalProxyInterception(input: import('@/types').LocalProxyInterceptionIntent): Promise<import('@/types').LocalProxyInterceptionStatus> {
+  return hostRequest('/app/v1/network/proxy/interception', jsonRequest(input), false);
+}

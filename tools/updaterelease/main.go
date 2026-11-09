@@ -334,7 +334,8 @@ func verifyRelease(directory string, publicKey ed25519.PublicKey, previousExecut
 	installer := fmt.Sprintf("soha-app-v%s-windows-amd64-installer.exe", release.Version)
 	service := fmt.Sprintf("soha-app-service-v%s-windows-amd64.exe", release.Version)
 	dmg := fmt.Sprintf("soha-app-v%s-darwin-arm64.dmg", release.Version)
-	for _, name := range []string{installer, service, dmg} {
+	companion := fmt.Sprintf("soha-app-network-service-v%s-linux-amd64.tar.gz", release.Version)
+	for _, name := range []string{installer, service, dmg, companion} {
 		if _, err := artifactForFile(filepath.Join(directory, name)); err != nil {
 			return fmt.Errorf("verify %s: %w", name, err)
 		}

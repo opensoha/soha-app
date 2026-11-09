@@ -54,6 +54,7 @@ func TestBuildAndVerifyRelease(t *testing.T) {
 	writeTestArtifact(t, directory, "soha-app-v0.2.0-windows-amd64-installer.exe", []byte("installer"))
 	writeTestArtifact(t, directory, "soha-app-service-v0.2.0-windows-amd64.exe", []byte("service"))
 	writeTestArtifact(t, directory, "soha-app-v0.2.0-linux-amd64.deb", []byte("deb"))
+	writeTestArtifact(t, directory, "soha-app-network-service-v0.2.0-linux-amd64.tar.gz", []byte("companion"))
 	writeTestArtifact(t, directory, "soha-app-v0.2.0-darwin-arm64.dmg", []byte("dmg"))
 	writeTestAppZIP(t, filepath.Join(directory, "soha-app-v0.2.0-darwin-arm64.zip"))
 
@@ -138,6 +139,7 @@ func TestBuildReleaseKeepsMachineInstalledWindowsExternal(t *testing.T) {
 	writeTestArtifact(t, directory, "soha-app-v0.2.0-test.2-windows-amd64-installer.exe", []byte("installer"))
 	writeTestArtifact(t, directory, "soha-app-service-v0.2.0-test.2-windows-amd64.exe", []byte("service"))
 	writeTestArtifact(t, directory, "soha-app-v0.2.0-test.2-linux-amd64.deb", []byte("deb"))
+	writeTestArtifact(t, directory, "soha-app-network-service-v0.2.0-test.2-linux-amd64.tar.gz", []byte("companion"))
 	writeTestArtifact(t, directory, "soha-app-v0.2.0-test.2-darwin-arm64.dmg", []byte("dmg"))
 	writeTestAppZIP(t, filepath.Join(directory, "soha-app-v0.2.0-test.2-darwin-arm64.zip"))
 
@@ -231,5 +233,48 @@ func TestWindowsSignatureDownloadIncludesEveryExecutable(t *testing.T) {
 		if matched != want {
 			t.Errorf("signature download matches %s = %v, want %v", name, matched, want)
 		}
+	}
+}
+
+func TestLinuxCompanionReleaseAssetIsRequiredAndVersionExact(t *testing.T) {
+	for _, mode := range []string{"present", "missing", "wrong-version", "unexpected"} {
+		t.Run(mode, func(t *testing.T) {
+			directory := t.TempDir()
+			for _, name := range []string{"soha-app-v0.2.0-windows-amd64.exe", "soha-app-v0.2.0-windows-amd64-installer.exe", "soha-app-service-v0.2.0-windows-amd64.exe", "soha-app-v0.2.0-linux-amd64.deb", "soha-app-v0.2.0-darwin-arm64.dmg"} {
+				writeTestArtifact(t, directory, name, []byte(name))
+			}
+			writeTestAppZIP(t, filepath.Join(directory, "soha-app-v0.2.0-darwin-arm64.zip"))
+			if mode != "missing" {
+				name := "soha-app-network-service-v0.2.0-linux-amd64.tar.gz"
+				if mode == "wrong-version" {
+					name = "soha-app-network-service-v0.2.1-linux-amd64.tar.gz"
+				}
+				writeTestArtifact(t, directory, name, []byte("companion"))
+			}
+			if mode == "unexpected" {
+				writeTestArtifact(t, directory, "unexpected.tar.gz", []byte("unowned"))
+			}
+			publicKey, privateKey, err := ed25519.GenerateKey(nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			buildErr := buildRelease(directory, "0.2.0", "stable", "notes", time.Now().UTC(), privateKey, nil)
+			verifyErr := verifyRelease(directory, publicKey, "")
+			for operation, result := range map[string]error{"build": buildErr, "verify": verifyErr} {
+				if mode == "present" {
+					if result != nil {
+						t.Fatalf("%s: %v", operation, result)
+					}
+					continue
+				}
+				expected := "soha-app-network-service-v0.2.0-linux-amd64.tar.gz"
+				if mode == "unexpected" {
+					expected = "unexpected.tar.gz"
+				}
+				if result == nil || !strings.Contains(result.Error(), expected) {
+					t.Fatalf("%s did not reject the expected asset: %v", operation, result)
+				}
+			}
+		})
 	}
 }

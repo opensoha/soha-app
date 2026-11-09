@@ -48,6 +48,9 @@ func RunEAPUserHelper(ctx context.Context, input io.Reader, output io.Writer) er
 	} else if request.Adapter != nil || len(request.ExpectedXML) != 0 {
 		return errors.New("EAP identity request has unrelated network parameters")
 	}
+	if request.Profile != nil && admissionMethod(*request.Profile) == "ttls" && strings.HasPrefix(request.Action, "network_") && request.Action != "network_remove" {
+		return runEAPPasswordUser(ctx, request, output)
+	}
 	switch request.Action {
 	case "cleanup":
 		if request.Cleanup == nil || request.Profile != nil || request.Certificate != nil || request.Cleanup.RequestID != request.RequestID {
@@ -201,4 +204,56 @@ func setWindowsLANUserData(ctx context.Context, adapterName string, configuratio
 	}
 	_, err = eapWindowsNetsh(ctx, "lan", "set", "eapuserdata", "filename="+file.Name(), "allusers=no", "interface="+adapterName)
 	return err
+}
+
+func runEAPPasswordUser(ctx context.Context, request eapUserRequest, output io.Writer) error {
+	if request.Certificate != nil || request.Profile == nil || request.Adapter == nil {
+		return errors.New("password EAP request contains certificate parameters")
+	}
+	if err := validateAdmissionProfile(*request.Profile, time.Now()); err != nil {
+		return err
+	}
+	configuration, err := renderEAPWindowsProfile(*request.Profile, request.DeviceID, EAPCertificateResult{}, time.Now())
+	if err != nil {
+		return err
+	}
+	if err := prepareEAPPasswordTrust(*request.Profile, request.Action,
+		func(anchor *x509.Certificate) error {
+			return addEAPUserCertificate("ROOT", anchor, nil, request.DeviceID)
+		},
+		func(anchor *x509.Certificate) error { return readbackEAPPublicCertificate("ROOT", anchor) }); err != nil {
+		return err
+	}
+	response := eapUserResponse{OK: true}
+	if request.Adapter.Medium == "wired" {
+		if request.Action != "network_stage" && request.Action != "network_readback" {
+			return errors.New("wired password EAP belongs to the service and system credential prompt")
+		}
+		// Only CA trust is managed in the user helper. LAN XML stays in the protected service.
+		return json.NewEncoder(output).Encode(response)
+	}
+	client, err := openEAPWlan(*request.Adapter)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	switch request.Action {
+	case "network_inspect":
+		response.ProfileXML, response.Present, err = client.get(configuration.Name)
+	case "network_stage":
+		err = client.set(configuration, request.ExpectedXML)
+	case "network_readback":
+		err = client.readback(configuration)
+	case "network_connect":
+		err = client.readback(configuration)
+		if err == nil {
+			err = client.connect(configuration.Name)
+		}
+	default:
+		return errors.New("unsupported password EAP user action")
+	}
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(output).Encode(response)
 }

@@ -109,6 +109,9 @@ func (client *eapWlanClient) readback(profile eapWindowsProfile) error {
 	if err := matchEAPWindowsXML(actual, profile.XML); err != nil {
 		return err
 	}
+	if len(profile.UserData) == 0 {
+		return nil
+	}
 	// Windows has no EAP XML user-data getter; acknowledge a fresh, exact write.
 	return callEAPWlan(eapWlanSetUser, client.handle, uintptr(unsafe.Pointer(&client.guid)), uintptr(unsafe.Pointer(windows.StringToUTF16Ptr(profile.Name))), 0, uintptr(unsafe.Pointer(windows.StringToUTF16Ptr(string(profile.UserData)))), 0)
 }

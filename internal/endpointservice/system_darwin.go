@@ -29,11 +29,17 @@ import (
 
 // The service owns the TUN descriptor; closing it removes its interface and routes.
 type DarwinSystem struct {
-	mu       sync.Mutex
-	device   *device.Device
-	name     string
-	dns      *darwinDNS
-	expected *TunnelPlan
+	mu                      sync.Mutex
+	device                  *device.Device
+	name                    string
+	dns                     *darwinDNS
+	expected                *TunnelPlan
+	peerEndpoint            netip.AddrPort
+	nativeDNSDelegate       *darwinWGDNSEpoch
+	nativeDNSReadback       func(context.Context) (TunnelReadback, error)
+	nativeDNSInterfaces     func() ([]nativeInterface, error)
+	nativeDNSAbsent         func(nativeChange) (bool, error)
+	nativeDNSVerifyEndpoint func(context.Context, string, netip.AddrPort) bool
 }
 
 func NewDarwinSystem() (*DarwinSystem, error) {
@@ -99,6 +105,7 @@ func (s *DarwinSystem) Apply(ctx context.Context, plan TunnelPlan) (result error
 	}()
 	expected := cloneTunnelPlan(plan)
 	s.expected = &expected
+	s.peerEndpoint = endpoint.AddrPort()
 	var config bytes.Buffer
 	fmt.Fprintf(&config, "private_key=%x\nreplace_peers=true\npublic_key=%x\nendpoint=%s\npersistent_keepalive_interval=%d\nreplace_allowed_ips=true\n", private[:], peer[:], endpoint, plan.Peer.PersistentKeepaliveSeconds)
 	for _, prefix := range plan.Peer.AllowedIPs {
@@ -174,7 +181,7 @@ func (s *DarwinSystem) TunnelInterface(ctx context.Context) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	state, err := s.readback(ctx)
-	if err != nil || s.expected == nil || !reflect.DeepEqual(state, s.expected.Readback()) {
+	if err != nil || s.expected == nil || !darwinWGReadbackMatches(state, s.expected.Readback(), s.nativeDNSDelegate) {
 		return "", errors.New("macOS VPN interface is not verified")
 	}
 	return s.name, nil
@@ -224,17 +231,24 @@ func (s *DarwinSystem) readback(ctx context.Context) (TunnelReadback, error) {
 		return TunnelReadback{}, err
 	}
 	state.Routes = slices.Clone(state.Peer.AllowedIPs)
-	endpoint, err := net.ResolveUDPAddr("udp", state.Peer.Endpoint)
-	if err != nil || s.expected == nil || !endpointMatches(ctx, s.expected.Peer.Endpoint, endpoint) {
+	endpoint, err := netip.ParseAddrPort(state.Peer.Endpoint)
+	if err != nil || s.expected == nil {
 		return TunnelReadback{}, errors.New("macOS WireGuard endpoint changed")
+	}
+	if !s.verifyDarwinPeer(ctx, endpoint) {
+		return TunnelReadback{}, errors.New("macOS WireGuard peer or grant changed")
 	}
 	state.Peer.Endpoint = s.expected.Peer.Endpoint
 	state.DNSServers = []string{}
 	if len(s.expected.DNSServers) > 0 {
-		if !s.dns.matches() {
+		servers, readErr := s.dns.currentServers()
+		if readErr != nil || !s.dns.matches() {
 			return TunnelReadback{}, errors.New("macOS VPN DNS settings changed")
 		}
-		state.DNSServers = slices.Clone(s.expected.DNSServers)
+		state.DNSServers = servers
+	}
+	if !darwinWGReadbackMatches(state, s.expected.Readback(), s.nativeDNSDelegate) {
+		return TunnelReadback{}, errors.New("macOS VPN grant or DNS delegation changed")
 	}
 	return state, nil
 }
@@ -245,6 +259,8 @@ func (s *DarwinSystem) Disable(context.Context) error {
 	return s.disable()
 }
 func (s *DarwinSystem) disable() error {
+	s.nativeDNSDelegate = nil
+	s.peerEndpoint = netip.AddrPort{}
 	var cleanupErr error
 	if s.device != nil {
 		s.device.Close()
@@ -391,4 +407,80 @@ func parseDarwinWireGuard(raw []byte, now time.Time) (TunnelReadback, error) {
 	}
 	state.Peer.AllowedIPs = allowed
 	return state, nil
+}
+
+// The original grant is immutable; actual delegated DNS is returned to every caller.
+type darwinWGDNSEpoch struct {
+	change   nativeChange
+	grant    TunnelReadback
+	owner    nativeOwner
+	restored bool
+}
+
+func darwinWGReadbackMatches(actual, grant TunnelReadback, epoch *darwinWGDNSEpoch) bool {
+	expected := grant
+	if epoch != nil {
+		if !reflect.DeepEqual(grant, epoch.grant) || epoch.change.After.DNS == nil {
+			return false
+		}
+		if !epoch.restored {
+			expected.DNSServers = make([]string, 0, len(epoch.change.After.DNS.Servers))
+			for _, server := range epoch.change.After.DNS.Servers {
+				expected.DNSServers = append(expected.DNSServers, server.String())
+			}
+		}
+	}
+	return reflect.DeepEqual(actual, expected)
+}
+
+// Test hooks replace only the native handle operations, never the grant checks.
+type darwinDNSCalls struct {
+	read    func() ([]string, error)
+	cas     func([]string, []string) (string, error)
+	matches func() bool
+}
+
+func (s *DarwinSystem) verifyDarwinPeer(ctx context.Context, endpoint netip.AddrPort) bool {
+	if ctx.Err() != nil || s.expected == nil || !endpoint.IsValid() {
+		return false
+	}
+	if s.nativeDNSDelegate != nil {
+		return reflect.DeepEqual(s.nativeDNSDelegate.grant, s.expected.Readback()) && s.peerEndpoint.IsValid() && endpoint == s.peerEndpoint
+	}
+	verified := false
+	if s.nativeDNSVerifyEndpoint != nil {
+		verified = s.nativeDNSVerifyEndpoint(ctx, s.expected.Peer.Endpoint, endpoint)
+	} else {
+		verified = endpointMatches(ctx, s.expected.Peer.Endpoint, net.UDPAddrFromAddrPort(endpoint))
+	}
+	if verified {
+		s.peerEndpoint = endpoint
+	}
+	return verified
+}
+
+func (s *DarwinSystem) NativePeerEndpoint(ctx context.Context, session nativeSession) (netip.AddrPort, error) {
+	if session == nil {
+		return netip.AddrPort{}, errors.New("macOS native WG peer session is absent")
+	}
+	if err := session.Validate(ctx, false); err != nil {
+		return netip.AddrPort{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// The same full readback updates/verifies the numeric pin without changing the hostname ACK.
+	state, err := s.wgNativePeerReadback(ctx)
+	if err != nil || s.expected == nil || !darwinWGReadbackMatches(state, s.expected.Readback(), s.nativeDNSDelegate) || !s.peerEndpoint.IsValid() {
+		return netip.AddrPort{}, errors.New("macOS native WG peer is unverified")
+	}
+	if err = session.Validate(ctx, false); err != nil {
+		return netip.AddrPort{}, err
+	}
+	return s.peerEndpoint, nil
+}
+func (s *DarwinSystem) wgNativePeerReadback(ctx context.Context) (TunnelReadback, error) {
+	if s.nativeDNSReadback != nil {
+		return s.nativeDNSReadback(ctx)
+	}
+	return s.readback(ctx)
 }

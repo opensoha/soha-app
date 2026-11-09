@@ -66,6 +66,11 @@ func validateEAPCertificate(result EAPCertificateResult, csrPEM, deviceID, subje
 }
 
 func validateAdmissionProfile(profile AdmissionProfile, now time.Time) error {
+	method := admissionMethod(profile)
+	if method != "tls" && method != "ttls" || profile.ProfileRevision != "" && !validReadbackHash(profile.ProfileRevision) || method == "tls" && (profile.InnerMethod != "" || profile.CredentialSource != "") || method == "ttls" && (profile.InnerMethod != "pap" || profile.CredentialSource != "user-input" || profile.ClientCertificateFingerprint != "" || !validReadbackHash(profile.ProfileRevision)) {
+		return errors.New("EAP method or credential policy is invalid")
+	}
+
 	if !identifierPattern.MatchString(profile.ID) || !identifierPattern.MatchString(profile.SiteID) || !identifierPattern.MatchString(profile.Identity) || profile.AccessMedium != "wifi" && profile.AccessMedium != "wired" || profile.WifiSecurity != "wpa2-enterprise" && profile.WifiSecurity != "wpa3-enterprise" || profile.ClientCertificateFingerprint != "" && !validReadbackHash(profile.ClientCertificateFingerprint) {
 		return errors.New("admission profile identity or medium is invalid")
 	}

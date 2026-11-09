@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "runtimeId": "endpoint-runtime-1",
+  "deviceId": "device-1",
+  "allowedUserUid": 1000,
+  "controlUrl": "https://network-control.example.com",
+  "controlCaFile": "/var/lib/opensoha/network-service/control-ca.pem",
+  "controlCertFile": "/var/lib/opensoha/network-service/control-cert.pem",
+  "controlKeyFile": "/var/lib/opensoha/network-service/control-key.pem",
+  "controlServerName": "network-control.example.com",
+  "stateDirectory": "/var/lib/opensoha/network-service"
+}

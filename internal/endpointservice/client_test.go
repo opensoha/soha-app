@@ -3,6 +3,7 @@ package endpointservice
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,48 @@ import (
 	"testing"
 	"time"
 )
+
+type unavailableCounterMetrics struct{ err error }
+
+func (s unavailableCounterMetrics) ProxyFlowSnapshot(context.Context) (ProxyFlowSnapshot, error) {
+	return ProxyFlowSnapshot{}, s.err
+}
+func TestTelemetryMeasurementUnavailableDoesNotFailAcceptedHeartbeat(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		measurement error
+		status      int
+		wantError   bool
+	}{
+		{"epoch", errBusinessCounterEpoch, http.StatusAccepted, false},
+		{"asynchronous", errBusinessCounterSample, http.StatusAccepted, false},
+		{"controller_failure", errors.New("controller unavailable"), http.StatusAccepted, true},
+		{"ingest_failure", errBusinessCounterSample, http.StatusServiceUnavailable, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var batch IngestBatch
+				if json.NewDecoder(r.Body).Decode(&batch) != nil || len(batch.Events) != 1 || batch.Events[0].Type != "runtime.heartbeat" {
+					t.Error("unknown measurement emitted a flow event")
+				}
+				calls++
+				w.WriteHeader(test.status)
+			}))
+			defer server.Close()
+			client, err := NewTelemetryClient(server.URL, "endpoint-1", server.Client(), unavailableCounterMetrics{test.measurement})
+			if err != nil {
+				t.Fatal(err)
+			}
+			baseline := &proxyFlowBaseline{at: time.Now().Add(-time.Minute), snapshot: ProxyFlowSnapshot{Active: true, ProcessEpoch: "known-epoch", UploadTotal: 123, DownloadTotal: 456}}
+			client.previous = baseline
+			err = client.Heartbeat(context.Background(), Status{State: StateConnected, RuntimeID: "endpoint-1", DeviceID: "device-1"})
+			if (err != nil) != test.wantError || calls != 1 || client.previous != baseline {
+				t.Fatal("measurement error changed heartbeat/baseline semantics", err)
+			}
+		})
+	}
+}
 
 const testAccessGrantToken = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 

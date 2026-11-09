@@ -88,6 +88,7 @@ type appHost struct {
 	pending               *url.URL
 	pendingCode           string
 	sessionMu             sync.Mutex
+	nativeScope           nativeUIScope
 	credentialsBlocked    atomic.Bool
 	credentialKeyring     keyring.Keyring
 	desktopAuthMu         sync.Mutex
@@ -130,6 +131,11 @@ func newAppHost(
 		credentialKeyring:  credentialKeyring,
 		desktopAuthTimeout: defaultDesktopAuthTimeout,
 	}
+	epoch, err := nativeUIProcessEpoch()
+	if err != nil {
+		return nil, err
+	}
+	host.nativeScope = nativeUIScope{ServerURL: normalized, Epoch: epoch, Generation: 1}
 	host.target.Store(target)
 	host.proxy = host.newReverseProxy()
 	return host, nil
@@ -231,7 +237,9 @@ func (h *appHost) setOpenBrowserURL(open func(string) error) {
 }
 
 func (h *appHost) setRuntimeAPI(runtimeAPI http.Handler) {
+	h.nativeMu.Lock()
 	h.runtimeAPI = runtimeAPI
+	h.nativeMu.Unlock()
 }
 
 func (h *appHost) currentState() hostState {
@@ -257,6 +265,9 @@ func (h *appHost) handleAPI(writer http.ResponseWriter, request *http.Request) {
 		writeError(writer, http.StatusForbidden, "untrusted_origin", "Request origin is not allowed")
 		return
 	}
+	h.sessionMu.Lock()
+	target, generation := h.target.Load(), h.nativeScope.Generation
+	h.sessionMu.Unlock()
 	if h.hasPendingSwitch() {
 		writeError(writer, http.StatusServiceUnavailable, "server_switch_pending", "Server switch is pending")
 		return
@@ -277,7 +288,8 @@ func (h *appHost) handleAPI(writer http.ResponseWriter, request *http.Request) {
 		request.ContentLength = int64(len(payload))
 		request.TransferEncoding = nil
 	}
-	request = request.WithContext(context.WithValue(request.Context(), proxyTargetContextKey{}, h.target.Load()))
+	request = request.WithContext(context.WithValue(request.Context(), proxyTargetContextKey{}, target))
+	request = request.WithContext(context.WithValue(request.Context(), authGenerationContextKey{}, generation))
 	h.proxy.ServeHTTP(writer, request)
 }
 
@@ -357,9 +369,13 @@ func (h *appHost) handleConnectionSwitch(writer http.ResponseWriter, request *ht
 		writeError(writer, http.StatusConflict, "server_switch_pending", "A server switch is already pending")
 		return
 	}
+	h.sessionMu.Lock()
 	h.pending = target
 	h.pendingCode = activationToken
+	h.invalidateNativeUIScopeLocked()
+	h.sessionMu.Unlock()
 	h.pendingMu.Unlock()
+	h.publishNativeUIScope()
 	h.logoutOldServer(request, oldTarget)
 	h.deleteRefreshCredential(oldTarget)
 	clearAuthCookies(writer, targetRequiresSecureCookies(oldTarget))
@@ -374,6 +390,7 @@ type activationRequest struct {
 }
 
 func (h *appHost) handleConnectionActivate(writer http.ResponseWriter, request *http.Request) {
+	defer h.publishNativeUIScope()
 	if !validateHostMutation(writer, request) {
 		return
 	}
@@ -402,6 +419,8 @@ func (h *appHost) handleConnectionActivate(writer http.ResponseWriter, request *
 	}
 	h.credentialsBlocked.Store(true)
 	h.target.Store(h.pending)
+	h.nativeScope.ServerURL = h.pending.String()
+	h.nativeScope.Generation++
 	h.pending = nil
 	h.pendingCode = ""
 	h.stateMu.Lock()
@@ -662,6 +681,9 @@ func (h *appHost) newReverseProxy() *httputil.ReverseProxy {
 				proxyRequest.Out.Header.Set("Accept-Encoding", "identity")
 			}
 			if h.credentialsBlocked.Load() {
+				if proxyRequest.Out.Method == http.MethodPost && proxyRequest.Out.URL.Path == "/api/v1/auth/logout" {
+					h.blockSession(target, "", authRequestGeneration(proxyRequest.Out))
+				}
 				proxyRequest.Out.Header.Del("Authorization")
 				proxyRequest.Out.Header.Del("Cookie")
 				return
@@ -669,6 +691,9 @@ func (h *appHost) newReverseProxy() *httputil.ReverseProxy {
 			if proxyRequest.Out.Method == http.MethodPost &&
 				(proxyRequest.Out.URL.Path == "/api/v1/auth/refresh" || proxyRequest.Out.URL.Path == "/api/v1/auth/logout") {
 				h.injectStoredRefreshCredential(proxyRequest.Out, target)
+			}
+			if proxyRequest.Out.Method == http.MethodPost && proxyRequest.Out.URL.Path == "/api/v1/auth/logout" {
+				h.blockSession(target, "", authRequestGeneration(proxyRequest.Out))
 			}
 		},
 		ModifyResponse: h.modifyProxyResponse,
@@ -701,16 +726,15 @@ func (h *appHost) modifyProxyResponse(response *http.Response) error {
 		strings.HasPrefix(request.URL.Path, "/api/v1/auth/desktop/attempts/") &&
 		strings.HasSuffix(request.URL.Path, "/exchange")
 	if isRefresh && (response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden) {
-		h.blockSession(requestTarget, requestRefreshToken(request))
+		h.blockSession(requestTarget, requestRefreshToken(request), authRequestGeneration(request))
+		clearAuthCookieHeaders(response.Header, targetRequiresSecureCookies(requestTarget))
+		return nil
+	}
+	if isLogout {
 		clearAuthCookieHeaders(response.Header, targetRequiresSecureCookies(requestTarget))
 		return nil
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return nil
-	}
-	if isLogout {
-		h.blockSession(requestTarget, "")
-		clearAuthCookieHeaders(response.Header, targetRequiresSecureCookies(requestTarget))
 		return nil
 	}
 	if isPasswordLogin || isRefresh || isDesktopExchange {
@@ -721,14 +745,15 @@ func (h *appHost) modifyProxyResponse(response *http.Response) error {
 		if err != nil {
 			return err
 		}
-		if err := redactAuthRefreshToken(response); err != nil {
+		userID, err := redactAuthRefreshTokenAndUser(response)
+		if err != nil {
 			return err
 		}
 		if isRefresh {
-			if !h.markRefreshed(requestTarget, requestRefreshToken(request), refreshToken) {
+			if !h.markRefreshed(requestTarget, requestRefreshToken(request), refreshToken, authResponseScope{authRequestGeneration(request), userID}) {
 				return errContractMismatch
 			}
-		} else if !h.markAuthenticated(requestTarget, refreshToken) {
+		} else if !h.markAuthenticated(requestTarget, refreshToken, userID, authRequestGeneration(request)) {
 			return errContractMismatch
 		}
 	}
@@ -755,16 +780,17 @@ func proxyRejectionEvent(request *http.Request, statusCode int) string {
 	return "api_authorization_rejected"
 }
 
-func (h *appHost) markAuthenticated(requestTarget *url.URL, refreshToken string) bool {
-	if requestTarget == nil || requestTarget != h.target.Load() {
-		return false
-	}
+func (h *appHost) markAuthenticated(requestTarget *url.URL, refreshToken, userID string, generation uint64) bool {
 	h.sessionMu.Lock()
-	defer h.sessionMu.Unlock()
-	if requestTarget != h.target.Load() {
+	if requestTarget == nil || requestTarget != h.target.Load() || generation != h.nativeScope.Generation {
+		h.sessionMu.Unlock()
 		return false
 	}
 	h.persistAuthenticatedLocked(requestTarget, refreshToken)
+	h.nativeScope.Generation++
+	h.setAuthenticatedNativeUIScopeLocked(requestTarget, userID)
+	h.sessionMu.Unlock()
+	h.publishNativeUIScope()
 	return true
 }
 

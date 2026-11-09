@@ -85,6 +85,85 @@ SOHA_APP_UPDATE_MANIFEST_URL=http://127.0.0.1:8088/update-manifest-v1.json /path
 
 Windows test builds report the installer release as an external update; they never replace only the desktop executable.
 
+## Linux Native Admission Service
+
+Linux `.deb`, `.rpm` and Arch packages include a same-version service binary, systemd unit,
+password-free configuration example, administrator management script and checksum manifest
+under `/usr/share/soha-app/network-service`. The normal Linux build also produces
+`bin/soha-app-network-service-linux-<arch>.tar.gz`; this companion is mandatory when distributing
+an AppImage. **The AppImage itself does not contain the service.** Build staging rejects a
+service/App version mismatch, and CI/release artifact collection verifies and includes the companion.
+The compile Tasks bind each binary hash to its package/linker version in a build receipt
+(Go trimpath builds omit linker flags from `go version -m`). Staging checks these receipts;
+the privileged installer additionally checks the target service's actual `version` output.
+Linux Docker cross-builds forward the actual release linker flags. Rebuild the cross-image
+from the current Dockerfile first: the Linux Task rejects older cached images lacking this
+capability instead of assigning them a mismatched version receipt. Real cross-image/GUI
+acceptance remains a separate gate when that build environment is available.
+An optional Linux-only image avoids downloading Zig and the macOS SDK:
+`wails3 task linux:setup:docker`, followed by
+`wails3 task build GOOS=linux CROSS_IMAGE=wails-cross-linux`.
+The default `wails-cross` build still contains the full cross-platform toolchain;
+Linux-only images explicitly reject Windows/macOS builds.
+The package and ordinary App launch never install, enable or elevate the privileged service.
+
+Native admission requires systemd and an already active NetworkManager service (1.42 or newer
+with the required supplicant EAP methods). Without them, native admission is unsupported;
+the ordinary App remains available. Ask the administrator to provision a supported network stack;
+this installer does not replace another network manager or start NetworkManager automatically.
+
+An administrator must provision `/var/lib/opensoha/network-service/service.json` and its referenced
+mTLS files first, using the bundled `service.example.json`. All files must be root-owned, mode
+`0600`, directly inside that state directory; its mode is `0700` and its parents must not be
+symlinks or writable by other users. Set the enrolled desktop user's exact positive `allowedUserUid`.
+The example contains no enrollment token, password or private key. Keep Linux VPN, mihomo and
+trusted-UI-presence options unset; this service slice manages native admission only.
+
+Explicitly install or upgrade the packaged helper after reviewing its configuration:
+
+```sh
+sudo /usr/bin/python3 /usr/share/soha-app/network-service/manage.py install
+```
+
+For an AppImage companion, first verify the published archive checksum, then extract it as root
+into a new root-owned protected directory, for example `/opt/soha-network-service-<version>`.
+Run that directory's `network-service/manage.py install` with administrator authorization.
+Do not run the privileged installer from a user-writable download or extraction directory.
+
+The active helper is `/usr/libexec/opensoha/soha-app-service`; its unit is
+`/etc/systemd/system/soha-app-network.service`. A root-only installation receipt records the exact
+binary/unit hashes and configuration hash. Installation and upgrade reject foreign units, drop-ins,
+foreign service processes, changed managed files or configuration drift. Routine package updates
+replace only staged assets; an explicit helper upgrade stops the verified unit, preserves EAP
+profiles and credentials, replaces its owned files, and checks the root IPC peer before reporting
+service readiness. A systemd `active` state is not NAS authorization. Inspect failures with
+`systemctl status soha-app-network.service` and `journalctl -u soha-app-network.service`.
+
+The unit runs as root for protected state and NetworkManager's system D-Bus authorization,
+with only `CAP_CHOWN` retained for the enrolled user's socket ownership. It has no native route
+or TUN permission, uses a read-only system view and writes only its state/runtime directories.
+The socket `/run/opensoha/network-service.sock` accepts the configured desktop UID or root;
+the App verifies the server's root credentials. Passwords remain in the one-shot connection flow.
+
+Explicit service removal (also used by package removal, not package upgrade):
+
+```sh
+sudo /usr/bin/python3 /usr/share/soha-app/network-service/manage.py uninstall
+```
+
+Removal uses the verified service PID/root IPC peer to remove its managed admission profiles,
+then disables the exact owned unit and removes only receipt-matching helper/unit files. It never
+removes provisioning credentials, state directories or unrelated user network profiles. If the
+service is stopped while managed admission remains, or cleanup fails, removal refuses to discard
+recovery information: restore/start the verified original service, finish profile removal in the
+App, and retry. If `install-pending.json` remains after an interrupted installation or upgrade,
+rerun `manage.py install` from the same verified package before uninstalling. This root-only journal
+records the exact old and new file hashes and the configuration hash. The installer resumes only from
+those identities and commits its final receipt after the service passes the IPC readiness check.
+Unexpected file or configuration changes and incomplete legacy installations without a journal
+require administrator recovery. Signing, publication and real systemd/NAS acceptance
+remain separate release gates.
+
 ## Windows Endpoint Network Service
 
 The machine-wide installer includes `soha-app-service.exe`, which owns the endpoint WireGuard private key, split routes, DNS, lease renewal, optional mihomo reconciliation, and fail-closed cleanup. The desktop App can only query, connect, or disconnect through `\\.\pipe\OpenSoha.Soha.NetworkService`; the pipe ACL admits LocalSystem, Administrators, and the exact configured user SID. Enrollment tokens, TLS keys, WireGuard keys, and managed mihomo subscription URLs never cross that IPC boundary, and the service replaces inherited ACLs on secret files with a LocalSystem/Administrators-only DACL before reading them. For ZTNA connections, the signed-in renderer requests a five-minute one-time access grant and passes it once through the protected pipe; the token is never persisted, logged, or returned in endpoint status.

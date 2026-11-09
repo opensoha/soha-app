@@ -32,6 +32,8 @@ type EnrollmentInput struct {
 }
 
 type ControlClient struct {
+	processEpoch string
+
 	origin       string
 	runtimeID    string
 	http         *http.Client
@@ -47,22 +49,26 @@ func NewControlClient(origin, runtimeID string, client *http.Client, maxClockSke
 	}
 	copy := *client
 	copy.CheckRedirect = rejectRedirect
-	capabilities := append([]string{"wireguard", "wireguard-ipv6-v1", "network-lifecycle-v1", "route-coordinator", "dns-coordinator", "managed-vpn-v1", "vpn-probe-v1", "endpoint-presence-v1"}, additionalCapabilities...)
-	return &ControlClient{origin: parsed, runtimeID: runtimeID, http: &copy, maxClockSkew: maxClockSkew, capabilities: capabilities, now: time.Now}, nil
+	baseCapabilities := []string{"wireguard", "wireguard-ipv6-v1", "network-lifecycle-v1", "route-coordinator", "dns-coordinator", "managed-vpn-v1", "vpn-probe-v1", "endpoint-presence-v1"}
+	if runtime.GOOS == "linux" {
+		baseCapabilities = []string{"endpoint-presence-v1"}
+	}
+	capabilities := append(baseCapabilities, additionalCapabilities...)
+	return &ControlClient{processEpoch: randomID(), origin: parsed, runtimeID: runtimeID, http: &copy, maxClockSkew: maxClockSkew, capabilities: capabilities, now: time.Now}, nil
 }
 
 func validEndpointCapabilities(capabilities []string) bool {
-	if len(capabilities) > 9 {
+	if len(capabilities) > 12 {
 		return false
 	}
 	seen := map[string]bool{}
 	for _, capability := range capabilities {
-		if seen[capability] || capability != "windows-channel-controls-v1" && capability != "mihomo" && capability != "mihomo-policy-v1" && capability != "mihomo-dns-pin-v1" && capability != "eap-profile-v1" && capability != "radius-eap-tls-v1" && capability != "endpoint-ui-presence-v1" {
+		if seen[capability] || capability != "windows-channel-controls-v1" && capability != "mihomo" && capability != "mihomo-policy-v1" && capability != "mihomo-dns-pin-v1" && capability != "eap-profile-v1" && capability != "radius-eap-tls-v1" && capability != "endpoint-ui-presence-v1" && capability != "radius-eap-ttls-pap-v1" && capability != "eap-certificate-lifecycle-v1" {
 			return false
 		}
 		seen[capability] = true
 	}
-	return seen["eap-profile-v1"] == seen["radius-eap-tls-v1"]
+	return seen["eap-profile-v1"] == (seen["radius-eap-tls-v1"] || seen["radius-eap-ttls-pap-v1"]) && (!seen["eap-certificate-lifecycle-v1"] || seen["eap-profile-v1"])
 }
 
 func (client *ControlClient) Enroll(ctx context.Context, input EnrollmentInput) (EnrollmentResult, error) {
@@ -318,6 +324,7 @@ type ProxyMetricsSource interface {
 }
 
 type ProxyFlowSnapshot struct {
+	ProcessEpoch      string
 	Active            bool
 	Engine            string
 	Mode              string
@@ -372,7 +379,11 @@ func (client *TelemetryClient) Heartbeat(ctx context.Context, status Status) err
 	if client.proxyMetrics != nil {
 		snapshot, err := client.proxyMetrics.ProxyFlowSnapshot(ctx)
 		if err != nil {
-			metricsErr = fmt.Errorf("read proxy flow aggregate: %w", err)
+			// Missing/asynchronous business measurements are not heartbeat transport
+			// failures. Keep the last valid baseline and omit this flow event.
+			if !errors.Is(err, errBusinessCounterEpoch) && !errors.Is(err, errBusinessCounterSample) {
+				metricsErr = fmt.Errorf("read proxy flow aggregate: %w", err)
+			}
 		} else if aggregate, ok := client.proxyAggregate(now, snapshot); ok {
 			payload, err := json.Marshal(aggregate)
 			if err != nil {
@@ -437,7 +448,7 @@ func (client *TelemetryClient) proxyAggregate(now time.Time, snapshot ProxyFlowS
 }
 
 func sameProxyFlow(left, right ProxyFlowSnapshot) bool {
-	return left.Engine == right.Engine && left.Mode == right.Mode && left.ProfileID == right.ProfileID && left.ProfileRevision == right.ProfileRevision && left.SelectedProxy == right.SelectedProxy
+	return left.ProcessEpoch == right.ProcessEpoch && left.Engine == right.Engine && left.Mode == right.Mode && left.ProfileID == right.ProfileID && left.ProfileRevision == right.ProfileRevision && left.SelectedProxy == right.SelectedProxy
 }
 
 func runtimeOrigin(raw string) (string, error) {
@@ -449,6 +460,9 @@ func runtimeOrigin(raw string) (string, error) {
 }
 
 func readRuntimeResponse(response *http.Response, expectedStatus int) ([]byte, error) {
+	return readRuntimeResponseLimit(response, expectedStatus, maxRuntimeResponseBytes)
+}
+func readRuntimeResponseLimit(response *http.Response, expectedStatus, limit int) ([]byte, error) {
 	defer response.Body.Close()
 	if response.StatusCode != expectedStatus {
 		var envelope struct {
@@ -471,8 +485,8 @@ func readRuntimeResponse(response *http.Response, expectedStatus int) ([]byte, e
 	if err != nil || mediaType != "application/json" {
 		return nil, errors.New("network runtime returned a non-JSON response")
 	}
-	raw, err := io.ReadAll(io.LimitReader(response.Body, maxRuntimeResponseBytes+1))
-	if err != nil || len(raw) > maxRuntimeResponseBytes {
+	raw, err := io.ReadAll(io.LimitReader(response.Body, int64(limit)+1))
+	if err != nil || len(raw) > limit {
 		return nil, errors.New("network runtime response exceeded the safe limit")
 	}
 	return raw, nil

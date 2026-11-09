@@ -22,7 +22,7 @@ func (runtimeAPI *appRuntime) handleAdmission(writer http.ResponseWriter, reques
 	var input *endpointservice.AdmissionInput
 	if action != "admission_status" && action != "admission_check" {
 		input = &endpointservice.AdmissionInput{}
-		if err := decodeRequestJSON(request, input); err != nil || input.ProfileID == "" || len(input.ProfileID) > 128 || action != "admission_prepare" && input.AdapterID != "" {
+		if err := decodeRequestJSON(request, input); err != nil || input.ProfileID == "" || len(input.ProfileID) > 128 || action != "admission_prepare" && input.AdapterID != "" || action != "admission_connect" && input.Password != "" || len(input.Password) > 1024 {
 			writeError(writer, http.StatusBadRequest, "invalid_admission_request", "准入配置选择无效")
 			return
 		}
@@ -45,6 +45,14 @@ func (runtimeAPI *appRuntime) handleAdmission(writer http.ResponseWriter, reques
 			err = errors.New("EAP profile has no pending installation")
 		} else {
 			err = runtimeAPI.openAdmissionProfile(ctx, path)
+		}
+	}
+	if err == nil && action == "admission_connect" && runtime.GOOS == "darwin" {
+		for _, profile := range status.Profiles {
+			if profile.ID == input.ProfileID && profile.CredentialInteraction == "system-prompt" && profile.State == "action_required" {
+				err = exec.CommandContext(ctx, "/usr/bin/open", "x-apple.systempreferences:com.apple.NetworkSettings").Run()
+				break
+			}
 		}
 	}
 	if err != nil {

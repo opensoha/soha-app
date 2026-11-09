@@ -95,6 +95,7 @@ jobs:
             artifact_path: |
               bin/soha-app
               bin/*.deb
+              bin/soha-app-network-service-linux-*.tar.gz
               bin/SHA256SUMS-linux.txt
           - platform: windows
             os: windows-latest
@@ -210,7 +211,12 @@ jobs:
             exit 1
           fi
 
-          sha256sum bin/soha-app "${debs[0]}" > bin/SHA256SUMS-linux.txt
+          companion=bin/soha-app-network-service-linux-amd64.tar.gz
+          python3 build/linux/network-service/verify_companion.py "${companion}" --package-config build/linux/nfpm/nfpm.yaml
+          grep -Fq 'usr/share/soha-app/network-service/soha-app-service' "${RUNNER_TEMP}/soha-app-deb-contents.txt"
+          grep -Fq 'usr/share/soha-app/network-service/soha-app-network.service' "${RUNNER_TEMP}/soha-app-deb-contents.txt"
+          grep -Fq 'usr/share/soha-app/network-service/manage.py' "${RUNNER_TEMP}/soha-app-deb-contents.txt"
+          sha256sum bin/soha-app "${debs[0]}" "${companion}" > bin/SHA256SUMS-linux.txt
           sha256sum --check bin/SHA256SUMS-linux.txt
       - name: Validate Windows engineering artifact
         if: runner.os == 'Windows'

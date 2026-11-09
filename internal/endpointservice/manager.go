@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	api "github.com/opensoha/soha-contracts/gen/go/sohaapi"
 	"io"
 	"log/slog"
 	randv2 "math/rand/v2"
@@ -121,31 +122,34 @@ type Status struct {
 }
 
 type Manager struct {
-	options   ManagerOptions
-	control   RuntimeControl
-	executor  ConfigurationExecutor
-	telemetry Telemetry
-	logger    *slog.Logger
-	startedAt time.Time
-	now       func() time.Time
+	proxyReceiptPending bool
+	options             ManagerOptions
+	control             RuntimeControl
+	executor            ConfigurationExecutor
+	telemetry           Telemetry
+	logger              *slog.Logger
+	startedAt           time.Time
+	now                 func() time.Time
 
 	intervalJitter func(time.Duration) time.Duration
 	heartbeatWait  func(context.Context, time.Duration) bool
 
-	operationMu        sync.Mutex
-	stateMu            sync.RWMutex
-	pollInterval       time.Duration
-	heartbeatInterval  time.Duration
-	status             Status
-	leaseIDs           []string
-	sessionUntil       time.Time
-	nextRenewAt        time.Time
-	appliedVersion     int
-	appliedHash        string
-	disabled           bool
-	cleanupReason      string
-	presenceBootID     string
-	configurationFloor configurationFloor
+	operationMu                        sync.Mutex
+	stateMu                            sync.RWMutex
+	pollInterval                       time.Duration
+	heartbeatInterval                  time.Duration
+	status                             Status
+	leaseIDs                           []string
+	sessionUntil                       time.Time
+	nextRenewAt                        time.Time
+	appliedVersion                     int
+	appliedProjectionFingerprint       string
+	appliedProjectionPolicyFingerprint string
+	appliedHash                        string
+	disabled                           bool
+	cleanupReason                      string
+	presenceBootID                     string
+	configurationFloor                 configurationFloor
 }
 
 func NewManager(options ManagerOptions, control RuntimeControl, executor ConfigurationExecutor, telemetry Telemetry, logger *slog.Logger) (*Manager, error) {
@@ -600,14 +604,47 @@ func (manager *Manager) syncConfiguration(ctx context.Context) error {
 		return manager.rejectConfiguration(ctx, "mihomo_policy_version_mismatch")
 	}
 	if desired.Mihomo != nil && desired.Mihomo.Mode == "managed_follow" {
-		source, sourceErr := manager.control.MihomoSource(ctx, desired.Mihomo.ProfileID)
-		if sourceErr != nil || source.ProfileID != desired.Mihomo.ProfileID || source.ProfileRevision != desired.Mihomo.ProfileRevision || desired.Mihomo.SourceType != "" && source.SourceType != desired.Mihomo.SourceType {
-			manager.degrade("mihomo_source_unavailable")
-			return errors.New("network control returned an invalid mihomo source")
+		if desired.Mihomo.DeliveryMode == "mapped_nodes" || desired.Mihomo.DeliveryMode == "gateway" {
+			projectionControl, ok := manager.control.(interface {
+				MihomoProjection(context.Context, string) (api.NetworkProxyEmployeeProjection, error)
+			})
+			if !ok {
+				return manager.rejectConfiguration(ctx, "projection_unavailable")
+			}
+			projection, err := projectionControl.MihomoProjection(ctx, desired.Mihomo.ProfileID)
+			if err != nil || validateEmployeeProjection(projection, *desired.Mihomo, manager.options.RuntimeID, manager.options.DeviceID, desired.ValidUntil, now) != nil {
+				return manager.rejectConfiguration(ctx, "projection_invalid")
+			}
+			if err := rememberEmployeeProjection(manager.options.ConfigurationStatePath, projection); err != nil {
+				return manager.rejectConfiguration(ctx, "projection_floor_rejected")
+			}
+			desired.Mihomo.Projection = &projection
+
+		} else if desired.Mihomo.DeliveryMode == "direct_subscription" && desired.Mihomo.BundleID != "" {
+			control, ok := manager.control.(interface {
+				MihomoDirectProjection(context.Context, string) (api.NetworkProxyDirectProjection, error)
+			})
+			if !ok {
+				return manager.rejectConfiguration(ctx, "direct_projection_unavailable")
+			}
+			projection, err := control.MihomoDirectProjection(ctx, desired.Mihomo.ProfileID)
+			if err != nil || validateDirectProjection(projection, *desired.Mihomo, manager.options.RuntimeID, desired.ValidUntil, now) != nil {
+				return manager.rejectConfiguration(ctx, "direct_projection_invalid")
+			}
+			if err := rememberEmployeeProjection(manager.options.ConfigurationStatePath, directProjectionTag(projection)); err != nil {
+				return manager.rejectConfiguration(ctx, "projection_floor_rejected")
+			}
+			desired.Mihomo.DirectProjection = &projection
+		} else {
+			source, sourceErr := manager.control.MihomoSource(ctx, desired.Mihomo.ProfileID)
+			if sourceErr != nil || source.ProfileID != desired.Mihomo.ProfileID || source.ProfileRevision != desired.Mihomo.ProfileRevision || desired.Mihomo.SourceType != "" && source.SourceType != desired.Mihomo.SourceType {
+				manager.degrade("mihomo_source_unavailable")
+				return errors.New("network control returned an invalid mihomo source")
+			}
+			desired.Mihomo.SourceType = source.SourceType
+			desired.Mihomo.SubscriptionURL = source.SubscriptionURL
+			desired.Mihomo.ManualNode = source.ManualNode
 		}
-		desired.Mihomo.SourceType = source.SourceType
-		desired.Mihomo.SubscriptionURL = source.SubscriptionURL
-		desired.Mihomo.ManualNode = source.ManualNode
 	}
 	manager.applyRuntimeIntervals(desired.RuntimeIntervals)
 	configurationBytes, err := endpointEnforcementPayload(desired)
@@ -625,7 +662,35 @@ func (manager *Manager) syncConfiguration(ctx context.Context) error {
 	if desired.ConfigurationVersion == currentVersion && appliedHash != "" && configurationHash != appliedHash {
 		return manager.rejectConfiguration(ctx, "configuration_version_reused")
 	}
-	if desired.ConfigurationVersion == appliedVersion {
+	projectionFingerprint := projectionRenewFingerprint(desired.Mihomo)
+	manager.stateMu.RLock()
+	sameProjection := projectionFingerprint == manager.appliedProjectionFingerprint
+	manager.stateMu.RUnlock()
+	policyFingerprint := projectionPolicyFingerprint(desired.Mihomo)
+
+	if desired.ConfigurationVersion == appliedVersion && !sameProjection {
+		if renewer, ok := manager.executor.(interface {
+			RenewProjection(context.Context, ConfigurationDesired, time.Time) (bool, error)
+		}); ok {
+			renewed, err := renewer.RenewProjection(ctx, desired, now)
+			if err != nil {
+				return manager.rejectConfiguration(ctx, "projection_renewal_failed")
+			}
+			if renewed {
+				if manager.deliverProjectionReceipt(ctx, desired, "applied", "") != nil {
+					return manager.rejectConfiguration(ctx, "projection_receipt_failed")
+				}
+				localStopped := manager.proxyLocallyStopped()
+				pendingReceipt := manager.projectionReceiptPending()
+				manager.stateMu.Lock()
+				manager.appliedProjectionFingerprint = projectionFingerprint
+				applyLocalProxyStatus(&manager.status, desired, localStopped, pendingReceipt)
+				manager.stateMu.Unlock()
+				return nil
+			}
+		}
+	}
+	if desired.ConfigurationVersion == appliedVersion && sameProjection {
 		if verifier, ok := manager.executor.(interface {
 			Verify(context.Context, ConfigurationDesired, time.Time) ApplyOutcome
 		}); ok {
@@ -639,7 +704,14 @@ func (manager *Manager) syncConfiguration(ctx context.Context) error {
 				return errors.Join(errors.New("endpoint configuration drifted"), manager.control.Report(ctx, report), manager.rejectConfiguration(ctx, "endpoint_readback_mismatch"))
 			}
 		}
-		manager.update(func(status *Status) { applyDesiredStatus(status, desired) })
+		localStopped := manager.proxyLocallyStopped()
+		if manager.projectionReceiptPending() {
+			if err := manager.deliverProjectionReceipt(ctx, desired, "applied", ""); err != nil {
+				return manager.rejectConfiguration(ctx, "projection_receipt_failed")
+			}
+		}
+		pendingReceipt := manager.projectionReceiptPending()
+		manager.update(func(status *Status) { applyLocalProxyStatus(status, desired, localStopped, pendingReceipt) })
 		return nil
 	}
 	if authorizationRevoked {
@@ -652,8 +724,12 @@ func (manager *Manager) syncConfiguration(ctx context.Context) error {
 	}
 	outcome := manager.executor.Apply(ctx, desired, now)
 	report := ConfigurationApplied{ConfigurationVersion: desired.ConfigurationVersion, PolicyVersion: desired.PolicyVersion, Status: outcome.Status, ReadbackHash: outcome.ReadbackHash, ReasonCode: outcome.ReasonCode}
+	if manager.deliverProjectionReceipt(ctx, desired, outcome.Status, outcome.ReasonCode) != nil {
+		return manager.rejectConfiguration(ctx, "projection_receipt_failed")
+	}
+
 	reportErr := manager.control.Report(ctx, report)
-	if outcome.Status != "applied" {
+	if outcome.Status != "applied" && outcome.ReasonCode != mihomoLocalStopReason {
 		manager.degrade(fallback(outcome.ReasonCode, "endpoint_apply_failed"))
 		return errors.Join(fmt.Errorf("endpoint configuration was %s", outcome.Status), reportErr, manager.rejectConfiguration(ctx, "endpoint_apply_failed"))
 	}
@@ -667,10 +743,14 @@ func (manager *Manager) syncConfiguration(ctx context.Context) error {
 			revokeErr = manager.finishVPNCleanup()
 		}
 	}
+	localStopped := manager.proxyLocallyStopped()
+	pendingReceipt := manager.projectionReceiptPending()
 	manager.stateMu.Lock()
-	applyDesiredStatus(&manager.status, desired)
+	applyLocalProxyStatus(&manager.status, desired, localStopped, pendingReceipt)
 	manager.appliedVersion = desired.ConfigurationVersion
 	manager.appliedHash = configurationHash
+	manager.appliedProjectionFingerprint = projectionFingerprint
+	manager.appliedProjectionPolicyFingerprint = policyFingerprint
 	manager.disabled = desired.WireGuard == nil && desired.Mihomo == nil
 	if revokeErr == nil {
 		manager.leaseIDs = leaseIDs(desired.NetworkLeases, desired.ResourceLeases)
@@ -720,6 +800,22 @@ func (manager *Manager) renew(ctx context.Context, now time.Time) error {
 func applyDesiredStatus(status *Status, desired ConfigurationDesired) {
 	previousDiagnostic := status.Diagnostic
 	status.ConfigurationVersion, status.PolicyVersion, status.ValidUntil = desired.ConfigurationVersion, desired.PolicyVersion, desired.ValidUntil.UTC()
+	if desired.Mihomo != nil {
+		until := desired.ValidUntil
+		if p := desired.Mihomo.Projection; p != nil {
+			if p.ExpiresAt.Before(until) {
+				until = p.ExpiresAt
+			}
+			if p.Credential.ExpiresAt.Before(until) {
+				until = p.Credential.ExpiresAt
+			}
+		}
+		if p := desired.Mihomo.DirectProjection; p != nil && p.ExpiresAt.Before(until) {
+			until = p.ExpiresAt
+		}
+		status.ValidUntil = until
+	}
+
 	status.State, status.Diagnostic = StateDisconnected, ""
 	status.MihomoMode, status.MihomoProfileID, status.MihomoProfileRevision = "", "", 0
 	status.MihomoPolicyVersion = 0
@@ -863,4 +959,24 @@ func fallback(value, fallbackValue string) string {
 		return fallbackValue
 	}
 	return value
+}
+
+func projectionRenewFingerprint(c *MihomoConfiguration) string {
+	if c == nil {
+		return ""
+	}
+	var data any
+	if c.Projection != nil {
+		data = c.Projection
+	} else if c.DirectProjection != nil {
+		data = c.DirectProjection
+	} else {
+		return ""
+	}
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return "invalid"
+	}
+	defer clear(raw)
+	return fmt.Sprintf("sha256:%x", sha256.Sum256(raw))
 }

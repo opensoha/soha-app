@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	api "github.com/opensoha/soha-contracts/gen/go/sohaapi"
 	"net"
 	"net/http"
 	"net/url"
@@ -53,18 +54,27 @@ type updateEngine interface {
 }
 
 type appRuntime struct {
-	networkDisabled      bool
-	version              string
-	updater              updateEngine
-	software             *softwareLibrary
-	networkCall          func(context.Context, string, *endpointservice.ConnectInput) (endpointservice.Status, error)
-	networkMihomoCall    func(context.Context, string, *endpointservice.MihomoAppInput) (endpointservice.MihomoAppStatus, error)
-	networkAdmissionCall func(context.Context, string, *endpointservice.AdmissionInput) (endpointservice.AdmissionStatus, error)
-	openAdmissionProfile func(context.Context, string) error
-	networkLinkStatus    func() NetworkLinkStatus
-	checkMu              sync.Mutex
-	statusMu             sync.RWMutex
-	status               updateStatus
+	nativeScopeMu           sync.Mutex
+	nativeScope             endpointservice.NativeUIScope
+	nativeScopeKnown        bool
+	nativeRetiredScopes     map[string]bool
+	nativeKnownInterception bool
+	networkUIScopeCall      func(context.Context, endpointservice.NativeUIScope) (endpointservice.InterceptionStatus, error)
+
+	networkInterceptionCall func(context.Context, *endpointservice.InterceptionIntent) (endpointservice.InterceptionStatus, error)
+	networkProxyCall        func(context.Context, string, *endpointservice.ProxyAction, *api.NetworkProxyRulesInput) (endpointservice.ProxyWorkbench, error)
+	networkDisabled         bool
+	version                 string
+	updater                 updateEngine
+	software                *softwareLibrary
+	networkCall             func(context.Context, string, *endpointservice.ConnectInput) (endpointservice.Status, error)
+	networkMihomoCall       func(context.Context, string, *endpointservice.MihomoAppInput) (endpointservice.MihomoAppStatus, error)
+	networkAdmissionCall    func(context.Context, string, *endpointservice.AdmissionInput) (endpointservice.AdmissionStatus, error)
+	openAdmissionProfile    func(context.Context, string) error
+	networkLinkStatus       func() NetworkLinkStatus
+	checkMu                 sync.Mutex
+	statusMu                sync.RWMutex
+	status                  updateStatus
 }
 
 var (
@@ -82,6 +92,8 @@ func (runtimeAPI *appRuntime) ServeHTTP(writer http.ResponseWriter, request *htt
 		return
 	}
 	switch {
+	case (request.Method == http.MethodGet || request.Method == http.MethodPost) && request.URL.Path == "/app/v1/network/proxy/interception":
+		runtimeAPI.handleInterception(writer, request)
 	case request.Method == http.MethodGet && request.URL.Path == "/app/v1/info":
 		status := runtimeAPI.currentUpdateStatus()
 		writeRuntimeJSON(writer, http.StatusOK, appInfo{
@@ -133,6 +145,12 @@ func (runtimeAPI *appRuntime) ServeHTTP(writer http.ResponseWriter, request *htt
 		runtimeAPI.handleNetwork(writer, request, "connect")
 	case request.Method == http.MethodPost && request.URL.Path == "/app/v1/network/disconnect":
 		runtimeAPI.handleNetwork(writer, request, "disconnect")
+	case request.Method == http.MethodGet && request.URL.Path == "/app/v1/network/proxy":
+		runtimeAPI.handleProxy(writer, request, "proxy_status")
+	case request.Method == http.MethodPost && request.URL.Path == "/app/v1/network/proxy/actions":
+		runtimeAPI.handleProxy(writer, request, "proxy_action")
+	case request.Method == http.MethodPut && request.URL.Path == "/app/v1/network/proxy/rules":
+		runtimeAPI.handleProxy(writer, request, "proxy_rules")
 	case request.Method == http.MethodGet && request.URL.Path == "/app/v1/network/mihomo":
 		runtimeAPI.handleNetworkMihomo(writer, request, "mihomo_status")
 	case request.Method == http.MethodPut && request.URL.Path == "/app/v1/network/mihomo":
@@ -444,4 +462,174 @@ func validateTestUpdateURL(raw string) error {
 		return errors.New("test update manifest URL must use HTTPS or loopback HTTP")
 	}
 	return nil
+}
+
+func (runtimeAPI *appRuntime) proxyCall(ctx context.Context, action string, input *endpointservice.ProxyAction, rules *api.NetworkProxyRulesInput) (endpointservice.ProxyWorkbench, error) {
+	if runtimeAPI.networkDisabled {
+		return endpointservice.ProxyWorkbench{}, errors.New("network control disabled")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	call := runtimeAPI.networkProxyCall
+	if call == nil {
+		call = endpointservice.CallProxyIPC
+	}
+	return call(ctx, action, input, rules)
+}
+func (runtimeAPI *appRuntime) ProxyStatus(ctx context.Context) (endpointservice.ProxyWorkbench, error) {
+	return runtimeAPI.proxyCall(ctx, "proxy_status", nil, nil)
+}
+func (runtimeAPI *appRuntime) ProxyAction(ctx context.Context, input endpointservice.ProxyAction) (endpointservice.ProxyWorkbench, error) {
+	return runtimeAPI.proxyCall(ctx, "proxy_action", &input, nil)
+}
+func (runtimeAPI *appRuntime) ProxyRules(ctx context.Context, input api.NetworkProxyRulesInput) (endpointservice.ProxyWorkbench, error) {
+	return runtimeAPI.proxyCall(ctx, "proxy_rules", nil, &input)
+}
+func (runtimeAPI *appRuntime) handleProxy(w http.ResponseWriter, r *http.Request, action string) {
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	var input *endpointservice.ProxyAction
+	var rules *api.NetworkProxyRulesInput
+	if action == "proxy_action" {
+		input = &endpointservice.ProxyAction{}
+		if decodeRequestJSON(r, input) != nil {
+			writeError(w, http.StatusBadRequest, "invalid_proxy_request", "本机代理参数无效")
+			return
+		}
+	}
+	if action == "proxy_rules" {
+		rules = &api.NetworkProxyRulesInput{}
+		if decodeRequestJSON(r, rules) != nil {
+			writeError(w, http.StatusBadRequest, "invalid_proxy_request", "个人规则参数无效")
+			return
+		}
+	}
+	view, err := runtimeAPI.proxyCall(ctx, action, input, rules)
+	if err != nil {
+		var ipcErr *endpointservice.IPCError
+		if errors.As(err, &ipcErr) && ipcErr.Code == "rule_revision_conflict" {
+			writeError(w, http.StatusConflict, ipcErr.Code, "规则版本已变化，请刷新后重新编辑")
+			return
+		}
+		writeError(w, http.StatusConflict, "proxy_operation_failed", "本机代理操作未完成，请刷新状态后修复")
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+func (runtimeAPI *appRuntime) GetLocalProxyInterception() (endpointservice.InterceptionStatus, error) {
+	return runtimeAPI.localInterception(context.Background(), nil)
+}
+func (runtimeAPI *appRuntime) SetLocalProxyInterception(intent endpointservice.InterceptionIntent) (endpointservice.InterceptionStatus, error) {
+	return runtimeAPI.localInterception(context.Background(), &intent)
+}
+func (runtimeAPI *appRuntime) localInterception(ctx context.Context, intent *endpointservice.InterceptionIntent) (endpointservice.InterceptionStatus, error) {
+	if runtimeAPI.networkDisabled {
+		return endpointservice.InterceptionStatus{}, errors.New("network control disabled")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if intent != nil && (intent.SystemProxy || intent.TUN) {
+		runtimeAPI.nativeScopeMu.Lock()
+		scope, known := runtimeAPI.nativeScope, runtimeAPI.nativeScopeKnown
+		runtimeAPI.nativeScopeMu.Unlock()
+		if !known || !scope.Authenticated || scope.UserID == "" {
+			return endpointservice.InterceptionStatus{}, errors.New("authenticated native UI scope required")
+		}
+		if _, err := runtimeAPI.syncNativeUIScope(ctx, scope); err != nil {
+			return endpointservice.InterceptionStatus{}, err
+		}
+		runtimeAPI.nativeScopeMu.Lock()
+		same := runtimeAPI.nativeScopeKnown && runtimeAPI.nativeScope == scope
+		runtimeAPI.nativeScopeMu.Unlock()
+		if !same {
+			return endpointservice.InterceptionStatus{}, errors.New("native UI scope changed")
+		}
+	}
+	call := runtimeAPI.networkInterceptionCall
+	if call == nil {
+		call = endpointservice.CallInterceptionIPC
+	}
+	status, err := call(ctx, intent)
+	if err == nil {
+		runtimeAPI.nativeScopeMu.Lock()
+		runtimeAPI.nativeKnownInterception = status.SystemProxy || status.TUN || status.CleanupPending || status.DesiredSystemProxy || status.DesiredTUN
+		runtimeAPI.nativeScopeMu.Unlock()
+	}
+	return status, err
+}
+func (runtimeAPI *appRuntime) handleInterception(w http.ResponseWriter, r *http.Request) {
+	var intent *endpointservice.InterceptionIntent
+	if r.Method == http.MethodPost {
+		intent = &endpointservice.InterceptionIntent{}
+		if decodeRequestJSON(r, intent) != nil {
+			writeError(w, http.StatusBadRequest, "invalid_native_request", "本机接管参数无效")
+			return
+		}
+	}
+	status, err := runtimeAPI.localInterception(r.Context(), intent)
+	if err != nil {
+		writeError(w, http.StatusConflict, "native_operation_failed", "本机接管未完成，请刷新状态后恢复")
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+// This private sink is invoked by appHost from actual authentication/server
+// lifecycle events. No HTTP route or Wails method accepts identity fields.
+func (runtimeAPI *appRuntime) setNativeUIScope(ctx context.Context, scope endpointservice.NativeUIScope) error {
+	runtimeAPI.nativeScopeMu.Lock()
+	if runtimeAPI.nativeRetiredScopes[scope.Epoch] {
+		runtimeAPI.nativeScopeMu.Unlock()
+		return errors.New("retired native host epoch")
+	}
+	if runtimeAPI.nativeScopeKnown && runtimeAPI.nativeScope.Epoch != scope.Epoch {
+		if len(runtimeAPI.nativeRetiredScopes) >= 64 {
+			runtimeAPI.nativeScopeMu.Unlock()
+			return errors.New("native host epoch limit")
+		}
+		if runtimeAPI.nativeRetiredScopes == nil {
+			runtimeAPI.nativeRetiredScopes = map[string]bool{}
+		}
+		runtimeAPI.nativeRetiredScopes[runtimeAPI.nativeScope.Epoch] = true
+	}
+	if runtimeAPI.nativeScopeKnown && runtimeAPI.nativeScope.Epoch == scope.Epoch {
+		old := runtimeAPI.nativeScope
+		if scope.Generation < old.Generation || scope.Generation == old.Generation && scope != old {
+			runtimeAPI.nativeScopeMu.Unlock()
+			return errors.New("stale native host scope")
+		}
+	}
+	runtimeAPI.nativeScope = scope
+	runtimeAPI.nativeScopeKnown = true
+	wasNative := runtimeAPI.nativeKnownInterception
+	runtimeAPI.nativeScopeMu.Unlock()
+	if runtimeAPI.networkDisabled {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	status, err := runtimeAPI.syncNativeUIScope(ctx, scope)
+	if err != nil {
+		if !wasNative && (errors.Is(err, os.ErrNotExist) || errors.Is(err, endpointservice.ErrIPCUnsupported)) {
+			return nil
+		}
+		return err
+	}
+	runtimeAPI.nativeScopeMu.Lock()
+	if runtimeAPI.nativeScope == scope {
+		runtimeAPI.nativeKnownInterception = status.SystemProxy || status.TUN || status.CleanupPending || status.DesiredSystemProxy || status.DesiredTUN
+	}
+	runtimeAPI.nativeScopeMu.Unlock()
+	if status.CleanupPending {
+		return errors.New("native scope cleanup pending")
+	}
+	return nil
+}
+func (runtimeAPI *appRuntime) syncNativeUIScope(ctx context.Context, scope endpointservice.NativeUIScope) (endpointservice.InterceptionStatus, error) {
+	call := runtimeAPI.networkUIScopeCall
+	if call == nil {
+		call = endpointservice.CallInterceptionUIScopeIPC
+	}
+	return call(ctx, scope)
 }

@@ -19,6 +19,18 @@ release: "1"
 contents:
   - src: "./bin/soha-app"
     dst: "/usr/local/bin/soha-app"
+  - src: "./bin/linux-network-service/soha-app-service"
+    dst: "/usr/share/soha-app/network-service/soha-app-service"
+    file_info:
+      mode: 0755
+  - src: "./bin/linux-network-service/soha-app-network.service"
+    dst: "/usr/share/soha-app/network-service/soha-app-network.service"
+  - src: "./bin/linux-network-service/manage.py"
+    dst: "/usr/share/soha-app/network-service/manage.py"
+  - src: "./bin/linux-network-service/manifest.json"
+    dst: "/usr/share/soha-app/network-service/manifest.json"
+  - src: "./bin/linux-network-service/service.example.json"
+    dst: "/usr/share/soha-app/network-service/service.example.json"
   - src: "./build/appicon.png"
     dst: "/usr/share/icons/hicolor/128x128/apps/soha-app.png"
   - src: "./build/linux/soha-app.desktop"
@@ -29,6 +41,7 @@ contents:
 
 # Default dependencies for the GTK4 + WebKitGTK 6.0 stack (Ubuntu 24.04+ / Debian 13+)
 depends:
+  - python3
   - libgtk-4-1
   - libwebkitgtk-6.0-4
 
@@ -37,12 +50,14 @@ overrides:
   # RPM packages for Fedora / RHEL / AlmaLinux / Rocky Linux
   rpm:
     depends:
+      - python3
       - gtk4
       - webkitgtk6.0
 
   # Arch Linux packages
   archlinux:
     depends:
+      - python
       - gtk4
       - webkitgtk-6.0
 

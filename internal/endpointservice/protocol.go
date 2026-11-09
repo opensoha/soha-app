@@ -1,6 +1,8 @@
 package endpointservice
 
 import (
+	api "github.com/opensoha/soha-contracts/gen/go/sohaapi"
+
 	"encoding/json"
 	"time"
 )
@@ -98,25 +100,38 @@ type RuntimeIntervals struct {
 }
 
 type MihomoConfiguration struct {
-	DNSRecords                                 []DNSRecord       `json:"-"`
-	EnforcementUntil                           time.Time         `json:"-"`
-	GuardPort, GuardProxyPort, GuardDirectPort int               `json:"-"`
-	GuardProxySecret, GuardDirectSecret        string            `json:"-"`
-	BootstrapNodes                             []map[string]any  `json:"-"`
-	Protection                                 *MihomoProtection `json:"protection,omitempty"`
-	Mode                                       string            `json:"mode"`
-	SourceType                                 string            `json:"sourceType,omitempty"`
-	ProfileID                                  string            `json:"profileId"`
-	ProfileRevision                            int               `json:"profileRevision"`
-	MixedPort                                  int               `json:"mixedPort"`
-	ControllerPort                             int               `json:"controllerPort"`
-	DNSMode                                    string            `json:"dnsMode"`
-	FakeIPRange                                string            `json:"fakeIpRange,omitempty"`
-	SelectorGroup                              string            `json:"selectorGroup"`
-	SelectedProxy                              string            `json:"selectedProxy,omitempty"`
-	BypassCIDRs                                []string          `json:"bypassCidrs"`
-	BypassHosts                                []string          `json:"bypassHosts"`
-	FailClosed                                 bool              `json:"failClosed"`
+	NativePlan       *nativeEnginePlan                   `json:"-"`
+	Egress           guardedEgress                       `json:"-"`
+	GuardSourceNodes map[string]map[string]any           `json:"-"`
+	GuardUDPExplicit map[string]bool                     `json:"-"`
+	GuardNodePorts   map[string]int                      `json:"-"`
+	DirectProjection *api.NetworkProxyDirectProjection   `json:"-"`
+	DeliveryMode     string                              `json:"deliveryMode,omitempty"`
+	BundleID         string                              `json:"bundleId,omitempty"`
+	OrgRevision      int64                               `json:"orgRevision,omitempty"`
+	SourceRevision   int64                               `json:"sourceRevision,omitempty"`
+	Projection       *api.NetworkProxyEmployeeProjection `json:"-"`
+	EffectiveRules   []api.NetworkProxyRule              `json:"-"`
+
+	DNSRecords                                                 []DNSRecord       `json:"-"`
+	EnforcementUntil                                           time.Time         `json:"-"`
+	GuardPort, GuardSOCKSPort, GuardProxyPort, GuardDirectPort int               `json:"-"`
+	GuardProxySecret, GuardDirectSecret                        string            `json:"-"`
+	BootstrapNodes                                             []map[string]any  `json:"-"`
+	Protection                                                 *MihomoProtection `json:"protection,omitempty"`
+	Mode                                                       string            `json:"mode"`
+	SourceType                                                 string            `json:"sourceType,omitempty"`
+	ProfileID                                                  string            `json:"profileId"`
+	ProfileRevision                                            int               `json:"profileRevision"`
+	MixedPort                                                  int               `json:"mixedPort"`
+	ControllerPort                                             int               `json:"controllerPort"`
+	DNSMode                                                    string            `json:"dnsMode"`
+	FakeIPRange                                                string            `json:"fakeIpRange,omitempty"`
+	SelectorGroup                                              string            `json:"selectorGroup"`
+	SelectedProxy                                              string            `json:"selectedProxy,omitempty"`
+	BypassCIDRs                                                []string          `json:"bypassCidrs"`
+	BypassHosts                                                []string          `json:"bypassHosts"`
+	FailClosed                                                 bool              `json:"failClosed"`
 
 	// Source secrets are fetched over the runtime's mTLS channel and never serialized.
 	SubscriptionURL string            `json:"-"`

@@ -33,6 +33,14 @@ var serviceVersion string
 func main() { os.Exit(run(os.Args[1:])) }
 
 func run(args []string) int {
+	if handled, err := endpointservice.RunNativeInterceptionUserHelper(args); handled {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Native user operation failed")
+			return 1
+		}
+		return 0
+	}
+
 	command := "run"
 	if len(args) == 1 {
 		command = args[0]

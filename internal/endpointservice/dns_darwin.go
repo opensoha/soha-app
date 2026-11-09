@@ -84,23 +84,82 @@ static int sohaDNSClose(sohaDNS *h) {
  for(int i=0;i<2;i++)if(h->ipKeys[i] && !sohaDNSRemove(h,h->ipKeys[i],h->ip[i]))return 0;
  sohaDNSFree(h);return 1;
 }
+static int sohaDNSMetadataMatches(sohaDNS *h,CFDictionaryRef current) {
+ if(!h||!current||CFGetTypeID(current)!=CFDictionaryGetTypeID())return 0;
+ CFMutableDictionaryRef a=CFDictionaryCreateMutableCopy(NULL,0,current),b=CFDictionaryCreateMutableCopy(NULL,0,h->dns);
+ CFDictionaryRemoveValue(a,kSCPropNetDNSServerAddresses);CFDictionaryRemoveValue(b,kSCPropNetDNSServerAddresses);
+ int same=CFEqual(a,b);CFRelease(a);CFRelease(b);
+ for(int i=0;i<2;i++)if(h->ipKeys[i]&&!sohaDNSValueMatches(h,h->ipKeys[i],h->ip[i],0))same=0;
+ return same;
+}
+static char *sohaDNSReadServers(sohaDNS *h) {
+ if(!h)return NULL;
+ CFPropertyListRef raw=SCDynamicStoreCopyValue(h->store,h->dnsKey);
+ if(!raw)return NULL;
+ if(!sohaDNSMetadataMatches(h,raw)){CFRelease(raw);return NULL;}
+ CFTypeRef values=CFDictionaryGetValue(raw,kSCPropNetDNSServerAddresses);
+ if(!values||CFGetTypeID(values)!=CFArrayGetTypeID()||CFArrayGetCount(values)>64){CFRelease(raw);return NULL;}
+ char *result=calloc(1,8193);size_t size=0;
+ if(!result){CFRelease(raw);return NULL;}
+ for(CFIndex i=0;i<CFArrayGetCount(values);i++) {
+  CFTypeRef value=CFArrayGetValueAtIndex(values,i);char text[128];
+  if(CFGetTypeID(value)!=CFStringGetTypeID()||!CFStringGetCString(value,text,sizeof(text),kCFStringEncodingUTF8)||strchr(text,'\n')){free(result);CFRelease(raw);return NULL;}
+  size_t n=strlen(text);if(size+n+1>8192){free(result);CFRelease(raw);return NULL;}
+  memcpy(result+size,text,n);size+=n;result[size++]='\n';
+ }
+ CFRelease(raw);return result;
+}
+// One owned dictionary update; no key is created if the old handle disappeared.
+static int sohaDNSCAS(sohaDNS *h,const char *before,const char *after) {
+ if(!h||!sohaDNSCheck(h,0))return 1;
+ CFArrayRef old=sohaStrings(before),next=sohaStrings(after);
+ CFTypeRef expected=CFDictionaryGetValue(h->dns,kSCPropNetDNSServerAddresses);
+ if(!expected||!CFEqual(expected,old)){CFRelease(old);CFRelease(next);return 1;}
+ CFMutableDictionaryRef value=CFDictionaryCreateMutableCopy(NULL,0,h->dns);
+ CFDictionarySetValue(value,kSCPropNetDNSServerAddresses,next);
+ CFRelease(old);CFRelease(next);
+ int result=3;
+ if(SCDynamicStoreSetValue(h->store,h->dnsKey,value)) {
+  CFRelease(h->dns);h->dns=value;
+  if(sohaDNSCheck(h,0))result=0;
+ }else CFRelease(value);
+ return result;
+}
+static int sohaDNSHandleAbsent(const char *service) {
+ SCDynamicStoreRef store=SCDynamicStoreCreate(NULL,CFSTR("Soha owned DNS recovery"),NULL,NULL);
+ if(!store)return -1;
+ CFStringRef sid=sohaString(service);CFStringRef entities[]={kSCEntNetDNS,kSCEntNetIPv4,kSCEntNetIPv6};int absent=1;
+ for(int i=0;i<3;i++) {
+  CFStringRef key=SCDynamicStoreKeyCreateNetworkServiceEntity(NULL,kSCDynamicStoreDomainState,sid,entities[i]);
+  CFPropertyListRef value=SCDynamicStoreCopyValue(store,key);CFRelease(key);
+  if(value){absent=0;CFRelease(value);}else if(SCError()!=kSCStatusNoKey){absent=-1;break;}
+ }
+ CFRelease(sid);CFRelease(store);return absent;
+}
+
 */
 import "C"
 
 import (
 	"errors"
+	"net/netip"
 	"strings"
 	"unsafe"
 )
 
-type darwinDNS struct{ handle *C.sohaDNS }
+type darwinDNS struct {
+	handle    *C.sohaDNS
+	serviceID string
+	calls     *darwinDNSCalls
+}
 
 func openDarwinDNS(iface string, addresses, servers []string) (*darwinDNS, error) {
 	ipv4, ipv6, err := splitDarwinDNSAddresses(addresses)
 	if err != nil {
 		return nil, err
 	}
-	service := C.CString("com.opensoha.vpn." + randomID())
+	serviceID := "com.opensoha.vpn." + randomID()
+	service := C.CString(serviceID)
 	defer C.free(unsafe.Pointer(service))
 	name := C.CString(iface)
 	defer C.free(unsafe.Pointer(name))
@@ -114,9 +173,12 @@ func openDarwinDNS(iface string, addresses, servers []string) (*darwinDNS, error
 	if h == nil {
 		return nil, errors.New("could not install temporary macOS VPN DNS settings")
 	}
-	return &darwinDNS{handle: h}, nil
+	return &darwinDNS{handle: h, serviceID: serviceID}, nil
 }
 func (d *darwinDNS) matches() bool {
+	if d != nil && d.calls != nil && d.calls.matches != nil {
+		return d.calls.matches()
+	}
 	return d != nil && d.handle != nil && C.sohaDNSMatches(d.handle) != 0
 }
 func (d *darwinDNS) close() error {
@@ -128,4 +190,57 @@ func (d *darwinDNS) close() error {
 	}
 	d.handle = nil
 	return nil
+}
+
+func (d *darwinDNS) currentServers() ([]string, error) {
+	if d == nil {
+		return nil, errors.New("owned macOS DNS handle is absent")
+	}
+	if d.calls != nil && d.calls.read != nil {
+		return d.calls.read()
+	}
+	raw := C.sohaDNSReadServers(d.handle)
+	if raw == nil {
+		return nil, errors.New("owned macOS DNS state could not be read")
+	}
+	defer C.free(unsafe.Pointer(raw))
+	text := strings.TrimSuffix(C.GoString(raw), "\n")
+	var servers []string
+	if text != "" {
+		servers = strings.Split(text, "\n")
+	}
+	for _, server := range servers {
+		if _, err := netip.ParseAddr(server); err != nil {
+			return nil, errors.New("owned macOS DNS state is invalid")
+		}
+	}
+	return servers, nil
+}
+func (d *darwinDNS) compareServers(before, after []string) (string, error) {
+	if d == nil {
+		return "not_applied", errors.New("owned macOS DNS handle is absent")
+	}
+	if d.calls != nil && d.calls.cas != nil {
+		return d.calls.cas(before, after)
+	}
+	b, a := C.CString(strings.Join(before, "\n")), C.CString(strings.Join(after, "\n"))
+	defer C.free(unsafe.Pointer(b))
+	defer C.free(unsafe.Pointer(a))
+	status := int(C.sohaDNSCAS(d.handle, b, a))
+	if status == 0 {
+		return "applied", nil
+	}
+	if status == 1 {
+		return "conflict", errors.New("owned macOS DNS changed externally")
+	}
+	return "unknown", errors.New("owned macOS DNS write could not be confirmed")
+}
+func darwinWGHandleAbsent(service string) (bool, error) {
+	value := C.CString(service)
+	defer C.free(unsafe.Pointer(value))
+	status := C.sohaDNSHandleAbsent(value)
+	if status < 0 {
+		return false, errors.New("old macOS DNS handle could not be inspected")
+	}
+	return status == 1, nil
 }

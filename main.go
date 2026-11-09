@@ -174,7 +174,7 @@ func main() {
 	companionWindow := newCompanionWindow(app, positions)
 	configureSystemTray(app, window, companionWindow, trayIcon)
 	if !instance.networkDisabled {
-		go endpointservice.RunNativeUIPresence(app.Context())
+		go endpointservice.RunNativeUIPresenceWithScope(app.Context(), host.nativeUIScopeSnapshot)
 	}
 
 	if err := app.Run(); err != nil {

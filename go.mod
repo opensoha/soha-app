@@ -4,6 +4,7 @@ go 1.27.3
 
 require (
 	github.com/Microsoft/go-winio v0.6.3
+	github.com/godbus/dbus/v5 v5.2.2
 	github.com/opensoha/soha-contracts v0.1.27
 	github.com/totallygamerjet/bsdiff v1.0.0
 	github.com/wailsapp/wails/v3 v3.0.0-beta.16
@@ -23,7 +24,6 @@ require (
 	github.com/danieljoos/wincred v1.2.3 // indirect
 	github.com/dsnet/compress v0.0.1 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
-	github.com/godbus/dbus/v5 v5.2.2 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/jchv/go-winloader v0.0.0-20250406163304-c1995be93bd1 // indirect
 	github.com/josharian/native v1.1.0 // indirect

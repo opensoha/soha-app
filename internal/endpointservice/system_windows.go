@@ -15,6 +15,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -32,9 +33,11 @@ const (
 )
 
 type WindowsSystem struct {
-	executable string
-	configPath string
-	expected   *TunnelPlan
+	executable       string
+	configPath       string
+	expected         *TunnelPlan
+	nativeDNS        winNativeWGState
+	nativeExpectedMu sync.Mutex
 }
 
 func NewWindowsSystem(executable, configPath string) (*WindowsSystem, error) {
@@ -68,7 +71,9 @@ func (system *WindowsSystem) Apply(ctx context.Context, plan TunnelPlan) error {
 		return err
 	}
 	expected := cloneTunnelPlan(plan)
+	system.nativeExpectedMu.Lock()
 	system.expected = &expected
+	system.nativeExpectedMu.Unlock()
 	if err := system.run(operationCtx, "/installtunnelservice", system.configPath); err != nil {
 		system.failClosed()
 		return err
@@ -90,6 +95,70 @@ func (system *WindowsSystem) Apply(ctx context.Context, plan TunnelPlan) error {
 }
 
 func (system *WindowsSystem) Readback(ctx context.Context) (TunnelReadback, error) {
+	actual, _, err := system.checkedWindowsReadback(ctx, false)
+	return actual, err
+}
+func (system *WindowsSystem) NativePeerEndpoint(ctx context.Context, session nativeSession) (netip.AddrPort, error) {
+	if err := winNativeWGSession(session, false, ctx); err != nil {
+		return netip.AddrPort{}, err
+	}
+	return winNativePeerGuard(ctx, session, func() (netip.AddrPort, error) {
+		_, peer, err := system.checkedWindowsReadback(ctx, true)
+		return peer, err
+	})
+}
+
+// The numeric endpoint and the compatibility readback come from the same WG device read.
+func (system *WindowsSystem) checkedWindowsReadback(ctx context.Context, requireGrant bool) (TunnelReadback, netip.AddrPort, error) {
+	expected := system.nativeExpected()
+	if expected == nil {
+		if requireGrant {
+			return TunnelReadback{}, netip.AddrPort{}, errors.New("no trusted WG grant")
+		}
+		actual, err := system.readbackWindows(ctx, true, "")
+		return actual, netip.AddrPort{}, err
+	}
+	pin, wanted, err := system.nativeDNS.readbackPlan(expected.Readback())
+	if err != nil {
+		return TunnelReadback{}, netip.AddrPort{}, err
+	}
+	actual, err := system.readbackWindows(ctx, false, pin)
+	if err != nil {
+		return actual, netip.AddrPort{}, err
+	}
+	current := system.nativeExpected()
+	if current == nil || !reflect.DeepEqual(current.Readback(), expected.Readback()) {
+		return actual, netip.AddrPort{}, errors.New("WG grant changed during readback")
+	}
+	var numeric netip.AddrPort
+	if requireGrant || pin != "" {
+		numeric, err = winNativePeerValue(actual, wanted, pin)
+		if err != nil {
+			return actual, netip.AddrPort{}, err
+		}
+	}
+	if pin != "" {
+		iface, err := winNativeWGInterface()
+		if err != nil {
+			return actual, netip.AddrPort{}, err
+		}
+		system.nativeDNS.mu.Lock()
+		binding := system.nativeDNS.binding
+		valid := binding != nil && !binding.invalid && reflect.DeepEqual(iface, binding.iface) && binding.expected == readbackHash(expected.Readback())
+		system.nativeDNS.mu.Unlock()
+		if !valid {
+			return actual, netip.AddrPort{}, errors.New("delegated WG interface changed")
+		}
+	}
+	if actual.PublicKey != "" {
+		actual.Peer.Endpoint = expected.Peer.Endpoint
+	}
+	return actual, numeric, nil
+}
+
+var _ nativeWGPeerReader = (*WindowsSystem)(nil)
+
+func (system *WindowsSystem) readbackWindows(ctx context.Context, normalize bool, pinned string) (TunnelReadback, error) {
 	if err := system.verifyServiceOwnership(); err != nil {
 		return TunnelReadback{}, err
 	}
@@ -138,24 +207,39 @@ func (system *WindowsSystem) Readback(ctx context.Context) (TunnelReadback, erro
 		return TunnelReadback{}, err
 	}
 	endpoint := peer.Endpoint.String()
-	if system.expected != nil {
-		if !endpointMatches(ctx, system.expected.Peer.Endpoint, peer.Endpoint) {
+	expected := system.nativeExpected()
+	if expected != nil {
+		valid := false
+		if pinned != "" {
+			valid = peer.Endpoint.String() == pinned
+		} else {
+			valid = endpointMatches(ctx, expected.Peer.Endpoint, peer.Endpoint)
+		}
+		if !valid {
 			return TunnelReadback{}, errors.New("WireGuard endpoint readback does not match desired state")
 		}
-		endpoint = system.expected.Peer.Endpoint
+		if normalize {
+			endpoint = expected.Peer.Endpoint
+		}
 	}
 	return TunnelReadback{PublicKey: device.PublicKey.String(), Addresses: addresses, MTU: adapter.MTU, Peer: TunnelPeer{PublicKey: peer.PublicKey.String(), Endpoint: endpoint, AllowedIPs: allowedIPs, PersistentKeepaliveSeconds: int(peer.PersistentKeepaliveInterval / time.Second)}, Routes: slices.Clone(allowedIPs), DNSServers: dnsServers}, nil
 }
 
 func (system *WindowsSystem) TunnelInterface(ctx context.Context) (string, error) {
 	state, err := system.Readback(ctx)
-	if err != nil || system.expected == nil || !reflect.DeepEqual(state, system.expected.Readback()) {
+	expected := system.nativeExpected()
+	if err != nil || expected == nil {
+		return "", errors.New("Windows VPN interface is not verified")
+	}
+	_, wanted, planErr := system.nativeDNS.readbackPlan(expected.Readback())
+	if planErr != nil || !reflect.DeepEqual(state, wanted) {
 		return "", errors.New("Windows VPN interface is not verified")
 	}
 	return endpointInterfaceName, nil
 }
 
 func (system *WindowsSystem) Disable(ctx context.Context) error {
+	system.nativeDNS.invalidate()
 	operationCtx, cancel := context.WithTimeout(ctx, wireGuardTimeout)
 	defer cancel()
 	exists, err := tunnelServiceExists()
@@ -184,7 +268,9 @@ func (system *WindowsSystem) Disable(ctx context.Context) error {
 		removeErr = nil
 	}
 	if !exists && err == nil {
+		system.nativeExpectedMu.Lock()
 		system.expected = nil
+		system.nativeExpectedMu.Unlock()
 	}
 	return errors.Join(uninstallErr, err, removeErr)
 }
@@ -360,7 +446,7 @@ func interfaceDNSServers(interfaceIndex uint32) ([]string, error) {
 			}
 			servers := []string{}
 			for dns := adapter.FirstDnsServerAddress; dns != nil; dns = dns.Next {
-				if address, ok := netip.AddrFromSlice(dns.Address.IP()); ok && address.Unmap().IsGlobalUnicast() {
+				if address, ok := netip.AddrFromSlice(dns.Address.IP()); ok && (address.Unmap().IsGlobalUnicast() || address.Unmap().IsLoopback()) {
 					servers = append(servers, address.Unmap().String())
 				}
 			}

@@ -197,6 +197,8 @@ func TestAdmissionFailedActivationCommitRestoresPendingState(t *testing.T) {
 	system.installed[profile.ID] = manager.state.Pending.Certificate.Fingerprint
 	requestID := manager.state.Pending.RequestID
 	manager.state.Selections[0].ArtifactPath, manager.state.Selections[0].ArtifactSHA256 = "", ""
+	// The activation anchor is committed before the activation request.
+	manager.state.Pending.ActivationAnchor = &eapActivationAnchor{ProfileID: profile.ID, ProfileRevision: profile.ProfileRevision, ProfileSHA256: eapProfileHash(profile)}
 	if err := manager.save(); err != nil {
 		t.Fatal(err)
 	}

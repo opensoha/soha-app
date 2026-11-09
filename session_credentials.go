@@ -141,13 +141,13 @@ func (h *appHost) deleteRefreshCredential(target *url.URL) {
 	h.sessionMu.Unlock()
 }
 
-func (h *appHost) blockSession(target *url.URL, rejectedToken string) {
+func (h *appHost) blockSession(target *url.URL, rejectedToken string, generations ...uint64) {
 	if target == nil {
 		return
 	}
 	h.sessionMu.Lock()
-	defer h.sessionMu.Unlock()
-	if target != h.target.Load() {
+	defer func() { h.sessionMu.Unlock(); h.publishNativeUIScope() }()
+	if target != h.target.Load() || len(generations) > 0 && generations[0] != h.nativeScope.Generation {
 		return
 	}
 	if rejectedToken != "" && h.credentialKeyring != nil {
@@ -159,6 +159,7 @@ func (h *appHost) blockSession(target *url.URL, rejectedToken string) {
 			appLog.Warn("session credential read failed", "component", "session", "event", "app.session.credential_read_failed", "error", err, "error_type", logErrorType(err))
 		}
 	}
+	h.invalidateNativeUIScopeLocked()
 	h.deleteRefreshCredentialLocked(target)
 	if h.config != nil {
 		if err := h.config.Save(target.String(), true); err != nil {
@@ -168,13 +169,13 @@ func (h *appHost) blockSession(target *url.URL, rejectedToken string) {
 	h.credentialsBlocked.Store(true)
 }
 
-func (h *appHost) markRefreshed(requestTarget *url.URL, previousToken, nextToken string) bool {
+func (h *appHost) markRefreshed(requestTarget *url.URL, previousToken, nextToken string, scopes ...authResponseScope) bool {
 	if requestTarget == nil || requestTarget != h.target.Load() {
 		return false
 	}
 	h.sessionMu.Lock()
-	defer h.sessionMu.Unlock()
-	if requestTarget != h.target.Load() || h.credentialsBlocked.Load() {
+	defer func() { h.sessionMu.Unlock(); h.publishNativeUIScope() }()
+	if requestTarget != h.target.Load() || h.credentialsBlocked.Load() || len(scopes) > 0 && scopes[0].generation != h.nativeScope.Generation {
 		return false
 	}
 	if previousToken != "" && h.credentialKeyring != nil {
@@ -187,47 +188,53 @@ func (h *appHost) markRefreshed(requestTarget *url.URL, previousToken, nextToken
 		}
 	}
 	h.persistAuthenticatedLocked(requestTarget, nextToken)
+	if len(scopes) > 0 {
+		if h.nativeScope.UserID != scopes[0].userID || h.nativeScope.Authenticated != (scopes[0].userID != "") {
+			h.nativeScope.Generation++
+		}
+		h.setAuthenticatedNativeUIScopeLocked(requestTarget, scopes[0].userID)
+	}
 	return true
 }
 
-func redactAuthRefreshToken(response *http.Response) error {
+func redactAuthRefreshTokenAndUser(response *http.Response) (string, error) {
 	if response.Header.Get("Content-Encoding") != "" && response.Header.Get("Content-Encoding") != "identity" {
-		return errContractMismatch
+		return "", errContractMismatch
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, desktopAuthMaxResponseBytes+1))
 	_ = response.Body.Close()
 	if err != nil || len(body) == 0 || len(body) > desktopAuthMaxResponseBytes {
-		return errContractMismatch
+		return "", errContractMismatch
 	}
 
 	var envelope map[string]json.RawMessage
 	if json.Unmarshal(body, &envelope) != nil {
-		return errContractMismatch
+		return "", errContractMismatch
 	}
 	dataValue, ok := envelope["data"]
 	if ok {
 		var data map[string]json.RawMessage
 		if json.Unmarshal(dataValue, &data) != nil {
-			return errContractMismatch
+			return "", errContractMismatch
 		}
 		if tokensValue, hasTokens := data["tokens"]; hasTokens {
 			var tokens map[string]json.RawMessage
 			if json.Unmarshal(tokensValue, &tokens) != nil {
-				return errContractMismatch
+				return "", errContractMismatch
 			}
 			if _, hasRefreshToken := tokens["refreshToken"]; hasRefreshToken {
 				delete(tokens, "refreshToken")
 				data["tokens"], err = json.Marshal(tokens)
 				if err != nil {
-					return errContractMismatch
+					return "", errContractMismatch
 				}
 				envelope["data"], err = json.Marshal(data)
 				if err != nil {
-					return errContractMismatch
+					return "", errContractMismatch
 				}
 				body, err = json.Marshal(envelope)
 				if err != nil {
-					return errContractMismatch
+					return "", errContractMismatch
 				}
 			}
 		}
@@ -237,5 +244,5 @@ func redactAuthRefreshToken(response *http.Response) error {
 	response.ContentLength = int64(len(body))
 	response.Header.Set("Content-Length", strconv.Itoa(len(body)))
 	response.Header.Del("Content-Encoding")
-	return nil
+	return verifiedAuthUserID(body), nil
 }

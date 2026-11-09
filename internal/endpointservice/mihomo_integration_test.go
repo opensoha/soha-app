@@ -2,6 +2,7 @@ package endpointservice
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 )
@@ -21,7 +22,7 @@ func TestMihomoControllerIntegration(t *testing.T) {
 	if _, err := controller.Apply(context.Background(), configuration); err != nil {
 		t.Fatal(err)
 	}
-	if snapshot, err := controller.ProxyFlowSnapshot(context.Background()); err != nil || !snapshot.Active || snapshot.Engine != "mihomo" || snapshot.SelectedProxy != "edge-a" || snapshot.ActiveConnections < 0 {
+	if snapshot, err := controller.ProxyFlowSnapshot(context.Background()); !errors.Is(err, errBusinessCounterEpoch) || snapshot.Active {
 		t.Fatalf("flow snapshot = %#v, %v", snapshot, err)
 	}
 	if err := controller.Disable(context.Background()); err != nil {

@@ -13,6 +13,7 @@ const uiPresenceTTL = 30 * time.Second
 // Only the privileged service creates this observer from administrator provisioning.
 type UIProcessPresence struct {
 	verify       func(net.Conn) error
+	authenticate func(context.Context, net.Conn) (NativePeer, error)
 	mu           sync.Mutex
 	lastObserved time.Time
 }
@@ -21,7 +22,16 @@ func (presence *UIProcessPresence) Observe(connection net.Conn, now time.Time) e
 	if presence == nil || presence.verify == nil {
 		return errors.New("trusted UI presence is not provisioned")
 	}
-	if err := presence.verify(connection); err != nil {
+	if presence.authenticate != nil {
+		peer, err := presence.authenticate(context.Background(), connection)
+		if err != nil {
+			return err
+		}
+		if peer.session == nil {
+			return errors.New("missing native UI session")
+		}
+		defer peer.session.Close()
+	} else if err := presence.verify(connection); err != nil {
 		return err
 	}
 	presence.mu.Lock()
@@ -62,6 +72,23 @@ func RunNativeUIPresence(ctx context.Context) {
 		callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		_, _ = CallIPC(callCtx, "ui_presence", nil)
 		cancel()
+		if !waitFor(ctx, 10*time.Second) {
+			return
+		}
+	}
+}
+
+func RunNativeUIPresenceWithScope(ctx context.Context, current func() NativeUIScope) {
+	for ctx.Err() == nil {
+		callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		_, _ = CallIPC(callCtx, "ui_presence", nil)
+		cancel()
+		if current != nil {
+			scope := current()
+			callCtx, cancel = context.WithTimeout(ctx, 5*time.Second)
+			_, _ = CallInterceptionUIScopeIPC(callCtx, scope)
+			cancel()
+		}
 		if !waitFor(ctx, 10*time.Second) {
 			return
 		}

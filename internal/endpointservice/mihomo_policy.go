@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	api "github.com/opensoha/soha-contracts/gen/go/sohaapi"
 	"net/http"
 	"net/netip"
 	"slices"
@@ -22,7 +23,7 @@ type mihomoRule struct {
 }
 
 func (rule mihomoRule) configurationLine() string {
-	types := map[string]string{"IPCIDR": "IP-CIDR", "Domain": "DOMAIN", "DomainSuffix": "DOMAIN-SUFFIX", "Match": "MATCH"}
+	types := map[string]string{"IPCIDR": "IP-CIDR", "Domain": "DOMAIN", "DomainSuffix": "DOMAIN-SUFFIX", "ProcessName": "PROCESS-NAME", "ProcessPath": "PROCESS-PATH", "Match": "MATCH"}
 	if rule.Type == "Match" {
 		return "MATCH," + rule.Proxy
 	}
@@ -33,6 +34,9 @@ func mihomoRules(configuration MihomoConfiguration) []mihomoRule {
 	// Resolve CIDR rules locally; no-resolve would allow a protected destination
 	// named by a host to fall through to the remote proxy's DNS and MATCH rule.
 	rules := []mihomoRule{}
+	if configuration.NativePlan != nil && configuration.NativePlan.ProbeHost != "" {
+		rules = append(rules, mihomoRule{Type: "Domain", Payload: configuration.NativePlan.ProbeHost, Proxy: mihomoGuardProxyName})
+	}
 	for _, cidr := range configuration.VPNRoutes {
 		rules = append(rules, mihomoRule{Type: "IPCIDR", Payload: cidr, Proxy: mihomoVPNProxyName})
 	}
@@ -41,6 +45,36 @@ func mihomoRules(configuration MihomoConfiguration) []mihomoRule {
 	}
 	for _, cidr := range configuration.Protection.CIDRs {
 		rules = append(rules, mihomoRule{Type: "IPCIDR", Payload: cidr, Proxy: "REJECT"})
+	}
+
+	localIDs := map[string]bool{}
+	for _, r := range localProtectionRules(configuration) {
+		localIDs[r.RuleID] = true
+	}
+	appendRule := func(r api.NetworkProxyRule) {
+		if localIDs[r.RuleID] {
+			return
+		}
+		kind := map[string]string{"domain": "Domain", "domain_suffix": "DomainSuffix", "cidr": "IPCIDR", "process_name": "ProcessName", "process_path": "ProcessPath", "all": "Match"}[string(r.Matcher.Type)]
+		target := r.Action.TargetID
+		switch string(r.Action.Type) {
+		case "reject":
+			target = "REJECT"
+		case "direct":
+			target = mihomoGuardDirectName
+		case "group":
+			if configuration.Projection == nil && configuration.DirectProjection == nil {
+				target = mihomoGuardProxyName
+			}
+		}
+		if kind != "" {
+			rules = append(rules, mihomoRule{Type: kind, Payload: r.Matcher.Value, Proxy: target})
+		}
+	}
+	for _, r := range configuration.EffectiveRules {
+		if r.Source != "fallback" {
+			appendRule(r)
+		}
 	}
 	for _, cidr := range configuration.BypassCIDRs {
 		rules = append(rules, mihomoRule{Type: "IPCIDR", Payload: cidr, Proxy: mihomoGuardDirectName})
@@ -52,7 +86,17 @@ func mihomoRules(configuration MihomoConfiguration) []mihomoRule {
 		}
 		rules = append(rules, rule)
 	}
-	return append(rules, mihomoRule{Type: "Match", Proxy: mihomoGuardProxyName})
+	for _, r := range configuration.EffectiveRules {
+		if r.Source == "fallback" {
+			appendRule(r)
+		}
+	}
+
+	fallback := mihomoGuardProxyName
+	if configuration.Projection != nil || configuration.DirectProjection != nil {
+		fallback = configuration.SelectorGroup
+	}
+	return append(rules, mihomoRule{Type: "Match", Proxy: fallback})
 }
 
 func mihomoProtectionHash(configuration MihomoConfiguration) string {
@@ -98,7 +142,7 @@ func validateMihomoProtection(configuration *MihomoConfiguration, fakeIP netip.P
 
 func reservedMihomoName(name string) bool {
 	switch strings.ToUpper(name) {
-	case strings.ToUpper(mihomoGuardProxyName), strings.ToUpper(mihomoGuardDirectName), "DIRECT", "REJECT", "REJECT-DROP", "PASS", "COMPATIBLE", "GLOBAL", strings.ToUpper(mihomoVPNProxyName), strings.ToUpper(mihomoManualProxyName), strings.ToUpper(mihomoProviderName):
+	case strings.ToUpper(mihomoGuardProxyName), strings.ToUpper(mihomoGuardDirectName), "DIRECT", "SOHA-NATIVE-PHYSICAL", "REJECT", "REJECT-DROP", "PASS", "COMPATIBLE", "GLOBAL", strings.ToUpper(mihomoVPNProxyName), strings.ToUpper(mihomoManualProxyName), strings.ToUpper(mihomoProviderName):
 		return true
 	}
 	return false
@@ -163,16 +207,33 @@ func (controller *MihomoController) proxyGroup(ctx context.Context, configuratio
 func (controller *MihomoController) Verify(ctx context.Context, configuration *MihomoConfiguration) error {
 	controller.mu.Lock()
 	defer controller.mu.Unlock()
+	if configuration != nil && controller.process != nil {
+		controller.process.mu.Lock()
+		active := controller.process.cmd != nil && controller.process.status.State == "running" && !controller.process.stopped
+		controller.process.mu.Unlock()
+		if !active {
+			return errors.New("owned mihomo process identity unavailable")
+		}
+	}
 	if configuration != nil && (controller.egress == nil || !controller.egress.handler.Ready()) {
 		return errors.New("mihomo egress lease is not active")
 	}
 	if configuration == nil {
+		if controller.process != nil {
+			controller.process.mu.Lock()
+			running := controller.process.cmd != nil
+			controller.process.mu.Unlock()
+			if running {
+				return errors.New("unexpected owned mihomo process")
+			}
+			return nil
+		}
 		return errors.Join(controller.verifyListener(ctx, 0), controller.verifyRules(ctx, []mihomoRule{{Type: "Match", Proxy: "REJECT"}}))
 	}
 	if err := validateMihomoConfiguration(configuration, nil, false); err != nil {
 		return err
 	}
-	if err := controller.verifyListener(ctx, configuration.MixedPort, mihomoIPv6(*configuration)); err != nil {
+	if err := controller.verifyManagedListener(ctx, configuration.MixedPort, *configuration); err != nil {
 		return err
 	}
 	if err := controller.verifyRules(ctx, mihomoRules(*configuration)); err != nil {
@@ -235,3 +296,37 @@ func (controller *MihomoController) closeConnections(ctx context.Context) error 
 
 // Ordinary TCP and authorized VPN routes share the same destination guard.
 func mihomoIPv6(_ MihomoConfiguration) bool { return true }
+
+func (c *MihomoController) verifyManagedListener(ctx context.Context, port int, expected MihomoConfiguration) error {
+	if expected.NativePlan == nil || !expected.NativePlan.TUN {
+		return c.verifyListener(ctx, port, mihomoIPv6(expected))
+	}
+	var actual struct {
+		MixedPort    int    `json:"mixed-port"`
+		HTTPPort     int    `json:"port"`
+		SOCKSPort    int    `json:"socks-port"`
+		RedirectPort int    `json:"redir-port"`
+		TProxyPort   int    `json:"tproxy-port"`
+		Mode         string `json:"mode"`
+		AllowLAN     bool   `json:"allow-lan"`
+		BindAddress  string `json:"bind-address"`
+		IPv6         bool   `json:"ipv6"`
+		Tun          struct {
+			Enable     bool     `json:"enable"`
+			Device     string   `json:"device"`
+			AutoRoute  bool     `json:"auto-route"`
+			AutoDetect bool     `json:"auto-detect-interface"`
+			Inet4      []string `json:"inet4-address"`
+			Inet6      []string `json:"inet6-address"`
+			DNSHijack  []string `json:"dns-hijack"`
+		} `json:"tun"`
+	}
+	if err := c.request(ctx, http.MethodGet, "/configs", nil, http.StatusOK, &actual); err != nil {
+		return err
+	}
+	p := expected.NativePlan
+	if actual.MixedPort != port || actual.HTTPPort != 0 || actual.SOCKSPort != 0 || actual.RedirectPort != 0 || actual.TProxyPort != 0 || actual.Mode != "rule" || actual.AllowLAN || actual.BindAddress != c.address || actual.IPv6 != mihomoIPv6(expected) || !actual.Tun.Enable || actual.Tun.Device != p.Device || actual.Tun.AutoRoute || actual.Tun.AutoDetect || len(actual.Tun.DNSHijack) != 0 || len(actual.Tun.Inet4) != 1 || actual.Tun.Inet4[0] != p.TUNAddress.String() || len(actual.Tun.Inet6) != 1 || actual.Tun.Inet6[0] != p.TUNAddress6.String() {
+		return errors.New("native listener configuration drifted")
+	}
+	return nil
+}

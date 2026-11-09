@@ -12,6 +12,7 @@ vars:
 
   # Docker image for cross-compilation (used when building on non-Linux or no CC available)
   CROSS_IMAGE: wails-cross
+  LINUX_CROSS_IMAGE: wails-cross-linux
 
 tasks:
   build:
@@ -30,6 +31,15 @@ tasks:
           OBFUSCATED: '{{.OBFUSCATED}}'
           GARBLE_ARGS: '{{.GARBLE_ARGS}}'
           RELEASE_LDFLAGS: '{{.RELEASE_LDFLAGS}}'
+          SERVICE_LDFLAGS: '{{.SERVICE_LDFLAGS}}'
+      - task: build:service
+        vars:
+          ARCH: '{{.ARCH}}'
+          SERVICE_LDFLAGS: '{{.SERVICE_LDFLAGS}}'
+      - task: stage:service
+        vars:
+          APP_BINARY: '{{.OUTPUT | default (print .BIN_DIR "/" .APP_NAME)}}'
+          ARCH: '{{.ARCH}}'
     vars:
       DEFAULT_OUTPUT: '{{.BIN_DIR}}/{{.APP_NAME}}'
       OUTPUT: '{{ .OUTPUT | default .DEFAULT_OUTPUT }}'
@@ -59,6 +69,7 @@ tasks:
         msg: "garble is required for obfuscated builds. Install it with: go install mvdan.cc/garble@v0.18.0 (requires Go 1.27). See https://github.com/burrowers/garble/releases for version/toolchain compatibility."
     cmds:
       - '{{.LOCAL_VERIFY}} {{if eq .OBFUSCATED "true"}}garble {{.GARBLE_ARGS}} build{{else}}go build{{end}} {{.BUILD_FLAGS}} -o {{.OUTPUT}}'
+      - python3 -B build/linux/network-service/version_receipt.py --binary "{{.OUTPUT}}" --kind app --package-config build/linux/nfpm/nfpm.yaml --ldflags="{{.RELEASE_LDFLAGS}}" --source-file main.go
     vars:
       BUILD_FLAGS: '{{if eq .DEV "true"}}{{if or .EXTRA_TAGS (eq .OBFUSCATED "true")}}-tags {{if eq .OBFUSCATED "true"}}wails_obfuscated{{if .EXTRA_TAGS}},{{end}}{{end}}{{.EXTRA_TAGS}} {{end}}-buildvcs=false -gcflags=all="-l"{{else}}-tags production{{if eq .OBFUSCATED "true"}},wails_obfuscated{{end}}{{if .EXTRA_TAGS}},{{.EXTRA_TAGS}}{{end}} -trimpath -buildvcs=false -ldflags="-w -s{{if .RELEASE_LDFLAGS}} {{.RELEASE_LDFLAGS}}{{end}}"{{end}}'
       DEFAULT_OUTPUT: '{{.BIN_DIR}}/{{.APP_NAME}}'
@@ -84,13 +95,19 @@ tasks:
       - sh: docker image inspect {{.CROSS_IMAGE}} > /dev/null 2>&1
         msg: |
           Docker image '{{.CROSS_IMAGE}}' not found.
-          Build it first: wails3 task setup:docker
+          Build the full image: wails3 task setup:docker
+          Or: wails3 task linux:setup:docker, then build with CROSS_IMAGE=wails-cross-linux
+      - sh: >-
+          docker run --rm --network none --entrypoint /bin/sh "{{.CROSS_IMAGE}}"
+          -c 'grep -Fq SOHA_LINUX_RELEASE_FLAGS_V1 /usr/local/bin/build.sh'
+        msg: "Rebuild wails-cross: this image does not support Linux release linker flags."
     cmds:
-      - '{{.LOCAL_VERIFY}} docker run --rm -v "{{.ROOT_DIR}}:/app" {{.DOCKER_MOUNTS}} -e APP_NAME="{{.APP_NAME}}" {{if .EXTRA_TAGS}}-e EXTRA_TAGS="{{.EXTRA_TAGS}}"{{end}} {{if eq .OBFUSCATED "true"}}-e OBFUSCATED=true{{end}} {{if .GARBLE_ARGS}}-e GARBLE_ARGS="{{.GARBLE_ARGS}}"{{end}} "{{.CROSS_IMAGE}}" linux {{.DOCKER_ARCH}}'
+      - '{{.LOCAL_VERIFY}} docker run --rm -v "{{.ROOT_DIR}}:/app" {{.DOCKER_MOUNTS}} -e APP_NAME="{{.APP_NAME}}" -e RELEASE_LDFLAGS="{{.RELEASE_LDFLAGS}}" {{if .EXTRA_TAGS}}-e EXTRA_TAGS="{{.EXTRA_TAGS}}"{{end}} {{if eq .OBFUSCATED "true"}}-e OBFUSCATED=true{{end}} {{if .GARBLE_ARGS}}-e GARBLE_ARGS="{{.GARBLE_ARGS}}"{{end}} "{{.CROSS_IMAGE}}" linux {{.DOCKER_ARCH}}'
       - cmd: '{{.LOCAL_VERIFY}} docker run --rm -v "{{.ROOT_DIR}}:/app" alpine chown -R $(id -u):$(id -g) /app/bin'
         platforms: [linux, darwin]
       - mkdir -p {{.BIN_DIR}}
       - mv "bin/{{.APP_NAME}}-linux-{{.DOCKER_ARCH}}" "{{.OUTPUT}}"
+      - python3 -B build/linux/network-service/version_receipt.py --binary "{{.OUTPUT}}" --kind app --package-config build/linux/nfpm/nfpm.yaml --ldflags="{{.RELEASE_LDFLAGS}}" --source-file main.go
     vars:
       DOCKER_ARCH: '{{.ARCH | default "amd64"}}'
       DEFAULT_OUTPUT: '{{.BIN_DIR}}/{{.APP_NAME}}'
@@ -99,6 +116,34 @@ tasks:
       # Uses wails3 tool docker-mounts for cross-platform compatibility (Windows/Linux/macOS)
       DOCKER_MOUNTS:
         sh: 'wails3 tool docker-mounts'
+
+  setup:docker:
+    summary: Builds the optional Linux-only compiler image
+    cmds:
+      - '{{.LOCAL_DOCKER_BUILD}} --build-arg SOHA_CROSS_TARGET=linux -f build/docker/Dockerfile.cross -t "{{.LINUX_CROSS_IMAGE}}" .'
+
+  build:service:
+    summary: Builds the Linux admission service from the same package version
+    cmds:
+      - '{{.LOCAL_VERIFY}} go build -tags production -trimpath -buildvcs=false -ldflags="-w -s {{.SERVICE_LDFLAGS}} -X main.serviceVersion={{.PACKAGE_VERSION}}" -o "{{.BIN_DIR}}/soha-app-service-linux" ./cmd/soha-app-service'
+      - python3 -B build/linux/network-service/version_receipt.py --binary "{{.BIN_DIR}}/soha-app-service-linux" --kind service --package-config build/linux/nfpm/nfpm.yaml --ldflags="-w -s {{.SERVICE_LDFLAGS}} -X main.serviceVersion={{.PACKAGE_VERSION}}"
+    vars:
+      PACKAGE_VERSION:
+        sh: python3 -B build/linux/network-service/package_version.py build/linux/nfpm/nfpm.yaml
+    env:
+      GOOS: linux
+      GOARCH: '{{.ARCH | default ARCH}}'
+      CGO_ENABLED: '0'
+
+  stage:service:
+    summary: Stages the service assets and mandatory AppImage companion
+    cmds:
+      - python3 -B build/linux/network-service/stage.py --binary "{{.BIN_DIR}}/soha-app-service-linux" --output "{{.BIN_DIR}}/linux-network-service" --package-config build/linux/nfpm/nfpm.yaml --app-binary "{{.APP_BINARY | default (print .BIN_DIR "/" .APP_NAME)}}" --companion "{{.BIN_DIR}}/soha-app-network-service-linux-{{.ARCH | default ARCH}}.tar.gz"
+
+  verify:service:
+    summary: Verifies the mandatory same-version companion and staged assets
+    cmds:
+      - python3 -B build/linux/network-service/verify_companion.py "{{.BIN_DIR}}/soha-app-network-service-linux-{{.ARCH | default ARCH}}.tar.gz" --package-config build/linux/nfpm/nfpm.yaml --assets "{{.BIN_DIR}}/linux-network-service"
 
   package:
     summary: Packages the application for Linux
@@ -154,16 +199,19 @@ tasks:
   generate:deb:
     summary: Creates a deb package
     cmds:
+      - task: verify:service
       - '{{.LOCAL_VERIFY}} wails3 tool package -name "{{.APP_NAME}}" -format deb -config ./build/linux/nfpm/nfpm.yaml -out {{.ROOT_DIR}}/bin'
 
   generate:rpm:
     summary: Creates a rpm package
     cmds:
+      - task: verify:service
       - '{{.LOCAL_VERIFY}} wails3 tool package -name "{{.APP_NAME}}" -format rpm -config ./build/linux/nfpm/nfpm.yaml -out {{.ROOT_DIR}}/bin'
 
   generate:aur:
     summary: Creates a arch linux packager package
     cmds:
+      - task: verify:service
       - '{{.LOCAL_VERIFY}} wails3 tool package -name "{{.APP_NAME}}" -format archlinux -config ./build/linux/nfpm/nfpm.yaml -out {{.ROOT_DIR}}/bin'
 
   generate:dotdesktop:

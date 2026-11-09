@@ -27,7 +27,7 @@ func runAdmissionIPCAction(ctx context.Context, manager *Manager, request IPCReq
 			return nil, errors.New("EAP status has no parameters")
 		}
 	case "admission_prepare":
-		if request.Admission == nil || !identifierPattern.MatchString(request.Admission.ProfileID) || request.Admission.AdapterID == "" || len(request.Admission.AdapterID) > 128 {
+		if request.Admission == nil || !identifierPattern.MatchString(request.Admission.ProfileID) || request.Admission.Password != "" || request.Admission.AdapterID == "" || len(request.Admission.AdapterID) > 128 {
 			return nil, errors.New("EAP selection is invalid")
 		}
 		err = admission.Prepare(ctx, *request.Admission)
@@ -41,12 +41,18 @@ func runAdmissionIPCAction(ctx context.Context, manager *Manager, request IPCReq
 			return nil, errors.New("EAP profile reference is invalid")
 		}
 		if request.Action == "admission_connect" {
-			err = admission.Connect(ctx, request.Admission.ProfileID)
+			err = admission.ConnectInput(ctx, *request.Admission)
 		} else {
+			if request.Admission.Password != "" {
+				return nil, errors.New("remove has no password input")
+			}
 			err = admission.Remove(ctx, request.Admission.ProfileID)
 		}
 	default:
 		return nil, errors.New("EAP action is unsupported")
+	}
+	if errors.Is(err, ErrEAPSystemInteractionRequired) {
+		err = nil
 	}
 	status, statusErr := admission.Status(ctx)
 	return &status, errors.Join(err, statusErr)
@@ -92,10 +98,13 @@ func validIPCAdmissionStatus(status AdmissionStatus) bool {
 	}
 	seen := map[string]bool{}
 	for _, profile := range status.Profiles {
-		if !identifierPattern.MatchString(profile.ID) || !identifierPattern.MatchString(profile.SiteID) || seen[profile.ID] || profile.AccessMedium != "wifi" && profile.AccessMedium != "wired" || len(profile.SSID) > 32 || len(profile.AdapterID) > 128 || !slicesContains([]string{"available", "installation_required", "activation_pending", "installed", "drift", "authorization_expired"}, profile.State) {
+		if !identifierPattern.MatchString(profile.ID) || !identifierPattern.MatchString(profile.SiteID) || seen[profile.ID] || profile.AccessMedium != "wifi" && profile.AccessMedium != "wired" || len(profile.SSID) > 32 || len(profile.AdapterID) > 128 || !slicesContains([]string{"available", "installation_required", "activation_pending", "installed", "drift", "authorization_expired", "action_required"}, profile.State) {
 			return false
 		}
 		if profile.ArtifactPath != "" && (!filepath.IsAbs(profile.ArtifactPath) || len(profile.ArtifactPath) > 2048 || !strings.HasPrefix(filepath.Base(profile.ArtifactPath), "Soha-EAP-") || filepath.Ext(profile.ArtifactPath) != ".mobileconfig") {
+			return false
+		}
+		if len(profile.UnsupportedReason) > 128 || profile.EAPMethod != "" && profile.EAPMethod != "tls" && profile.EAPMethod != "ttls" || profile.EAPMethod == "ttls" && (profile.InnerMethod != "pap" || profile.CredentialInteraction != "app-input" && profile.CredentialInteraction != "system-prompt") {
 			return false
 		}
 		seen[profile.ID] = true
