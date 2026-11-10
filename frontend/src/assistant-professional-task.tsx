@@ -6,7 +6,7 @@ import type {
   WorkbenchTaskIntent,
 } from "@opensoha/contracts/gen/ts/sohaapi";
 import { assistantApi } from "@/assistant-api";
-import { useAppStore } from "@/store";
+import { selectAssistantOwner, useAppStore } from "@/store";
 
 type Capability = NonNullable<WorkbenchTaskIntent["capabilities"]>[number];
 const capabilities: Array<{
@@ -44,6 +44,7 @@ export function ProfessionalTask({
   toolset?: WorkbenchSessionToolset;
 }) {
   const bootstrap = useAppStore((state) => state.bootstrap);
+  const owner = useAppStore(selectAssistantOwner);
   const permissions = bootstrap?.permissionSnapshot.permissionKeys ?? [];
   const [form] = Form.useForm<WorkbenchTaskIntent & { question: string }>();
   const selected: Capability[] = Form.useWatch("capabilities", form) ?? [];
@@ -53,7 +54,7 @@ export function ProfessionalTask({
   );
   const [failed, setFailed] = useState(false);
   const catalog = useQuery({
-    queryKey: ["assistant-catalog", bootstrap?.currentUser.userId],
+    queryKey: ["assistant-catalog", owner],
     queryFn: assistantApi.catalog,
     enabled: permissions.includes("observe.ai.view"),
     retry: false,

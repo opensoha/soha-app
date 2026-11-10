@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Alert, Button, Input, Typography } from "antd";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { WorkbenchAgentRun } from "@opensoha/contracts/gen/ts/sohaapi";
-import { assistantApi } from "@/assistant-api";
+import { assistantApi, isActiveRun, isReadOnlyRun } from "@/assistant-api";
 import { selectAssistantOwner, useAppStore } from "@/store";
 import { VMSSHCommandProgress } from "@/assistant-vm-access";
 
@@ -12,13 +12,13 @@ const phases: Record<string, string> = {
   cancelling: "取消处理中，等待执行端确认",
 };
 
-export function NativeTaskProgress({ run }: { run: WorkbenchAgentRun }) {
+export function RunTaskProgress({ run }: { run: WorkbenchAgentRun }) {
   const owner = useAppStore(selectAssistantOwner);
   const client = useQueryClient();
   const [cursor, setCursor] = useState(0);
   const [replies, setReplies] = useState<Record<string, string>>({});
   const [input, setInput] = useState("");
-  const active = ["queued", "running"].includes(run.status);
+  const active = isActiveRun(run);
   const canConnectVM = useAppStore((state) =>
     state.bootstrap?.permissionSnapshot.permissionKeys.includes("virtualization.vms.connect") &&
     state.bootstrap.permissionSnapshot.permissionKeys.includes("secret.use"),
@@ -32,23 +32,23 @@ export function NativeTaskProgress({ run }: { run: WorkbenchAgentRun }) {
     retry: false,
   });
   const waitingInput =
-    active && run.phase === "paused" && run.stopReason === "waiting_input";
+    !isReadOnlyRun(run) && active && run.phase === "paused" && run.stopReason === "waiting_input";
   const events = useQuery({
-    queryKey: ["assistant-native-events", owner, run.id, cursor],
+    queryKey: ["assistant-run-events", owner, run.id, cursor],
     queryFn: async ({ signal }) => ({
       afterSequence: cursor,
       page: await assistantApi.events(run.id, cursor, signal),
     }),
-    enabled: active,
-    refetchInterval: 2000,
+    enabled: Boolean(run.id),
+    refetchInterval: active ? 2000 : false,
     retry: false,
   });
   const resume = useMutation({
     mutationFn: () => assistantApi.resume(run.id, { input: input.trim() }),
     onSuccess: (updated) => {
       setInput("");
-      client.setQueryData<WorkbenchAgentRun[]>(
-        ["assistant-tasks", owner],
+      client.setQueriesData<WorkbenchAgentRun[]>(
+        {queryKey: ["assistant-tasks", owner]},
         (runs) =>
           runs?.map((item) => (item.id === updated.id ? updated : item)),
       );
@@ -99,7 +99,8 @@ export function NativeTaskProgress({ run }: { run: WorkbenchAgentRun }) {
     setCursor(data.page.nextSequence);
   }, [events.data, cursor, client, owner, run.id, run.sessionId]);
   return (
-    <div className="app-assistant-native-progress" aria-label="原生任务进度">
+    <div className="app-assistant-native-progress" aria-label="助手任务进度">
+      {isReadOnlyRun(run) ? <Alert type="info" title="历史任务只读，不支持续接旧检查点" description={run.output?.stopReason === "legacy_reconciliation_required" ? "历史执行已隔离，等待核对；副作用尚未确认。" : run.errorMessage || run.stopReason || "执行与副作用状态以服务端记录为准。"} /> : null}
       {phases[run.phase || ""] ? (
         <Typography.Paragraph>{phases[run.phase || ""]}</Typography.Paragraph>
       ) : null}
