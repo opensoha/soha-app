@@ -26,6 +26,10 @@ var assets embed.FS
 var trayIcon []byte
 
 func main() {
+	if err := validateTask112Demo(); err != nil {
+		appLog.Error("demo configuration invalid", "error", err)
+		os.Exit(1)
+	}
 	instance, err := loadAppInstance()
 	if err != nil {
 		appLog.Error("application paths unavailable", "component", "startup", "event", "app.paths.unavailable", "error", err, "error_type", logErrorType(err))
@@ -98,7 +102,7 @@ func main() {
 		networkLinkStatus:    collectNetworkLinkStatus,
 	}
 	runtimeAPI.software.downloadDir = instance.downloadDir
-	host.setRuntimeAPI(runtimeAPI)
+	host.setRuntimeAPI(wrapTask112Demo(runtimeAPI))
 
 	var window *application.WebviewWindow
 	app := application.New(application.Options{

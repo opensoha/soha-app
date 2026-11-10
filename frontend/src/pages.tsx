@@ -4,10 +4,12 @@ import { ManagedVPNPanel } from "@/vpn-panel";
 import { AdmissionPanel } from "@/admission-panel";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
+  ApiOutlined,
   CheckOutlined,
   CloudServerOutlined,
   DownloadOutlined,
   FolderOpenOutlined,
+  LinkOutlined,
   LockOutlined,
   ReloadOutlined,
   SafetyCertificateOutlined,
@@ -35,7 +37,7 @@ import {
   Tag,
 } from "antd";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   ApiError,
   changePassword,
@@ -1041,8 +1043,39 @@ type NetworkConnectionMedium = "wifi" | "wired";
 
 export function NetworkPage() {
   const text = useText();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedTab = searchParams.get("tab");
+  const tab = requestedTab === "vpn" || requestedTab === "wired" || requestedTab === "proxy" ? requestedTab : "wifi";
+
+  return (
+    <Page title={text.network}>
+      <div className="network-hub">
+        <div className="network-hub-header">
+          <Segmented
+            aria-label={text.network}
+            block
+            className="network-mode-segmented"
+            onChange={(value) => setSearchParams(value === "wifi" ? {} : { tab: value })}
+            options={[
+              { label: text.vpn, value: "vpn", icon: <SafetyCertificateOutlined /> },
+              { label: text.networkWifi, value: "wifi", icon: <WifiOutlined /> },
+              { label: text.networkWired, value: "wired", icon: <ApiOutlined /> },
+              { label: text.networkProxyTab, value: "proxy", icon: <LinkOutlined /> },
+            ]}
+            shape="round"
+            value={tab}
+          />
+        </div>
+        {tab === "vpn" ? <SettingsPage view="vpn" /> :
+          tab === "proxy" ? <ProxyPage /> : <NetworkAdmissionView medium={tab} />}
+      </div>
+    </Page>
+  );
+}
+
+function NetworkAdmissionView({ medium }: { medium: NetworkConnectionMedium }) {
+  const text = useText();
   const host = useAppStore((state) => state.host);
-  const [medium, setMedium] = useState<NetworkConnectionMedium>("wifi");
   const deviceId = host?.app.deviceId || "";
   const optionsQuery = useQuery({
     queryKey: ["network-connection-options", deviceId],
@@ -1056,77 +1089,49 @@ export function NetworkPage() {
     refetchInterval: 10_000,
     retry: false,
   });
-  const serviceQuery = useQuery({
-    queryKey: ["network-status"],
-    queryFn: getNetworkStatus,
-    enabled: host?.app.platform === "windows" || host?.app.platform === "darwin",
-    refetchInterval: 10_000,
-    retry: false,
-  });
-  const matchingPresence = serviceQuery.data?.deviceId === deviceId ? serviceQuery.data : undefined;
   const options = optionsQuery.data || [];
 
-  const activeLink = linkQuery.data?.connected && linkQuery.data.medium === medium
+  const activeLink = !linkQuery.isError && linkQuery.data?.connected && linkQuery.data.medium === medium
     ? linkQuery.data
     : null;
+  const linkState = activeLink ? text.networkConnected
+    : linkQuery.isError || linkQuery.isPending ? text.networkLinkUnknown : text.networkDisconnected;
 
   return (
-    <Page title={text.network}>
-      <section className="network-connection-panel">
-        <div className="network-medium-switch">
-          <Segmented
-            aria-label={text.network}
-            block
-            className="network-mode-segmented"
-            onChange={(value) => setMedium(value as NetworkConnectionMedium)}
-            options={[
-              { icon: <WifiOutlined />, label: text.networkWifi, value: "wifi" },
-              { icon: <CloudServerOutlined />, label: text.networkWired, value: "wired" },
-            ]}
-            shape="round"
-            size="large"
-            value={medium}
-          />
-        </div>
-        {optionsQuery.isError ? (
-          <Alert
-            action={<Button onClick={() => optionsQuery.refetch()} size="small">{text.retry}</Button>}
-            description={readableError(optionsQuery.error, text)}
-            showIcon
-            title={text.networkOptionsLoadFailed}
-            type="warning"
-          />
-        ) : null}
-        <AdmissionPanel medium={medium} options={options} enabled={host?.app.platform === "windows" || host?.app.platform === "darwin"} />
-        {activeLink ? (
-          <dl aria-label={text.networkLinkDetails} className="network-link-details">
-            <div><dt>{text.networkIPAddress}</dt><dd>{activeLink.ipAddress || "-"}</dd></div>
-            <div><dt>{text.networkGatewayAddress}</dt><dd>{activeLink.gateway || "-"}</dd></div>
-            <div><dt>{text.networkDNSServers}</dt><dd>{activeLink.dnsServers.join(", ") || "-"}</dd></div>
-          </dl>
-        ) : null}
-        <dl aria-label={text.networkPresenceDetails} className="network-link-details">
-          <div><dt>{text.networkProtectionHeartbeat}</dt><dd>{serviceQuery.isError ? text.networkServiceUnavailable : matchingPresence?.presenceState === "healthy" ? text.networkHeartbeatDelivered : matchingPresence?.presenceState === "unhealthy" ? text.networkHeartbeatUnhealthy : text.networkHeartbeatUnknown}</dd></div>
-          <div><dt>{text.networkHeartbeatReceived}</dt><dd>{matchingPresence?.presenceLastReceivedAt ? new Date(matchingPresence.presenceLastReceivedAt).toLocaleString() : "-"}</dd></div>
-          <div><dt>{text.networkUISignal}</dt><dd>{text.networkHeartbeatUnknown}</dd></div>
-          <div><dt>{text.networkNASSignal}</dt><dd>{text.networkNASUnknown}</dd></div>
-        </dl>
-        {serviceQuery.isError && <Alert showIcon type="warning" title={text.networkServiceUnavailable} action={<Button size="small" onClick={() => void serviceQuery.refetch()}>{text.retry}</Button>} description={readableError(serviceQuery.error, text)} />}
-        <Alert description={text.networkPresenceHelp} showIcon type="info" />
-        <Alert description={text.networkManagedProfileHelp} showIcon type="info" />
-      </section>
-    </Page>
+    <section className="network-connection-panel network-connection-workspace" aria-label={medium === "wifi" ? text.networkWifi : text.networkWired}>
+      {optionsQuery.isError ? (
+        <Alert
+          action={<Button onClick={() => optionsQuery.refetch()} size="small">{text.retry}</Button>}
+          description={readableError(optionsQuery.error, text)}
+          showIcon
+          title={text.networkOptionsLoadFailed}
+          type="warning"
+        />
+      ) : null}
+      <AdmissionPanel
+        medium={medium}
+        linkState={linkState}
+        link={activeLink}
+        options={options}
+        enabled={host?.app.platform === "windows" || host?.app.platform === "darwin"}
+      />
+    </section>
   );
 }
 
 type SettingsView = "settings" | "vpn" | "proxy";
 
-export function VPNPage() {
-  return <SettingsPage view="vpn" />;
-}
-
-export function ProxyPage() {
-  return <><ProxyWorkbenchPanel /><details><summary>订阅与兼容设置 / Subscription settings</summary><SettingsPage view="proxy" /></details></>;
+function ProxyPage() {
+  const chinese = useAppStore((state) => state.locale) === "zh_CN";
+  return (
+    <>
+      <ProxyWorkbenchPanel />
+      <details>
+        <summary>{chinese ? "订阅与兼容设置" : "Subscription settings"}</summary>
+        <SettingsPage view="proxy" />
+      </details>
+    </>
+  );
 }
 
 export function SettingsPage({ view = "settings" }: { view?: SettingsView }) {

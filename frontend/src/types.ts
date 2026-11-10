@@ -251,6 +251,7 @@ export type AdmissionAction = "prepare" | "check" | "connect" | "open" | "remove
 
 export interface AdmissionStatus {
   supported: boolean;
+  demo?: { nasSession: 'pending' | 'observed' };
   profiles: {
     id: string;
     siteId: string;
@@ -286,6 +287,7 @@ export interface NetworkLinkStatus {
   ipAddress?: string
   gateway?: string
   dnsServers: string[]
+  demo?: { nasSession: 'pending' | 'observed' }
 }
 
 export type NetworkConnectInput = { intentId: string; intentToken: string; requestId: string } | LegacyNetworkConnectInput
@@ -301,6 +303,7 @@ export interface LegacyNetworkConnectInput {
 }
 
 export interface NetworkServiceStatus {
+  demo?: NetworkLinkStatus['demo']
  channelControls?: { policyVersion: number; policyFresh: boolean; controlReachable: boolean; lastObservedAt: string; channels: EndpointChannelReceipt[]; diagnostic: string }
 
   presenceState?: 'healthy' | 'unhealthy' | 'unavailable'
