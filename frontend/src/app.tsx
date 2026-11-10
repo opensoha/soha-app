@@ -4,10 +4,8 @@ import {
   AppstoreOutlined,
   GlobalOutlined,
   HomeOutlined,
-  LinkOutlined,
   LogoutOutlined,
   ReloadOutlined,
-  SafetyCertificateOutlined,
   SettingOutlined,
   UserOutlined,
   CommentOutlined,
@@ -49,10 +47,8 @@ import {
   LoginPage,
   NetworkPage,
   ProfilePage,
-  ProxyPage,
   SettingsPage,
   SoftwarePage,
-  VPNPage,
   connectionMessage,
 } from '@/pages'
 import { PortalApplicationPage, PortalPage } from '@/portal-pages'
@@ -80,8 +76,8 @@ export function DesktopApp({ initialEntries }: { initialEntries?: string[] } = {
               <Route path="/assistant" element={<AssistantPage />} />
               <Route path="/portal/applications/:applicationId" element={<PortalApplicationPage />} />
               <Route path="/network" element={<NetworkPage />} />
-              <Route path="/vpn" element={<VPNPage />} />
-              <Route path="/proxy" element={<ProxyPage />} />
+              <Route path="/vpn" element={<Navigate to="/network?tab=vpn" replace />} />
+              <Route path="/proxy" element={<Navigate to="/network?tab=proxy" replace />} />
               <Route path="/profile" element={<ProfilePage />} />
               <Route path="/software" element={<SoftwarePage />} />
               <Route path="/settings" element={<SettingsPage />} />
@@ -311,8 +307,6 @@ function DesktopShell() {
     ...(bootstrap?.permissionSnapshot.permissionKeys.includes('observe.ai.chat') ? [{ path: '/assistant', label: text.assistant, icon: <CommentOutlined /> }] : []),
     { path: '/software', label: text.software, icon: <AppstoreOutlined /> },
     { path: '/network', label: text.network, icon: <GlobalOutlined /> },
-    { path: '/vpn', label: text.vpn, icon: <SafetyCertificateOutlined /> },
-    { path: '/proxy', label: text.proxy, icon: <LinkOutlined /> },
     { path: '/profile', label: text.profile, icon: <UserOutlined /> },
     {
       path: '/settings',
@@ -339,6 +333,12 @@ function DesktopShell() {
       </NavLink>
       <aside className="sidebar">
         <div aria-hidden="true" className="sidebar-drag-region" />
+        {host?.app.platform === 'darwin' && (
+          <div className="sidebar-brand" aria-hidden="true">
+            <img alt="" src="/logo.svg" width={24} height={24} />
+            <span>Soha</span>
+          </div>
+        )}
         <nav aria-label={text.desktopNavigation}>
           {navigation.map((item) => (
             <NavLink

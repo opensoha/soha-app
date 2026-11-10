@@ -930,77 +930,58 @@ describe("desktop app", () => {
     ).toBe("首页");
   });
 
-  it("exposes network, VPN, and proxy as first-class desktop routes", async () => {
+  it("switches Wi-Fi, wired, VPN, and proxy under one network entry", async () => {
     await renderAppToHome();
+    await clickNavigation("网络");
 
     const labels = Array.from(
       container.querySelectorAll(".nav-item > span:last-child"),
     ).map((item) => item.textContent?.trim());
-    expect(labels).toEqual(expect.arrayContaining(["网络连接", "VPN", "代理"]));
+    expect(labels).toContain("网络");
+    expect(labels).not.toContain("VPN");
+    expect(labels).not.toContain("代理");
 
-    for (const label of ["网络连接", "VPN", "代理"]) {
-      await clickNavigation(label);
-      await waitForUI(() =>
-        expect(
-          container.querySelector(".nav-item.active")?.textContent,
-        ).toContain(label),
-      );
-      expect(container.querySelector(".page h1")?.textContent).toBe(label);
-    }
-    expect(container.textContent).toContain(
-      "macOS 代理执行服务尚未随当前构建交付",
-    );
-    await clickNavigation("网络连接");
     await waitForUI(() =>
       expect(container.textContent).toContain("当前网络服务尚不支持原生 EAP 接入配置"),
     );
-    expect(container.querySelector(".page-heading")).toBeNull();
-    expect(container.querySelector(".network-medium-switch")).not.toBeNull();
-    expect(container.textContent).toContain("有线");
-    expect(container.textContent).toContain("192.0.2.10");
-    expect(container.textContent).toContain("192.0.2.1");
-    await act(async () => useAppStore.getState().setNetworkConnection({ selectedWifiKey: JSON.stringify(["site-1", "Soha-Staff"]) }));
-    await act(async () => useAppStore.getState().setNetworkConnection({ wifiAutoConnect: true, wiredAutoConnect: true }));
-    expect(container.textContent).not.toContain("自动连接已开启");
+    expect(findButton(container, "连接 Wi-Fi")?.disabled).toBe(true);
+    const linkDetails = container.querySelector('[aria-label="当前系统网络信息"]');
+    expect(linkDetails?.closest("details")).toBeNull();
+    expect(Array.from(linkDetails?.querySelectorAll("dd") ?? [], (value) => value.textContent))
+      .toEqual(["192.0.2.10", "192.0.2.1", "192.0.2.53"]);
+    expect(container.textContent).not.toContain("诊断详情");
+
+    await clickSegmentedOption("有线网络");
+    expect(Array.from(container.querySelectorAll('[aria-label="当前系统网络信息"] dd'), (value) => value.textContent))
+      .toEqual(["—", "—", "—"]);
+    expect(findButton(container, "连接 Wi-Fi")).toBeNull();
+    expect(container.textContent).toContain("请将网线接入组织的有线网络");
+    await act(async () => useAppStore.getState().setNetworkConnection({ selectedWifiKey: JSON.stringify(["site-1", "Soha-Staff"]), wifiAutoConnect: true, wiredAutoConnect: true }));
     expect(runAdmissionAction).not.toHaveBeenCalled();
-    await clickNavigation("VPN");
+
+    await clickSegmentedOption("VPN");
     await waitForUI(() =>
       expect(container.textContent).toContain("等待组织连接配置"),
     );
-    expect(container.querySelector('.vpn-mode-switch')).toBeNull();
-    expect(container.textContent).toContain('连接方案由组织统一管理');
-    expect(container.querySelector<HTMLButtonElement>('.vpn-panel .network-connect-button')?.disabled).toBe(true);
-    expect(getNetworkStatus).toHaveBeenCalled();
-  });
+    expect(container.querySelector(".vpn-mode-switch")).toBeNull();
+    expect(container.textContent).toContain("连接方案由组织统一管理");
+    expect(container.querySelector<HTMLButtonElement>(".vpn-panel .network-connect-button")?.disabled).toBe(true);
 
-  it("shows an independent service heartbeat while UI and NAS presence remain unknown", async () => {
-    vi.mocked(getNetworkStatus).mockResolvedValue({ ...disconnectedNetworkStatus, deviceId: hostState.app.deviceId!, presenceState: "healthy", presenceEpoch: 2, presenceLastReceivedAt: "2026-10-14T00:00:00Z" });
-    await renderAppToHome();
-    await clickNavigation("网络连接");
-    await waitForUI(() => expect(container.textContent).toContain("最近健康心跳已送达 Core"));
-    const signals = container.querySelector('[aria-label="准入健康信号"]');
-    expect(signals?.textContent).toContain("未知");
-    expect(signals?.textContent).not.toContain("UI 在线");
-    expect(runAdmissionAction).not.toHaveBeenCalled();
-  });
-
-  it("does not display another device's healthy heartbeat", async () => {
-    vi.mocked(getNetworkStatus).mockResolvedValue({ ...disconnectedNetworkStatus, deviceId: "another-device", presenceState: "healthy", presenceLastReceivedAt: "2026-10-14T00:00:00Z" });
-    await renderAppToHome();
-    await clickNavigation("网络连接");
-    await waitForUI(() => expect(container.querySelector('[aria-label="准入健康信号"]')).not.toBeNull());
-    expect(container.textContent).not.toContain("最近健康心跳已送达 Core");
+    await clickSegmentedOption("上网代理");
+    expect(container.textContent).toContain("macOS 代理执行服务尚未随当前构建交付");
+    expect(container.querySelector(".nav-item.active")?.textContent).toContain("网络");
   });
 
   it("requires system installation and activation before offering EAP Wi-Fi connection", async () => {
     const pending = { supported: true, profiles: [{ id: "eap-1", siteId: "site-1", accessMedium: "wifi" as const, ssid: "Soha-Staff", adapterId: "wifi-1", state: "installation_required" as const, artifactPath: "/Users/example/Soha-EAP-test.mobileconfig" }], adapters: [{ id: "wifi-1", name: "en0", medium: "wifi" as const, macAddress: "02:00:00:00:00:01", enabled: true, linkUp: true }] };
     vi.mocked(getAdmissionStatus).mockResolvedValue(pending);
     await renderAppToHome();
-    await clickNavigation("网络连接");
+    await clickNavigation("网络");
     await chooseAdmissionProfile("Soha-Staff");
     await waitForUI(() => expect(container.textContent).toContain("等待系统安装"));
     expect(container.textContent).toContain("其信任范围由操作系统及安装方式决定");
     expect(findButton(container, "连接 Wi-Fi")?.disabled).toBe(true);
+    await act(async () => container.querySelector<HTMLElement>(".admission-settings > summary")?.click());
     vi.mocked(runAdmissionAction).mockResolvedValueOnce(pending);
     await act(async () => findButton(container, "在系统中安装")?.click());
     await waitForUI(() => expect(runAdmissionAction).toHaveBeenCalledWith("open", { profileId: "eap-1" }));
@@ -1013,7 +994,6 @@ describe("desktop app", () => {
     vi.mocked(runAdmissionAction).mockResolvedValueOnce(ready);
     await act(async () => findButton(container, "连接 Wi-Fi")?.click());
     await waitForUI(() => expect(runAdmissionAction).toHaveBeenCalledWith("connect", { profileId: "eap-1" }));
-    expect(container.querySelector('[aria-label="准入健康信号"]')?.textContent).toContain("等待 NAS 侧会话观测");
     expect(localStorage.getItem("soha-app-preferences") ?? "").not.toContain("mobileconfig");
   });
 
@@ -1022,7 +1002,7 @@ describe("desktop app", () => {
     const status = { supported: true, profiles: [profile], adapters: [{ id: "wifi-1", name: "en0", medium: "wifi" as const, macAddress: "02:00:00:00:00:01", enabled: true, linkUp: true }] };
     vi.mocked(getAdmissionStatus).mockResolvedValue(status);
     const client = await renderAppToHome();
-    await clickNavigation("网络连接");
+    await clickNavigation("网络");
     await chooseAdmissionProfile("Staff-password");
     expect(findButton(container, "连接 Wi-Fi")?.disabled).toBe(true);
     const input = container.querySelector<HTMLInputElement>('input[aria-label="本次网络接入密码"]');
@@ -1045,7 +1025,7 @@ describe("desktop app", () => {
     vi.mocked(getAdmissionStatus).mockResolvedValue(status);
     vi.mocked(runAdmissionAction).mockResolvedValueOnce(status);
     await renderAppToHome();
-    await clickNavigation("网络连接");
+    await clickNavigation("网络");
     await chooseAdmissionProfile("Staff-prompt");
     expect(container.querySelector('input[type="password"]')).toBeNull();
     expect(container.textContent).toContain("等待系统认证");
@@ -1059,7 +1039,7 @@ describe("desktop app", () => {
     const status = { supported: true, profiles: [{ id: "ttls-1", siteId: "site-1", accessMedium: "wifi" as const, ssid: "Staff-password", adapterId: "wifi-1", state: "installed" as const, eapMethod: "ttls" as const, innerMethod: "pap" as const, supported: false, unsupportedReason: "method_unsupported" }], adapters: [{ id: "wifi-1", name: "en0", medium: "wifi" as const, macAddress: "02:00:00:00:00:01", enabled: true, linkUp: true }] };
     vi.mocked(getAdmissionStatus).mockResolvedValue(status);
     await renderAppToHome();
-    await clickNavigation("网络连接");
+    await clickNavigation("网络");
     await chooseAdmissionProfile("Staff-password");
     expect(findButton(container, "准备接入配置")?.disabled).toBe(true);
     expect(findButton(container, "连接 Wi-Fi")?.disabled).toBe(true);
@@ -1075,7 +1055,7 @@ describe("desktop app", () => {
     const status = { supported: true, profiles: [first, second], adapters: [{ id: "wifi-1", name: "en0", medium: "wifi" as const, macAddress: "02:00:00:00:00:01", enabled: true, linkUp: true }] };
     vi.mocked(getAdmissionStatus).mockResolvedValue(status);
     const client = await renderAppToHome();
-    await clickNavigation("网络连接");
+    await clickNavigation("网络");
     await chooseAdmissionProfile("Staff-A");
     expect(findButton(container, "连接 Wi-Fi")?.disabled).toBe(false);
     const refreshed = { ...status, profiles: [second] };
@@ -1712,7 +1692,7 @@ describe("desktop app", () => {
       ...hostState, app: { ...hostState.app, platform: "windows", arch: "amd64" },
     });
     await renderAppToHome();
-    await clickNavigation("VPN");
+    await clickNetworkTab("VPN");
     await waitForUI(() => expect(container.textContent).toContain("等待组织连接配置"));
     expect(container.querySelector(".vpn-panel input")).toBeNull();
     expect(container.querySelector(".vpn-panel .ant-segmented")).toBeNull();
@@ -1726,7 +1706,7 @@ describe("desktop app", () => {
     vi.mocked(getHostState).mockResolvedValueOnce({...hostState,app:{...hostState.app,platform:"darwin"}});
     vi.mocked(getVPNConnectionOptions).mockResolvedValue([{profileId:"office",profileRevision:1,name:"企业办公网络",siteId:"site-1",networkSpaceId:"space-1",mode:"external_vpn_ztna",allowManualSelection:true,selectionPolicyId:"policy-1",selectionPolicyRevision:1,selectionStrategy:"latency",available:true,reasonCode:"",candidates:[{gatewayId:"gateway-a",name:"A 地",region:"A",providerCode:"isp-a",providerName:"电信",available:true,reasonCode:"",priority:100}]}]);
     await renderAppToHome();
-    await clickNavigation("VPN");
+    await clickNetworkTab("VPN");
     await waitForUI(() => expect(container.textContent).toContain("企业办公网络"));
     const button=container.querySelector<HTMLButtonElement>('button[aria-label="连接内网"]');
     await waitForUI(() => expect(button?.disabled).toBe(false));
@@ -1737,7 +1717,7 @@ describe("desktop app", () => {
     expect(localStorage.getItem("soha-app-preferences")||"").not.toContain("opaque-token");
   });
 
-  it("shows the active VPN mode read-only and disconnects the existing session", async () => {
+  it("shows the VPN connection summary and disconnects the existing session", async () => {
     vi.mocked(getHostState).mockResolvedValueOnce({
       ...hostState, app: { ...hostState.app, platform: "windows", arch: "amd64" },
     });
@@ -1746,8 +1726,8 @@ describe("desktop app", () => {
       mode: "external_vpn_ztna", gatewayId: "gateway-1",
     });
     await renderAppToHome();
-    await clickNavigation("VPN");
-    await waitForUI(() => expect(container.textContent).toContain("内网 VPN + ZTNA"));
+    await clickNetworkTab("VPN");
+    await waitForUI(() => expect(container.textContent).toContain("隧道 IP"));
     expect(container.querySelector(".vpn-panel .ant-segmented")).toBeNull();
     expect(container.textContent).toContain("gateway-1");
     vi.mocked(getNetworkStatus).mockResolvedValue(disconnectedNetworkStatus);
@@ -1765,13 +1745,14 @@ describe("desktop app", () => {
     });
     vi.mocked(disconnectNetwork).mockRejectedValueOnce(new HostError(409, "network_operation_failed", "Disconnect failed"));
     await renderAppToHome();
-    await clickNavigation("VPN");
+    await clickNetworkTab("VPN");
     await waitForUI(() => expect(container.querySelector<HTMLButtonElement>('button[aria-label="断开连接"]')?.disabled).toBe(false));
+    const statusReads = vi.mocked(getNetworkStatus).mock.calls.length;
     await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="断开连接"]')?.click());
     await waitForUI(() => expect(container.textContent).toContain("Disconnect failed"));
     await waitForUI(() => expect(container.querySelector<HTMLButtonElement>('button[aria-label="断开连接"]')?.disabled).toBe(false));
     expect(container.textContent).toContain("disconnect_incomplete");
-    expect(getNetworkStatus).toHaveBeenCalledTimes(2);
+    await waitForUI(() => expect(getNetworkStatus).toHaveBeenCalledTimes(statusReads + 1));
     expect(connectNetwork).not.toHaveBeenCalled();
     expect(createVPNIntent).not.toHaveBeenCalled();
   });
@@ -1783,7 +1764,7 @@ describe("desktop app", () => {
       ...hostState,
       app: { ...hostState.app, platform: "windows", arch: "amd64" },
     });
-    vi.mocked(getNetworkStatus).mockResolvedValueOnce({
+    vi.mocked(getNetworkStatus).mockResolvedValue({
       ...disconnectedNetworkStatus,
       state: "connected",
       mihomoMode: "app_subscription",
@@ -1792,7 +1773,8 @@ describe("desktop app", () => {
     });
 
     await renderAppToHome();
-    await clickNavigation("代理");
+    await clickNetworkTab("上网代理");
+    await act(async () => container.querySelector<HTMLElement>(".proxy-workbench + details > summary")?.click());
     await waitForUI(() =>
       expect(container.textContent).toContain("尚未配置订阅"),
     );
@@ -2182,6 +2164,11 @@ async function clickNavigation(label: string) {
   await act(async () => link?.click());
 }
 
+async function clickNetworkTab(label: string) {
+  await clickNavigation("网络");
+  await clickSegmentedOption(label);
+}
+
 async function clickSegmentedOption(label: string) {
   const option = Array.from(
     container.querySelectorAll<HTMLElement>(".ant-segmented-item"),
@@ -2228,8 +2215,11 @@ async function setInput(input: HTMLInputElement | null, value: string) {
 }
 
 async function chooseAdmissionProfile(ssid: string) {
-  await waitForUI(() => expect(container.querySelector('[aria-label="组织准入配置"]')).not.toBeNull());
-  await act(async () => container.querySelector('[aria-label="组织准入配置"]')?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })));
+  const picker = () => container.querySelector('[aria-label="选择 Wi-Fi"]');
+  await waitForUI(() => expect(picker()).not.toBeNull());
+  expect(picker()?.closest("details")).toBeNull();
+  expect(picker()?.compareDocumentPosition(findButton(container, "连接 Wi-Fi")!)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  await act(async () => picker()?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })));
   await waitForUI(() => expect(Array.from(document.querySelectorAll('.ant-select-item-option')).some((option) => option.textContent?.includes(ssid))).toBe(true));
   const option = Array.from(document.querySelectorAll<HTMLElement>('.ant-select-item-option')).find((item) => item.textContent?.includes(ssid));
   await act(async () => option?.click());

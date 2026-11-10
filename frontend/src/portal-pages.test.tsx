@@ -270,6 +270,7 @@ describe('desktop provider portal', () => {
     await act(async () => favorite?.click())
 
     expect(setPortalFavorite).toHaveBeenCalledWith('app-1', true)
+    expect(launchPortalApplication).not.toHaveBeenCalled()
   })
 
   it('switches between all applications and favorites without secondary summaries', async () => {
@@ -303,9 +304,8 @@ describe('desktop provider portal', () => {
     const storageWrite = vi.spyOn(Storage.prototype, 'setItem')
     const container = await renderPortal()
     await waitForText(container, 'Soha Console')
-    const open = [...container.querySelectorAll('button')].find((button) =>
-      button.textContent?.includes('打开'),
-    )
+    const open = container.querySelector<HTMLButtonElement>('button[aria-label="打开 Soha Console"]')
+    expect(open).not.toBeNull()
 
     await act(async () => open?.click())
     await act(async () => {
@@ -324,12 +324,11 @@ describe('desktop provider portal', () => {
     vi.mocked(launchPortalApplication).mockRejectedValueOnce(new Error('launch denied'))
     const container = await renderPortal()
     await waitForText(container, 'Soha Console')
-    const open = [...container.querySelectorAll('button')].find((button) =>
-      button.textContent?.includes('打开'),
-    )
+    const open = container.querySelector<HTMLButtonElement>('button[aria-label="打开 Soha Console"]')
 
     await act(async () => open?.click())
 
+    expect(launchPortalApplication).toHaveBeenCalledWith('app-1')
     expect(openBrowserURL).not.toHaveBeenCalled()
   })
 

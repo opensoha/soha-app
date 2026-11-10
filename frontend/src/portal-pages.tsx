@@ -2,8 +2,8 @@ import { useMemo, useState } from 'react'
 import {
   AppstoreOutlined,
   ArrowLeftOutlined,
-  InfoCircleOutlined,
   LinkOutlined,
+  LoadingOutlined,
   SearchOutlined,
   StarFilled,
   StarOutlined,
@@ -23,10 +23,10 @@ import { openBrowserURL } from '@/native/host'
 import { Page } from '@/pages'
 import { useAppStore } from '@/store'
 import type { IdentityApplication, PortalLaunchDecision } from '@/types'
+import './portal-network.css'
 
 export function PortalPage() {
   const text = useText()
-  const navigate = useNavigate()
   const [search, setSearch] = useState('')
   const [category, setCategory] = useState('')
   const [view, setView] = useState<'all' | 'favorites'>('all')
@@ -68,10 +68,11 @@ export function PortalPage() {
 
   return (
     <Page title={text.portal}>
-      <div className="portal-toolbar">
+      <div className="portal-toolbar portal-catalog-toolbar">
         <div className="portal-toolbar-main">
           <Input
             allowClear
+            aria-label={text.portalSearch}
             onChange={(event) => setSearch(event.target.value)}
             placeholder={text.portalSearch}
             prefix={<SearchOutlined />}
@@ -88,9 +89,9 @@ export function PortalPage() {
           />
         </div>
         <div className="portal-categories" role="group" aria-label={text.portalCategory}>
-          <Button onClick={() => setCategory('')} size="small" type={category ? 'text' : 'primary'}>{text.portalAll}</Button>
+          <Button aria-pressed={!category} onClick={() => setCategory('')} size="small" type="default">{text.portalAll}</Button>
           {categories.map((item) => (
-            <Button key={item} onClick={() => setCategory(item)} size="small" type={category === item ? 'primary' : 'text'}>{item}</Button>
+            <Button aria-pressed={category === item} key={item} onClick={() => setCategory(item)} size="small" type="default">{item}</Button>
           ))}
         </div>
       </div>
@@ -101,7 +102,6 @@ export function PortalPage() {
             applications={applications}
             actions={actions}
             compact={compactCards}
-            onDetails={(id) => navigate(`/portal/applications/${encodeURIComponent(id)}`)}
           />
         ) : <Empty description={search || category ? text.portalNoMatches : view === 'favorites' ? text.portalNoFavorites : text.portalEmpty} image={Empty.PRESENTED_IMAGE_SIMPLE} />}
       </section>
@@ -186,52 +186,55 @@ export function PortalApplicationPage() {
   )
 }
 
-function PortalGrid({ applications, actions, compact, onDetails }: {
+function PortalGrid({ applications, actions, compact }: {
   applications: IdentityApplication[]
   actions: ReturnType<typeof usePortalActions>
   compact: boolean
-  onDetails: (id: string) => void
 }) {
   const text = useText()
   const serverURL = useAppStore((state) => state.host?.serverUrl)
   return (
-    <div className={`portal-grid${compact ? ' compact' : ''}`}>
-      {applications.map((application) => (
-        <article className={`portal-card${compact ? ' compact' : ''}`} key={application.id}>
-          <header>
-            <Avatar
-              alt={application.name}
-              icon={<AppstoreOutlined />}
-              shape="square"
-              size={compact ? 32 : 40}
-              src={applicationImageURL(application.iconUrl, serverURL)}
-            />
-            <span><strong>{application.name}</strong><small>{applicationGroup(application) || '—'}</small></span>
+    <div className={`portal-grid portal-tile-grid${compact ? ' compact' : ''}`}>
+      {applications.map((application) => {
+        const launching = actions.launch.isPending && actions.launch.variables?.id === application.id
+        const category = application.category?.trim()
+        return (
+          <article className="portal-card" key={application.id}>
+            <button
+              aria-busy={launching}
+              aria-label={`${text.portalOpen} ${application.name}`}
+              className="portal-card-launch"
+              disabled={launching}
+              onClick={() => actions.launch.mutate(application)}
+              type="button"
+            >
+              <Avatar
+                alt={application.name}
+                className="portal-card-icon"
+                icon={launching ? <LoadingOutlined spin /> : <AppstoreOutlined />}
+                shape="square"
+                size={compact ? 30 : 38}
+                src={launching ? undefined : applicationImageURL(application.iconUrl, serverURL)}
+              />
+              <span className="portal-card-identity">
+                <strong>{application.name}</strong>
+                {category ? <span className="portal-card-category">{category}</span> : null}
+              </span>
+              {compact ? null : <span className="portal-card-description">{application.description || application.slug}</span>}
+            </button>
             <Button
               aria-label={`${application.favorite ? text.portalUnfavorite : text.portalFavorite} ${application.name}`}
+              aria-pressed={Boolean(application.favorite)}
+              className="portal-card-favorite"
               icon={application.favorite ? <StarFilled /> : <StarOutlined />}
               loading={actions.favorite.isPending && actions.favorite.variables?.application.id === application.id}
               onClick={() => actions.favorite.mutate({ application, favorite: !application.favorite })}
               title={application.favorite ? text.portalUnfavorite : text.portalFavorite}
               type="text"
             />
-          </header>
-          {compact ? null : <p>{application.description || application.slug}</p>}
-          {compact ? null : <div className="portal-card-tags">{application.tags?.map((tag) => <Tag key={tag}>{tag}</Tag>)}</div>}
-          <footer>
-            <Button icon={<InfoCircleOutlined />} onClick={() => onDetails(application.id)} size={compact ? 'small' : undefined}>{text.portalDetails}</Button>
-            <Button
-              icon={<LinkOutlined />}
-              loading={actions.launch.isPending && actions.launch.variables?.id === application.id}
-              onClick={() => actions.launch.mutate(application)}
-              size={compact ? 'small' : undefined}
-              type="primary"
-            >
-              {text.portalOpen}
-            </Button>
-          </footer>
-        </article>
-      ))}
+          </article>
+        )
+      })}
     </div>
   )
 }

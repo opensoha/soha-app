@@ -1,14 +1,29 @@
-import { useState } from 'react'
-import { Alert, Button, Select, Space } from 'antd'
-import { PoweroffOutlined, SafetyCertificateOutlined } from '@ant-design/icons'
+import { useId, useState } from 'react'
+import { Alert, Button, Modal, Radio, Select } from 'antd'
+import { DownOutlined, LoadingOutlined, PoweroffOutlined } from '@ant-design/icons'
 import { useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createVPNIntent, getVPNConnectionOptions, getVPNCurrentConnection } from '@/api'
 import { connectNetwork, disconnectNetwork, getNetworkStatus } from '@/native/host'
 import { useAppStore } from '@/store'
 import { useText } from '@/i18n'
 
+function LatencyIndicator({ reading }: { reading: { text: string; ms?: number } }) {
+  const bars = reading.ms == null ? 0 : reading.ms <= 50 ? 3 : reading.ms <= 100 ? 2 : 1
+  return (
+    <span className="vpn-entrance-latency" data-bars={bars}>
+      <svg aria-hidden="true" viewBox="0 0 14 14" width="14" height="14" fill="currentColor">
+        <rect x="1" y="8" width="3" height="5" rx="1" opacity={bars >= 1 ? 1 : .25} />
+        <rect x="6" y="5" width="3" height="8" rx="1" opacity={bars >= 2 ? 1 : .25} />
+        <rect x="11" y="1" width="3" height="12" rx="1" opacity={bars >= 3 ? 1 : .25} />
+      </svg>
+      {reading.text}
+    </span>
+  )
+}
+
 export function ManagedVPNPanel() {
   const text = useText()
+  const connectionStateId = useId()
   const host = useAppStore(s => s.host)
   const user = useAppStore(s => s.session?.user.userId)
   const chinese = useAppStore(s => s.locale) === 'zh_CN'
@@ -16,6 +31,7 @@ export function ManagedVPNPanel() {
   const client = useQueryClient()
   const [profileId, setProfileId] = useState('')
   const [selection, setSelection] = useState('auto')
+  const [draftSelection, setDraftSelection] = useState<string | null>(null)
   const [switching, setSwitching] = useState(false)
   const setRecovery = useAppStore(s => s.setVPNRecovery)
   const connectingOperations = useIsMutating({mutationKey:["vpn-connect"]})
@@ -26,14 +42,16 @@ export function ManagedVPNPanel() {
   const optionsQuery = useQuery({ queryKey: ['vpn-options', host?.serverUrl, user, deviceId], queryFn: () => getVPNConnectionOptions(deviceId), enabled: Boolean(user && deviceId), retry: false, refetchInterval: 60000, refetchIntervalInBackground: false })
   const profiles = optionsQuery.data || []
   const profile = profiles.find(p => p.profileId === profileId) || profiles[0]
+  const allowedEntrance = (id: string) => profile?.allowManualSelection && profile.candidates.some(c => c.available && c.gatewayId === id) ? id : 'auto'
+  const entrance = allowedEntrance(selection)
   const current = useQuery({ queryKey: ['vpn-current', user, deviceId], queryFn: () => getVPNCurrentConnection(deviceId), enabled: Boolean(user && deviceId && status?.sessionId), retry: false, refetchInterval: 10000, refetchIntervalInBackground: false })
   const details = current.data?.sessionId === status?.sessionId ? current.data : null
   const active = Boolean(status?.sessionId)
   const needsCleanup = active || status?.state === 'degraded'
   const connected = active && status?.state === 'connected'
   const operation = useMutation({
- mutationKey:["vpn-connect"],
-    mutationFn: async ({ disconnect = false, automatic = false, targetProfile = profile?.profileId, targetSelection = selection }: { disconnect?: boolean; automatic?: boolean; targetProfile?: string; targetSelection?: string } = {}) => {
+    mutationKey: ['vpn-connect'],
+    mutationFn: async ({ disconnect = false, automatic = false, targetProfile = profile?.profileId, targetSelection = entrance }: { disconnect?: boolean; automatic?: boolean; targetProfile?: string; targetSelection?: string } = {}) => {
       if (!automatic) setRecovery(null)
       if (disconnect || active || status?.state === 'degraded') {
         const cleared = await disconnectNetwork()
@@ -52,35 +70,117 @@ export function ManagedVPNPanel() {
   })
   const busy = connectingOperations > 0 || operation.isPending || status?.state === 'connecting'
   const actual = profiles.flatMap(p => p.candidates).find(c => c.gatewayId === status?.gatewayId)
-  const latency = (id: string) => {
-    if (!status?.probeMeasuredAt || Date.now() - Date.parse(status.probeMeasuredAt) > 60000) return label('未测速 / 已过期', 'Unmeasured / stale')
-    const samples = status.probeResults?.find(s => s.gatewayId === id)?.rttSamplesMs.slice().sort((a,b) => a-b)
-    return samples?.length ? `${samples[Math.floor(samples.length / 2)].toFixed(0)} ms` : label('探测失败', 'Probe failed')
+  const activeServer = connected ? actual?.name || details?.gatewayName || status?.gatewayId : undefined
+  const serverSelection = connected && status?.profileId === profile?.profileId
+    ? allowedEntrance(status?.selection === 'manual' ? status.gatewayId || 'auto' : 'auto')
+    : entrance
+  const serverLabel = activeServer || profile?.candidates.find(c => c.gatewayId === serverSelection)?.name || label('自动', 'Automatic')
+  const canConnect = supported && !busy && !statusQuery.isError && Boolean(profile?.available)
+  const latency = (id: string): { text: string; ms?: number } => {
+    const measuredAt = status?.probeMeasuredAt ? Date.parse(status.probeMeasuredAt) : NaN
+    if (!Number.isFinite(measuredAt)) return { text: label('未测速', 'Not measured') }
+    if (Date.now() - measuredAt > 60000) return { text: label('已过期', 'Stale') }
+    const result = status?.probeResults?.find(sample => sample.gatewayId === id)
+    if (!result) return { text: label('未测速', 'Not measured') }
+    const samples = result.rttSamplesMs.filter(value => Number.isFinite(value) && value >= 0).sort((a, b) => a - b)
+    const ms = samples[Math.floor(samples.length / 2)]
+    return ms == null ? { text: label('探测失败', 'Probe failed') } : { ms, text: `${ms.toFixed(0)} ms` }
   }
+  const candidates = profile?.candidates.map(candidate => ({
+    ...candidate,
+    reading: candidate.available ? latency(candidate.gatewayId) : { text: label('不可用', 'Unavailable') },
+  })) ?? []
+  const fastest = profile?.selectionStrategy === 'latency'
+    ? candidates.reduce<{ text: string; ms?: number } | undefined>((best, { reading }) =>
+      reading.ms != null && (best?.ms == null || reading.ms < best.ms) ? reading : best, undefined)
+    : undefined
+  const autoPolicy = profile?.selectionStrategy === 'latency' ? label('延迟优先', 'Latency first')
+    : profile?.selectionStrategy === 'provider' ? label('供应商优先', 'Provider first') : label('固定优先级', 'Priority')
   const number = (value?: number, unit = '') => value == null ? label('未采集', 'Not collected') : `${value.toLocaleString(undefined, { maximumFractionDigits: 1 })}${unit}`
   const phase = status?.phase === 'measuring' ? label('正在测速', 'Measuring') : status?.phase === 'selecting' ? label('正在选择入口', 'Selecting entrance') : text.networkConnecting
+  const connectionState = !supported ? text.networkVPNUnavailable
+    : switching ? label('切换中', 'Switching')
+    : busy ? phase
+    : statusQuery.isPending || optionsQuery.isFetching ? text.checking
+    : statusQuery.isError ? text.networkServiceUnavailable
+    : connected ? text.networkConnected
+    : !profile ? text.networkVPNWaitingPolicy : text.networkDisconnected
+  const connectionAction = needsCleanup ? text.networkDisconnect : text.networkConnect
+  const canToggleConnection = needsCleanup ? supported && !busy && !statusQuery.isError : canConnect
   return <div className="vpn-content">
-    <div className="vpn-policy-summary"><SafetyCertificateOutlined aria-hidden /><strong>{profile?.name || text.networkVPNManaged}</strong></div>
-    {profiles.length > 1 ? <Select aria-label={label('连接方案', 'Connection profile')} value={profile?.profileId} disabled={busy} onChange={id => { setProfileId(id); setSelection('auto') }} options={profiles.map(p => ({ value: p.profileId, label: p.name }))} /> : null}
-    {profile ? <div className="vpn-entrance-picker"><label htmlFor="vpn-entrance">{label('接入点', 'Entrance')}</label><Select id="vpn-entrance" value={selection} disabled={busy || !profile.allowManualSelection} onChange={setSelection} options={[{ value: 'auto', label: `Auto · ${profile.selectionStrategy === 'latency' ? label('延迟优先','Latency first') : profile.selectionStrategy === 'provider' ? label('供应商优先','Provider first') : label('固定优先级','Priority')}` }, ...profile.candidates.map(c => ({ value: c.gatewayId, label: `${c.name} · ${c.providerName || c.providerCode} · ${latency(c.gatewayId)}${c.available ? '' : ` · ${c.reasonCode}`}`, disabled: !c.available }))]} /></div> : null}
     <div className="network-connect-control">
-      <Button aria-label={needsCleanup ? text.networkDisconnect : text.networkConnect} aria-pressed={connected} className="network-connect-button" disabled={!supported || busy || statusQuery.isError || (!needsCleanup && !profile?.available)} icon={<PoweroffOutlined />} loading={operation.isPending || status?.state === 'connecting'} onClick={() => operation.mutate({ disconnect: needsCleanup })} shape="circle" type={connected ? 'primary' : 'default'} />
-      <strong aria-live="polite">{!supported ? text.networkVPNUnavailable : switching ? label('切换中', 'Switching') : busy ? phase : statusQuery.isPending || optionsQuery.isFetching ? text.checking : statusQuery.isError ? text.networkServiceUnavailable : connected ? text.networkConnected : !profile ? text.networkVPNWaitingPolicy : text.networkDisconnected}</strong>
-      <span className="vpn-connect-hint">{text.networkVPNHelp}</span>
-      {active && profile ? <Button disabled={busy} onClick={() => { setSwitching(true); operation.mutate({}) }}>{label('重新连接以切换', 'Reconnect to switch')}</Button> : null}
+      <Button
+        aria-label={connectionAction}
+        aria-describedby={connectionStateId}
+        aria-busy={busy}
+        className="network-connect-button"
+        data-connected={connected}
+        disabled={!canToggleConnection}
+        onClick={() => operation.mutate({ disconnect: needsCleanup })}
+        type="text"
+      >
+        <span className="vpn-power-face">
+          <span className="vpn-power-icon" aria-hidden="true">{busy ? <LoadingOutlined spin /> : <PoweroffOutlined />}</span>
+          <span>{canToggleConnection ? connectionAction : connectionState}</span>
+        </span>
+      </Button>
+      <span id={connectionStateId} className="visually-hidden" role="status">{connectionState}</span>
+      {profiles.length > 1 ? <Select className="vpn-profile-select" aria-label={label('连接方案', 'Connection profile')} value={profile?.profileId} disabled={busy} onChange={id => { setProfileId(id); setSelection('auto') }} options={profiles.map(p => ({ value: p.profileId, label: p.name }))} /> : null}
+      {profile ? (
+        <div className="vpn-current-server">
+          <span>{label('当前服务器', 'Current server')}</span>
+          <Button type="text" aria-label={`${label('当前服务器', 'Current server')} · ${serverLabel}`} aria-haspopup="dialog" disabled={busy} onClick={() => setDraftSelection(serverSelection)}>
+            {serverSelection === 'auto' ? <span className="vpn-auto-badge">AUTO</span> : null}
+            <span>{serverLabel}</span>
+            <DownOutlined aria-hidden="true" />
+          </Button>
+        </div>
+      ) : activeServer ? <span className="vpn-connect-hint">{activeServer}</span> : null}
     </div>
+    {profile ? (
+      <Modal
+        title={label('选择服务器节点', 'Choose a VPN server')}
+        open={draftSelection !== null}
+        destroyOnHidden
+        width={520}
+        onCancel={() => setDraftSelection(null)}
+        cancelText={text.cancel}
+        okText={active ? label('确认切换', 'Confirm switch') : label('确认连接', 'Connect')}
+        okButtonProps={{ disabled: !canConnect || draftSelection !== allowedEntrance(draftSelection ?? 'auto') }}
+        onOk={() => {
+          if (!canConnect || draftSelection === null || draftSelection !== allowedEntrance(draftSelection)) return
+          setSelection(draftSelection)
+          setDraftSelection(null)
+          setSwitching(active)
+          operation.mutate({ targetSelection: draftSelection })
+        }}
+      >
+        <div className="vpn-entrance-heading">
+          <span>{label('接入点', 'Access point')}</span>
+          <span>{status?.demo ? label('模拟延迟', 'Simulated latency') : label('延迟', 'Latency')}</span>
+        </div>
+        <Radio.Group className="vpn-entrance-options" aria-label={label('接入点', 'Access point')} value={draftSelection} disabled={busy || !profile.available} onChange={event => setDraftSelection(event.target.value)}>
+          <Radio value="auto">
+            <span><span className="vpn-auto-badge">AUTO</span> {label('自动', 'Automatic')} <small>{autoPolicy}</small></span>
+            {fastest ? <LatencyIndicator reading={fastest} /> : null}
+          </Radio>
+          {candidates.map(candidate => (
+            <Radio key={candidate.gatewayId} value={candidate.gatewayId} disabled={!profile.allowManualSelection || !candidate.available}>
+              <span>{candidate.name} <small>{candidate.providerName || candidate.providerCode}</small></span>
+              <LatencyIndicator reading={candidate.reading} />
+            </Radio>
+          ))}
+        </Radio.Group>
+      </Modal>
+    ) : null}
+    <span className="vpn-connect-hint">{profile?.name || text.networkVPNManaged}</span>
     {!supported ? <Alert description={host?.app.platform === 'darwin' ? text.networkMacVPNPending : text.networkWindowsOnly} showIcon type="info" /> : null}
     {optionsQuery.isError || operation.isError ? <Alert showIcon type="error" description={(optionsQuery.error || operation.error)?.message} action={<Button onClick={() => optionsQuery.refetch()}>{text.retry}</Button>} /> : null}
     {status?.diagnostic ? <Alert showIcon type="warning" description={status.diagnostic} /> : null}
-    {active ? <><Space orientation="vertical"><strong>{label('实际接入', 'Actual entrance')}: {actual?.name || details?.gatewayName || status?.gatewayId}</strong><span>{label('选择原因', 'Selection reason')}: {status?.selectionReason || details?.reasonCode || '—'}</span></Space><dl className="network-link-details" aria-label={text.networkStatus}>
-      <div><dt>{text.networkMode}</dt><dd>{status?.mode === 'external_vpn_ztna' ? text.networkModeVPNZTNA : status?.mode === 'internal_ztna' ? text.networkModeInternalZTNA : status?.mode === 'external_direct_ztna' ? text.networkModeDirectZTNA : status?.mode === 'external_vpn' ? text.networkModeVPN : '—'}</dd></div>
+    {active ? <dl className="network-link-details" aria-label={text.networkStatus}>
       <div><dt>{label('隧道 IP', 'Tunnel IP')}</dt><dd>{status?.tunnelIP || details?.tunnelIP || '—'}</dd></div>
-      <div><dt>{label('入口探测 RTT', 'Entrance probe RTT')}</dt><dd>{status?.gatewayId ? latency(status.gatewayId) : '—'}</dd></div>
       <div><dt>{label('本次时长', 'Duration')}</dt><dd>{status?.connectedAt ? `${Math.max(0, Math.floor((Date.now()-Date.parse(status.connectedAt))/1000))} s` : '—'}</dd></div>
       <div><dt>{label('上传 / 下载速率', 'Upload / download rate')}</dt><dd>{number(details?.uploadBytesPerSecond == null ? undefined : details.uploadBytesPerSecond / 1024, ' KiB/s')} / {number(details?.downloadBytesPerSecond == null ? undefined : details.downloadBytesPerSecond / 1024, ' KiB/s')}</dd></div>
-      <div><dt>{label('本次传输量', 'Transferred')}</dt><dd>{number(details?.uploadBytes == null ? undefined : details.uploadBytes / 1048576, ' MiB')} / {number(details?.downloadBytes == null ? undefined : details.downloadBytes / 1048576, ' MiB')}</dd></div>
-      <div><dt>{label('最后握手', 'Last handshake')}</dt><dd>{details?.lastHandshakeAt || label('未采集','Not collected')}</dd></div>
-      <div><dt>{label('测量时间', 'Measured at')}</dt><dd>{details?.measuredAt || '—'}</dd></div>
-    </dl></> : null}
+    </dl> : null}
   </div>
 }

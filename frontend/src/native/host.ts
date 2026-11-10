@@ -235,6 +235,15 @@ export function getSoftwareTask(taskId: string): Promise<SoftwareTaskResponse> {
 }
 
 export function openBrowserURL(url: string): Promise<void> {
+  const demoOrigin = "http://127.0.0.1:18113";
+  if (window.location.origin === demoOrigin) {
+    const target = new URL(url, demoOrigin);
+    if (target.origin !== demoOrigin || !/^\/auth\/browser-handoff\/[A-Za-z0-9_-]+$/.test(target.pathname) || target.search || target.hash || target.username || target.password) {
+      return Promise.reject(new HostError(400, "invalid_demo_handoff", "Invalid Task112 browser demo handoff"));
+    }
+    window.location.assign(target.href);
+    return Promise.resolve();
+  }
   return hostRequest("/app/v1/browser/open", jsonRequest({ url })).then(
     () => undefined,
   );

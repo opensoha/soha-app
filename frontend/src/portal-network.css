@@ -1,0 +1,284 @@
+.portal-catalog-toolbar .portal-toolbar-main {
+  flex-wrap: wrap;
+}
+
+.portal-catalog-toolbar .portal-toolbar-main > .ant-input-affix-wrapper {
+  flex: 1 1 220px;
+}
+
+.portal-catalog-toolbar .portal-categories {
+  gap: 6px;
+}
+
+.portal-categories .ant-btn {
+  height: auto;
+  min-height: 28px;
+  max-width: 100%;
+  padding-inline: 10px;
+  border-radius: 999px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.portal-categories .ant-btn[aria-pressed="true"] {
+  border-color: var(--primary);
+  color: var(--primary);
+  background: var(--primary-muted);
+  font-weight: 600;
+}
+
+.portal-grid.portal-tile-grid {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 196px), 1fr));
+  gap: 12px;
+}
+
+.portal-grid.portal-tile-grid.compact {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 172px), 1fr));
+}
+
+.portal-card-launch {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 18px;
+  align-content: start;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 100%;
+  padding: 12px;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.portal-card-launch:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.portal-card-launch:disabled {
+  cursor: progress;
+}
+
+.portal-tile-grid .portal-card:hover,
+.portal-tile-grid .portal-card:focus-within {
+  border-color: color-mix(in srgb, var(--primary) 45%, var(--border));
+}
+
+.portal-card-favorite.ant-btn {
+  position: absolute;
+  inset-block-start: 4px;
+  inset-inline-end: 4px;
+}
+
+.portal-tile-grid .portal-card-icon.ant-avatar,
+.network-card-icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: var(--primary-muted);
+  color: var(--primary);
+}
+
+.portal-card-favorite.ant-btn[aria-pressed="true"] {
+  color: var(--primary);
+}
+
+.portal-card-identity {
+  display: grid;
+  gap: 3px;
+}
+
+.portal-card-identity strong {
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.portal-card-category {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.portal-card-description {
+  grid-column: 1 / -1;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.workspace-scroll:has(> .page > .network-hub) {
+  background: var(--surface);
+}
+
+.network-hub-header {
+  margin-bottom: 12px;
+}
+
+.network-hub-header .network-mode-segmented {
+  width: min(480px, 100%);
+  margin-inline: auto;
+  padding: 3px;
+  background: color-mix(in srgb, var(--surface-muted) 72%, var(--border));
+}
+
+.network-hub-header .ant-segmented-item-label {
+  padding-inline: 8px;
+  line-height: 34px;
+}
+
+.network-hub-header .ant-segmented-item-selected,
+.network-hub-header .ant-segmented-thumb {
+  background: #0958d9;
+  color: #fff;
+}
+
+.network-hub .page {
+  width: 100%;
+  padding: 0;
+}
+
+.network-hub .proxy-workbench + details {
+  width: 100%;
+  margin-top: 16px;
+}
+
+.network-connection-panel.network-connection-workspace {
+  max-width: 760px;
+  gap: 18px;
+}
+
+.network-status-values,
+.admission-settings {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.admission-connect-settings {
+  display: grid;
+  gap: 14px;
+  padding: 0 14px 14px;
+}
+
+.admission-connect-header {
+  margin-block: clamp(10px, 3vh, 30px) 4px;
+  text-align: center;
+}
+
+.admission-connect-header .admission-connect-field {
+  width: min(420px, 100%);
+  text-align: start;
+}
+
+.network-card-icon {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  font-size: 30px;
+}
+
+.admission-connect-header h2 {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.35;
+}
+
+.admission-connect-header p {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.network-state-connected {
+  color: var(--text);
+  font-weight: 600;
+}
+
+@media (max-width: 620px) {
+  .network-hub-header .ant-segmented-item-label {
+    padding-inline: 4px;
+    font-size: 12px;
+  }
+  .network-hub-header .ant-segmented-item-icon {
+    display: none;
+  }
+}
+
+.admission-connect-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 5px;
+}
+
+.admission-connect-badges .ant-tag {
+  margin: 0;
+  white-space: normal;
+}
+
+.admission-connect-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr));
+  gap: 12px;
+}
+
+.admission-connect-field {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.admission-connect-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.network-status-values {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0;
+}
+
+.network-status-values > div {
+  min-width: 0;
+  padding: 14px 16px;
+}
+
+.network-status-values > div + div {
+  border-inline-start: 1px solid var(--border);
+}
+
+.network-status-values dt,
+.admission-trust-note {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.network-status-values dd {
+  margin: 4px 0 0;
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.admission-settings summary {
+  padding: 12px 14px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.admission-trust-note {
+  margin: 0;
+}
