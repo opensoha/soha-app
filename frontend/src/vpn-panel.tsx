@@ -31,7 +31,7 @@ export function ManagedVPNPanel() {
   const client = useQueryClient()
   const [profileId, setProfileId] = useState('')
   const [selection, setSelection] = useState('auto')
-  const [draftSelection, setDraftSelection] = useState<string | null>(null)
+  const [draft, setDraft] = useState<{ profileId: string; selection: string } | null>(null)
   const [switching, setSwitching] = useState(false)
   const setRecovery = useAppStore(s => s.setVPNRecovery)
   const connectingOperations = useIsMutating({mutationKey:["vpn-connect"]})
@@ -40,13 +40,16 @@ export function ManagedVPNPanel() {
   const status = statusQuery.data
   const deviceId = status?.deviceId || host?.app.deviceId || ''
   const optionsQuery = useQuery({ queryKey: ['vpn-options', host?.serverUrl, user, deviceId], queryFn: () => getVPNConnectionOptions(deviceId), enabled: Boolean(user && deviceId), retry: false, refetchInterval: 60000, refetchIntervalInBackground: false })
-  const profiles = optionsQuery.data || []
-  const profile = profiles.find(p => p.profileId === profileId) || profiles[0]
-  const allowedEntrance = (id: string) => profile?.allowManualSelection && profile.candidates.some(c => c.available && c.gatewayId === id) ? id : 'auto'
-  const entrance = allowedEntrance(selection)
   const current = useQuery({ queryKey: ['vpn-current', user, deviceId], queryFn: () => getVPNCurrentConnection(deviceId), enabled: Boolean(user && deviceId && status?.sessionId), retry: false, refetchInterval: 10000, refetchIntervalInBackground: false })
   const details = current.data?.sessionId === status?.sessionId ? current.data : null
   const active = Boolean(status?.sessionId)
+  const activeProfileId = active ? status?.profileId || details?.profileId : undefined
+  const profiles = optionsQuery.data || []
+  const activeProfile = profiles.find(p => p.profileId === activeProfileId)
+  const profile = profiles.find(p => p.profileId === profileId) ?? activeProfile ?? (active ? undefined : profiles[0])
+  const draftSelection = draft && draft.profileId === profile?.profileId ? draft.selection : null
+  const allowedEntrance = (id: string) => profile?.allowManualSelection && profile.candidates.some(c => c.available && c.gatewayId === id) ? id : 'auto'
+  const entrance = allowedEntrance(selection)
   const needsCleanup = active || status?.state === 'degraded'
   const connected = active && status?.state === 'connected'
   const operation = useMutation({
@@ -69,13 +72,15 @@ export function ManagedVPNPanel() {
     onSettled: () => { setSwitching(false); void client.invalidateQueries({ queryKey: ['network-status'] }); void client.invalidateQueries({ queryKey: ['vpn-current'] }) },
   })
   const busy = connectingOperations > 0 || operation.isPending || status?.state === 'connecting'
-  const actual = profiles.flatMap(p => p.candidates).find(c => c.gatewayId === status?.gatewayId)
+  const actual = activeProfile?.candidates.find(c => c.gatewayId === status?.gatewayId)
   const activeServer = connected ? actual?.name || details?.gatewayName || status?.gatewayId : undefined
-  const serverSelection = connected && status?.profileId === profile?.profileId
+  const editingActiveProfile = connected && Boolean(activeProfileId) && activeProfileId === profile?.profileId
+  const serverSelection = editingActiveProfile
     ? allowedEntrance(status?.selection === 'manual' ? status.gatewayId || 'auto' : 'auto')
     : entrance
-  const serverLabel = activeServer || profile?.candidates.find(c => c.gatewayId === serverSelection)?.name || label('自动', 'Automatic')
-  const canConnect = supported && !busy && !statusQuery.isError && Boolean(profile?.available)
+  const serverLabel = (editingActiveProfile && activeServer) || profile?.candidates.find(c => c.gatewayId === serverSelection)?.name || label('自动', 'Automatic')
+  const serverField = connected && !editingActiveProfile ? label('目标服务器', 'Target server') : label('当前服务器', 'Current server')
+  const canConnect = supported && !busy && statusQuery.isSuccess && Boolean(profile?.available)
   const latency = (id: string): { text: string; ms?: number } => {
     const measuredAt = status?.probeMeasuredAt ? Date.parse(status.probeMeasuredAt) : NaN
     if (!Number.isFinite(measuredAt)) return { text: label('未测速', 'Not measured') }
@@ -125,17 +130,18 @@ export function ManagedVPNPanel() {
         </span>
       </Button>
       <span id={connectionStateId} className="visually-hidden" role="status">{connectionState}</span>
-      {profiles.length > 1 ? <Select className="vpn-profile-select" aria-label={label('连接方案', 'Connection profile')} value={profile?.profileId} disabled={busy} onChange={id => { setProfileId(id); setSelection('auto') }} options={profiles.map(p => ({ value: p.profileId, label: p.name }))} /> : null}
+      {profiles.length > 1 || (!profile && profiles.length > 0) ? <Select className="vpn-profile-select" aria-label={label('连接方案', 'Connection profile')} value={profile?.profileId} disabled={busy} onChange={id => { setProfileId(id); setSelection('auto'); setDraft(null) }} options={profiles.map(p => ({ value: p.profileId, label: p.name }))} /> : null}
+      {activeServer && !editingActiveProfile ? <span className="vpn-connect-hint">{label('当前服务器', 'Current server')} · {activeServer}</span> : null}
       {profile ? (
         <div className="vpn-current-server">
-          <span>{label('当前服务器', 'Current server')}</span>
-          <Button type="text" aria-label={`${label('当前服务器', 'Current server')} · ${serverLabel}`} aria-haspopup="dialog" disabled={busy} onClick={() => setDraftSelection(serverSelection)}>
+          <span>{serverField}</span>
+          <Button type="text" aria-label={`${serverField} · ${serverLabel}`} aria-haspopup="dialog" disabled={busy} onClick={() => setDraft({ profileId: profile.profileId, selection: serverSelection })}>
             {serverSelection === 'auto' ? <span className="vpn-auto-badge">AUTO</span> : null}
             <span>{serverLabel}</span>
             <DownOutlined aria-hidden="true" />
           </Button>
         </div>
-      ) : activeServer ? <span className="vpn-connect-hint">{activeServer}</span> : null}
+      ) : null}
     </div>
     {profile ? (
       <Modal
@@ -143,23 +149,23 @@ export function ManagedVPNPanel() {
         open={draftSelection !== null}
         destroyOnHidden
         width={520}
-        onCancel={() => setDraftSelection(null)}
+        onCancel={() => setDraft(null)}
         cancelText={text.cancel}
         okText={active ? label('确认切换', 'Confirm switch') : label('确认连接', 'Connect')}
         okButtonProps={{ disabled: !canConnect || draftSelection !== allowedEntrance(draftSelection ?? 'auto') }}
         onOk={() => {
           if (!canConnect || draftSelection === null || draftSelection !== allowedEntrance(draftSelection)) return
           setSelection(draftSelection)
-          setDraftSelection(null)
+          setDraft(null)
           setSwitching(active)
-          operation.mutate({ targetSelection: draftSelection })
+          operation.mutate({ targetProfile: profile.profileId, targetSelection: draftSelection })
         }}
       >
         <div className="vpn-entrance-heading">
           <span>{label('接入点', 'Access point')}</span>
           <span>{status?.demo ? label('模拟延迟', 'Simulated latency') : label('延迟', 'Latency')}</span>
         </div>
-        <Radio.Group className="vpn-entrance-options" aria-label={label('接入点', 'Access point')} value={draftSelection} disabled={busy || !profile.available} onChange={event => setDraftSelection(event.target.value)}>
+        <Radio.Group className="vpn-entrance-options" aria-label={label('接入点', 'Access point')} value={draftSelection} disabled={busy || !profile.available} onChange={event => setDraft({ profileId: profile.profileId, selection: event.target.value })}>
           <Radio value="auto">
             <span><span className="vpn-auto-badge">AUTO</span> {label('自动', 'Automatic')} <small>{autoPolicy}</small></span>
             {fastest ? <LatencyIndicator reading={fastest} /> : null}

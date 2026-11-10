@@ -49,11 +49,13 @@ function Workbench({data:d,readFailed,refresh,t}:{data:ProxyWorkbench;readFailed
  const enabled = (name:string) => !readFailed && d.capabilities?.some(c => c.name === name && c.state === 'available')
  const running = d.process.state === 'running'
  const stopped = d.process.state === 'stopped'
+ const startable = stopped || d.process.state === 'failed' || d.process.state === 'exited'
  const controllable = enabled('process_control') && d.process.ownership === 'soha_owned'
  const stateLabel = readFailed ? t('观测已过期','Observation stale') :
   running ? t('运行中','Running') : stopped ? t('已停止','Stopped') : t('等待状态确认','Awaiting state')
  const sampleKnown = !readFailed && running && d.traffic.state === 'fresh' && d.traffic.processEpoch === d.process.processEpoch
  const totalsKnown = !readFailed && running && d.traffic.state !== 'unavailable' && d.traffic.processEpoch === d.process.processEpoch
+ const connectionsKnown = enabled('connections') && running && d.connections.processEpoch === d.process.processEpoch
  const groups = d.groups || []
  const simulated = d.diagnostics?.some(item => item.code === 'demo_simulation')
  async function act(input:ProxyAction) {
@@ -84,7 +86,7 @@ function Workbench({data:d,readFailed,refresh,t}:{data:ProxyWorkbench;readFailed
    <div className="proxy-runtime-name"><h2>Mihomo</h2><p>{simulated ? t('模拟进程与流量','Simulated process and traffic') : d.process.ownership === 'soha_owned' ? t('Soha 管理的本机进程','Soha-managed local process') : t('外部管理的进程','Externally managed process')}</p></div>
    <Tag color={!readFailed && running ? 'success' : 'default'}>{stateLabel}</Tag>
    <Space wrap>
-    <Button type="primary" icon={<PlayCircleOutlined />} loading={busy === 'start'} disabled={Boolean(busy) || !controllable || !stopped} onClick={() => void act({kind:'start'})}>{t('开启','Start')}</Button>
+    <Button type="primary" icon={<PlayCircleOutlined />} loading={busy === 'start'} disabled={Boolean(busy) || !controllable || !startable} onClick={() => void act({kind:'start'})}>{t('开启','Start')}</Button>
     <Popconfirm title={t('停止 Mihomo？','Stop Mihomo?')} description={t('当前代理连接可能中断。','Active proxy connections may be interrupted.')} onConfirm={() => act({kind:'stop'})} disabled={!controllable || !running || Boolean(busy)}>
      <Button icon={<PoweroffOutlined />} loading={busy === 'stop'} disabled={Boolean(busy) || !controllable || !running}>{t('关闭','Stop')}</Button>
     </Popconfirm>
@@ -93,7 +95,7 @@ function Workbench({data:d,readFailed,refresh,t}:{data:ProxyWorkbench;readFailed
   <div className="proxy-traffic" aria-label={t('Mihomo 流量','Mihomo traffic')}>
    <TrafficMetric icon={<ArrowUpOutlined />} label={t('上传速率','Upload rate')} rate={sampleKnown ? d.traffic.uploadBytesPerSecond : null} total={totalsKnown ? d.traffic.uploadTotal : null} totalLabel={t('累计上传','Total upload')}/>
    <TrafficMetric icon={<ArrowDownOutlined />} label={t('下载速率','Download rate')} rate={sampleKnown ? d.traffic.downloadBytesPerSecond : null} total={totalsKnown ? d.traffic.downloadTotal : null} totalLabel={t('累计下载','Total download')}/>
-   <div className="proxy-traffic-metric"><span>{t('活动连接','Active connections')}</span><strong>{!readFailed && running && d.connections.processEpoch === d.process.processEpoch ? d.connections.totalActive : '—'}</strong><small>{sampleKnown ? t('本次进程观测','Current process sample') : t('暂无可用采样','No sample available')}</small></div>
+   <div className="proxy-traffic-metric"><span>{t('活动连接','Active connections')}</span><strong>{connectionsKnown ? d.connections.totalActive : '—'}</strong><small>{connectionsKnown ? t('本次进程观测','Current process sample') : t('暂无可用采样','No sample available')}</small></div>
   </div>
  </section>
  {d.deliveryMode === 'direct_subscription' && <Alert type="warning" showIcon title={t('直接连接：本机会接收必要上游信息。发布方式不会自动切换。','Direct connection: this device receives necessary upstream information. Delivery mode never changes automatically.')}/>}
@@ -121,7 +123,7 @@ function Workbench({data:d,readFailed,refresh,t}:{data:ProxyWorkbench;readFailed
  {key:'probe',label:t('节点测速','Node probes'),children:<><Input aria-label={t('管理员批准的测速方案编号','Approved probe profile')} value={probeProfile} onChange={e=>setProbeProfile(e.target.value)} placeholder={t('管理员批准的测速方案编号','Administrator-approved probe profile')}/>{(d.nodes || []).map(n=><p key={n.nodeId}>{n.label} <Button disabled={Boolean(busy) || !enabled('probe') || !probeProfile.trim()} onClick={()=>void act({kind:'probe',nodeId:n.nodeId,probeProfileId:probeProfile.trim()})}>{t('测速','Probe')}</Button>{d.probe?.nodeId===n.nodeId && ` ${d.probe.latencyMilliseconds} ms`}</p>)}</>},
  {key:'rules',label:t('我的规则','My rules'),children:<PersonalRules data={d} disabled={Boolean(busy) || !enabled('rules')} save={async input=>{const result = await proxyRules(input);await refresh();return result}} t={t}/>},
  {key:'effective',label:t('组织与生效规则','Organization & effective rules'),children:<><p>{t('平台保护 / 组织强制 → 我的规则 → 组织默认 → 兜底。组织规则只读。','Protection / required organization → personal → organization default → fallback. Organization rules are read-only.')}</p>{ruleView(d.rules.effectiveRules || [])}{(d.rules.conflicts || []).map(c=><Alert key={c.ruleId} type="warning" title={`${c.ruleId}: ${c.reasonCode} (${c.blockingRuleId})`}/>)}<h4>{t('被屏蔽规则','Masked rules')}</h4>{ruleView(d.maskedRules || [])}</>},
- {key:'traffic',label:t('连接详情','Connection details'),children:<><p>{d.connections.returnedCount} / {d.connections.totalActive} {d.connections.truncated && t('（已截断）',' (truncated)')}</p>{(d.connections.items || []).map(c=><p key={c.connectionId}>{c.destination || c.network || t('连接','Connection')} · ↑ {formatTransfer(c.upload)} ↓ {formatTransfer(c.download)} <Popconfirm title={t('关闭此连接？将影响当前传输。','Close this connection and interrupt its transfer?')} onConfirm={()=>act({kind:'close',connectionId:c.connectionId,processEpoch:d.connections.processEpoch})}><Button disabled={Boolean(busy) || !enabled('close_connection')}>{t('关闭此连接','Close connection')}</Button></Popconfirm></p>)}</>},
+ {key:'traffic',label:t('连接详情','Connection details'),children:connectionsKnown ? <><p>{d.connections.returnedCount} / {d.connections.totalActive} {d.connections.truncated && t('（已截断）',' (truncated)')}</p>{(d.connections.items || []).map(c=><p key={c.connectionId}>{c.destination || c.network || t('连接','Connection')} · ↑ {formatTransfer(c.upload)} ↓ {formatTransfer(c.download)} <Popconfirm title={t('关闭此连接？将影响当前传输。','Close this connection and interrupt its transfer?')} onConfirm={()=>act({kind:'close',connectionId:c.connectionId,processEpoch:d.connections.processEpoch})}><Button disabled={Boolean(busy) || !enabled('close_connection')}>{t('关闭此连接','Close connection')}</Button></Popconfirm></p>)}</> : <p>{t('暂无可用采样','No sample available')}</p>},
  {key:'diagnostics',label:t('DNS、日志与诊断','DNS, logs & diagnostics'),children:<>{(d.diagnostics || []).map(x=><p key={x.code}>{x.state}: {x.message}</p>)}{(d.dns || []).map(x=><p key={x.name}>{x.name}: {x.addresses.join(', ')} · {x.expiresAt}</p>)}<pre style={{whiteSpace:'pre-wrap'}}>{(d.logs || []).map(x=>`${x.occurredAt} ${x.level} ${x.message}`).join('\n')}</pre><details><summary>{t('高级诊断 / 可用功能','Advanced / capabilities')}</summary><p>PID: {d.process.pid ?? '—'}</p>{(d.capabilities || []).map(c=><p key={c.name}>{c.name}: {c.state} {c.reasonCode}</p>)}</details></>}
  ]}/></details></>
 }

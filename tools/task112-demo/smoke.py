@@ -104,14 +104,19 @@ def run(key):
     post("/proxy/actions", select_node, expected=409, native=True)
     started = post("/proxy/actions", {"kind": "start"}, native=True)[0]
     assert started["process"]["state"] == "running" and started["traffic"]["state"] == "fresh"
+    assert {"name": "connections", "state": "available"} in started["capabilities"]
     post("/proxy/actions", select_node, native=True)
     sleep(0.02)
     running = request("/proxy", native=True)[0]
     assert running["groups"][0]["selectedNodeId"] == "demo-node-b"
     assert running["traffic"]["uploadTotal"] > started["traffic"]["uploadTotal"]
     assert running["traffic"]["downloadBytesPerSecond"] > 0
+    repaired = post("/proxy/actions", {"kind": "repair"}, native=True)[0]
+    assert repaired["process"] == running["process"]
+    assert repaired["groups"] == running["groups"]
     stopped = post("/proxy/actions", {"kind": "stop"}, native=True)[0]
     assert stopped["process"]["state"] == "stopped" and stopped["traffic"]["uploadBytesPerSecond"] is None
+    assert {"name": "connections", "state": "unavailable"} in stopped["capabilities"]
 
 
 def main():

@@ -1736,6 +1736,36 @@ describe("desktop app", () => {
     await waitForUI(() => expect(container.textContent).toContain("等待组织连接配置"));
   });
 
+  it("keeps the active VPN profile when opening the server picker again", async () => {
+    const profiles = ["office", "engineering"].map((id) => ({
+      profileId: id, profileRevision: 1, name: id, siteId: "site-1",
+      networkSpaceId: "space-1", mode: "external_vpn_ztna" as const, allowManualSelection: true,
+      selectionPolicyId: "policy-1", selectionPolicyRevision: 1, selectionStrategy: "latency" as const,
+      available: true, reasonCode: "",
+      candidates: [{ gatewayId: id + "-gateway", name: id + " gateway", region: "A",
+        providerCode: "isp", providerName: "Demo ISP", available: true, reasonCode: "", priority: 100 }],
+    }));
+    vi.mocked(getVPNConnectionOptions).mockResolvedValue(profiles);
+    vi.mocked(getNetworkStatus).mockResolvedValue({
+      ...disconnectedNetworkStatus, state: "connected", sessionId: "session-1",
+      profileId: "engineering", gatewayId: "engineering-gateway", selection: "manual",
+    });
+    await renderAppToHome();
+    await clickNetworkTab("VPN");
+    await clickSegmentedOption("Wi-Fi");
+    await clickSegmentedOption("VPN");
+    const picker = () => container.querySelector<HTMLButtonElement>('button[aria-label="当前服务器 · engineering gateway"]');
+    await waitForUI(() => expect(picker()).not.toBeNull());
+    await act(async () => picker()?.click());
+    await waitForUI(() => expect(document.querySelector<HTMLInputElement>('input[value="engineering-gateway"]')?.checked).toBe(true));
+    expect(document.querySelector('input[value="office-gateway"]')).toBeNull();
+    await act(async () => findButton(document.body, "确认切换")?.click());
+    await waitForUI(() => expect(createVPNIntent).toHaveBeenCalledWith({
+      deviceId: disconnectedNetworkStatus.deviceId, profileId: "engineering",
+      selection: "manual", gatewayId: "engineering-gateway",
+    }));
+  });
+
   it("keeps VPN cleanup available after a failed disconnect", async () => {
     vi.mocked(getHostState).mockResolvedValueOnce({
       ...hostState, app: { ...hostState.app, platform: "windows" },
@@ -1755,6 +1785,29 @@ describe("desktop app", () => {
     await waitForUI(() => expect(getNetworkStatus).toHaveBeenCalledTimes(statusReads + 1));
     expect(connectNetwork).not.toHaveBeenCalled();
     expect(createVPNIntent).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["failed", "unavailable", "—"],
+    ["exited", "available", "0"],
+  ])("allows Mihomo start after %s and reflects %s connection sampling", async (state, capability, count) => {
+    const control = { name: "process_control", state: "available" };
+    const running = {
+      ...proxyWorkbench, process: { ...proxyWorkbench.process, state: "running" },
+      capabilities: [control, { name: "connections", state: capability }],
+    };
+    vi.mocked(proxyStatus).mockResolvedValueOnce({
+      ...proxyWorkbench, process: { ...proxyWorkbench.process, state }, capabilities: [control],
+    }).mockResolvedValue(running);
+    vi.mocked(proxyAction).mockResolvedValue(running);
+    await renderAppToHome();
+    await clickNetworkTab("上网代理");
+    await waitForUI(() => expect(findButton(container, "开启")?.disabled).toBe(false));
+    await act(async () => findButton(container, "开启")?.click());
+    expect(proxyAction).toHaveBeenCalledWith({ kind: "start" });
+    const activeCount = () => container.querySelector(".proxy-traffic-metric:last-child strong")?.textContent;
+    await waitForUI(() => expect(findButton(container, "关闭")?.disabled).toBe(false));
+    expect(activeCount()).toBe(count);
   });
 
   it("configures an App-owned mihomo subscription without retaining its URL", async () => {

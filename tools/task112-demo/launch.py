@@ -1,14 +1,14 @@
 """Launch or stop the isolated Task112 backend and native desktop demo."""
 from pathlib import Path
+import fcntl
 import json
 import os
 import secrets
 import signal
 import subprocess
 import sys
+import tempfile
 import time
-import urllib.error
-import urllib.request
 
 ROOT = Path(__file__).resolve().parent
 RUN = ROOT / "runtime"
@@ -34,43 +34,52 @@ def stop(pids):
     for label, target in (("app", APP), ("backend", SERVER)):
         pid = pids.get(label)
         if pid and owns(pid, target):
-            os.kill(pid, signal.SIGTERM)
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
     for _ in range(30):
         if not any(pids.get(label) and owns(pids[label], target)
                    for label, target in (("app", APP), ("backend", SERVER))):
-            STATE.unlink(missing_ok=True)
+            if STATE.exists() and json.loads(STATE.read_text()) == pids:
+                STATE.unlink()
             return
         time.sleep(.1)
     raise SystemExit("Task112 still stopping. Retry after it exits.")
 
 
-def is_ready():
-    try:
-        with urllib.request.urlopen(ORIGIN + "/api/v1/healthz", timeout=.4) as response:
-            return json.load(response).get("status") == "ok"
-    except (OSError, ValueError):
-        return False
+def save_state(pids):
+    pending = STATE.with_suffix(".tmp")
+    pending.write_text(json.dumps(pids, indent=2) + "\n")
+    pending.replace(STATE)
 
 
-def spawn(args, env, log_name):
+def spawn(args, env, log_name, pass_fds=()):
     with (RUN / log_name).open("ab") as log:
         return subprocess.Popen(args, cwd=ROOT, env=env, stdin=subprocess.DEVNULL,
-                                stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+                                stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
+                                pass_fds=pass_fds)
 
 
 def main():
+    if sys.argv[1:] not in ([], ["--stop"]):
+        raise SystemExit("Usage: launch.py [--stop]")
+    RUN.mkdir(mode=0o700, exist_ok=True)
+    with (RUN / "launch.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        run(stop_requested=bool(sys.argv[1:]))
+
+
+def run(stop_requested):
     pids = json.loads(STATE.read_text()) if STATE.exists() else {}
-    if sys.argv[1:] == ["--stop"]:
+    if stop_requested:
         stop(pids)
         return
-    if sys.argv[1:]:
-        raise SystemExit("Usage: launch.py [--stop]")
     if pids and any(pids.get(label) and owns(pids[label], target)
                     for label, target in (("app", APP), ("backend", SERVER))):
         raise SystemExit(f"Task112 already has a running process. See {STATE}")
     if not APP.is_file():
         raise SystemExit("Build the demo app first.")
-    RUN.mkdir(mode=0o700, exist_ok=True)
     if not KEY.exists():
         with os.fdopen(os.open(KEY, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), "w") as handle:
             handle.write(secrets.token_urlsafe(32))
@@ -79,22 +88,29 @@ def main():
                SOHA_TASK112_DEMO_KEY=KEY.read_text().strip())
     pids = {}
     try:
-        backend = spawn([sys.executable, str(SERVER)], env, "backend.log")
-        pids["backend"] = backend.pid
-        for _ in range(40):
-            if backend.poll() is not None:
-                raise RuntimeError("Task112 backend exited. Check backend.log.")
-            if is_ready() and backend.poll() is None:
-                break
-            time.sleep(.15)
-        else:
-            raise RuntimeError("Task112 backend did not become ready.")
+        # Only the child that bound the port can signal on this inherited descriptor.
+        with tempfile.TemporaryFile(dir=RUN) as ready:
+            fd = ready.fileno()
+            backend = spawn([sys.executable, str(SERVER)],
+                            {**env, "SOHA_TASK112_READY_FD": str(fd)}, "backend.log", pass_fds=(fd,))
+            pids["backend"] = backend.pid
+            save_state(pids)
+            for _ in range(40):
+                if backend.poll() is not None:
+                    raise RuntimeError("Task112 backend exited. Check backend.log.")
+                if os.pread(fd, 1, 0) == b"1" and backend.poll() is None:
+                    break
+                time.sleep(.15)
+            else:
+                raise RuntimeError("Task112 backend did not become ready.")
         app = spawn([str(APP)], env, "app.log")
         pids["app"] = app.pid
+        save_state(pids)
         time.sleep(1)
         if app.poll() is not None:
             raise RuntimeError("Task112 App exited. Check app.log.")
-        STATE.write_text(json.dumps(pids, indent=2) + "\n")
+        if backend.poll() is not None:
+            raise RuntimeError("Task112 backend exited. Check backend.log.")
     except BaseException:
         stop(pids)
         raise

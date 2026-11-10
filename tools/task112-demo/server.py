@@ -355,6 +355,7 @@ main {{ max-width: 36rem; margin: 1.5rem; padding: 2.25rem; border: 1px solid gr
             "process": {"ownership": "soha_owned", "state": state, "processEpoch": self.epoch,
                         "desiredRunning": running, **({"startedAt": self.started_at} if running else {})},
             "capabilities": [{"name": "process_control", "state": "available"},
+                             {"name": "connections", "state": "available" if running else "unavailable"},
                              {"name": "select", "state": "available" if running else "unavailable"}],
             "nodes": [{"nodeId": node_id, "label": label} for node_id, label in NODES.items()],
             "groups": [{"groupId": GROUP, "label": "演示出口 / Demo egress", "type": "select",
@@ -382,7 +383,7 @@ main {{ max-width: 36rem; margin: 1.5rem; padding: 2.25rem; border: 1px solid gr
             if self.started is None:
                 return problem(409, "demo_proxy_stopped", "Start the simulated proxy before changing its node.")
             self.selected = node_id
-        elif kind in ("start", "stop", "restart", "refresh_status") and body.keys() == {"kind"}:
+        elif kind in ("start", "stop", "restart", "refresh_status", "repair") and body.keys() == {"kind"}:
             if kind == "restart" or (kind == "start" and self.started is None):
                 self.started, self.started_at = monotonic(), timestamp()
                 self.epoch = "demo-process-" + secrets.token_hex(4)
@@ -497,6 +498,10 @@ def main():
         raise SystemExit("Set SOHA_TASK112_DEMO_KEY to a demo-only key of at least 24 characters.")
     with ThreadingHTTPServer((HOST, PORT), Handler) as server:
         server.demo = Demo(key)
+        ready_fd = os.environ.get("SOHA_TASK112_READY_FD")
+        if ready_fd is not None:
+            with os.fdopen(int(ready_fd), "wb") as ready:
+                ready.write(b"1")
         print(f"Task112 simulator listening on {ORIGIN}", flush=True)
         try:
             server.serve_forever()
