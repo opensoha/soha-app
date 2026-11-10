@@ -73,6 +73,7 @@ export function DesktopApp({ initialEntries }: { initialEntries?: string[] } = {
             <Route element={<DesktopShell />}>
               <Route path="/home" element={<HomePage />} />
               <Route path="/portal" element={<PortalPage />} />
+              <Route path="/chat" element={<AssistantPage ordinary />} />
               <Route path="/assistant" element={<AssistantPage />} />
               <Route path="/portal/applications/:applicationId" element={<PortalApplicationPage />} />
               <Route path="/network" element={<NetworkPage />} />
@@ -304,7 +305,7 @@ function DesktopShell() {
   const navigation = [
     { path: '/home', label: text.home, icon: <HomeOutlined /> },
     { path: '/portal', label: text.portal, icon: <AppstoreOutlined /> },
-    ...(bootstrap?.permissionSnapshot.permissionKeys.includes('observe.ai.chat') ? [{ path: '/assistant', label: text.assistant, icon: <CommentOutlined /> }] : []),
+    ...(bootstrap?.permissionSnapshot.permissionKeys.includes('observe.ai.chat') ? [{ path: '/chat', label: 'Chat', icon: <CommentOutlined /> }, { path: '/assistant', label: text.assistant, icon: <CommentOutlined /> }] : []),
     { path: '/software', label: text.software, icon: <AppstoreOutlined /> },
     { path: '/network', label: text.network, icon: <GlobalOutlined /> },
     { path: '/profile', label: text.profile, icon: <UserOutlined /> },

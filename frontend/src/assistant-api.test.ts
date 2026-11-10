@@ -14,6 +14,18 @@ afterEach(() => {
 });
 
 describe("assistant streaming transport", () => {
+  it("writes the selection to the owned session and verifies the returned selection", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: { id: "mine/side", metadata: { runtimeProfileId: "ops" } } })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: { id: "mine/side", metadata: {} } })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: { id: "foreign" } })));
+    vi.stubGlobal("fetch", fetchMock);
+    await assistantApi.selectRuntimeProfile("mine/side", "ops");
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/copilot/sessions/mine%2Fside/runtime-profile");
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "PUT", body: '{"profileId":"ops"}' });
+    await assistantApi.selectRuntimeProfile("mine/side", "");
+    await expect(assistantApi.selectRuntimeProfile("mine/side", "")).rejects.toMatchObject({ code: "response_contract_mismatch" });
+  });
   it("reads shared workspace state without dispatch and rejects foreign receipts", async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({data:{assistantId:"mine", environmentVersion:9, latest:{id:"original"}}}))).mockResolvedValueOnce(new Response(JSON.stringify({data:{assistantId:"other"}}))).mockResolvedValueOnce(new Response(JSON.stringify({data:{assistantId:"mine",id:"different"}})));
     vi.stubGlobal("fetch",fetchMock);
@@ -24,6 +36,11 @@ describe("assistant streaming transport", () => {
     await expect(assistantApi.runtimeReceipt("mine","original")).rejects.toMatchObject({code:"response_contract_mismatch"});
   });
   it.each([
+    {
+      name: "runtime profiles",
+      path: "/copilot/workbench/runtime-profiles",
+      load: () => assistantApi.runtimeProfiles(),
+    },
     {
       name: "sessions",
       path: "/copilot/assistant/sessions",
@@ -77,6 +94,14 @@ describe("assistant streaming transport", () => {
     ).toBe(true);
   });
 
+  it("recovers external dsh receipts without replay and rejects a wrong owner", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({data: {id:"dsh-run", sessionId:"owned", providerKind:"dsh", executionOwner:"external"}})))
+      .mockResolvedValueOnce(new Response(JSON.stringify({data: {id:"wrong-owner", sessionId:"owned", providerKind:"dsh", executionOwner:"native"}})));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(assistantApi.findRequest("owned", "request")).resolves.toMatchObject({id:"dsh-run"});
+    await expect(assistantApi.findRequest("owned", "request")).rejects.toMatchObject({code:"response_contract_mismatch"});
+    expect(fetchMock.mock.calls.every(([, init]) => init.method === undefined)).toBe(true);
+  });
   it("finds the original task with GET and preserves opaque request IDs", async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(
       new Response(
@@ -458,4 +483,53 @@ it("VM SSH uses the shared Core receipt and cancels the same command",async()=>{
  await assistantApi.vmSSHCommand("original/id");
  await assistantApi.cancelVMSSHCommand("original/id");
  expect(fetchMock.mock.calls.map(([url,init])=>[url,init.method||"GET"])).toEqual([["/api/v1/virtualization/ssh-commands/original%2Fid","GET"],["/api/v1/virtualization/ssh-commands/original%2Fid","DELETE"]]);
+});
+
+it("creates ordinary sessions with the canonical default provider", async () => {
+  const fetchMock = vi.fn().mockImplementation(async () => new Response(JSON.stringify({data: {id: "chat"}})));
+  vi.stubGlobal("fetch", fetchMock);
+  await assistantApi.chatMain();
+  await assistantApi.chatSide("new topic");
+  for (const [, init] of fetchMock.mock.calls)
+    expect(JSON.parse(init.body)).toMatchObject({agentProviderId: "dsh"});
+});
+
+it("reads the selected Chat session and its tasks with scoped GETs", async () => {
+  const id = "older / side";
+  const response = (data: unknown) => new Response(JSON.stringify({ data }));
+  const legacy = { id, metadata: { conversationKind: "" } };
+  const fetchMock = vi.fn()
+    .mockResolvedValueOnce(response(legacy))
+    .mockResolvedValueOnce(response({ id, metadata: { conversationKind: "personal_side" } }))
+    .mockResolvedValueOnce(response({ id, metadata: { conversationKind: "personal_main" } }))
+    .mockResolvedValueOnce(response({ id, metadata: { conversationKind: "side" } }))
+    .mockResolvedValueOnce(response({ id: "wrong-session" }))
+    .mockResolvedValueOnce(response([{ id: "run", sessionId: id }]))
+    .mockResolvedValueOnce(response([legacy, { id: "heya", metadata: { conversationKind: "personal_side" } }]));
+  vi.stubGlobal("fetch", fetchMock);
+
+  await expect(assistantApi.session(id, false)).resolves.toMatchObject({ id });
+  await expect(assistantApi.session(id, false)).resolves.toBeNull();
+  await expect(assistantApi.session(id, true)).resolves.toMatchObject({ id });
+  await expect(assistantApi.session(id, true)).resolves.toBeNull();
+  await expect(assistantApi.session(id, true)).rejects.toMatchObject({ code: "response_contract_mismatch" });
+  await expect(assistantApi.chatTasks("")).rejects.toMatchObject({ code: "invalid_argument" });
+  await expect(assistantApi.chatTasks(id)).resolves.toEqual([{ id: "run", sessionId: id }]);
+  await expect(assistantApi.chatSessions()).resolves.toEqual([legacy]);
+  expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+    ...Array(5).fill("/api/v1/copilot/sessions/older%20%2F%20side"),
+    "/api/v1/copilot/agent-runs?sessionId=older%20%2F%20side",
+    "/api/v1/copilot/sessions",
+  ]);
+  expect(fetchMock.mock.calls.every(([, init]) => init.method === undefined)).toBe(true);
+});
+
+it("preserves the server's SSE error code", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+    new Response('data: {"id":"e1","sequence":1,"sessionId":"main","type":"error","code":"request_not_accepted","message":"未接收"}\n\n', {
+      headers: { "content-type": "text/event-stream" },
+    }),
+  ));
+  await expect(streamAssistant("main", { content: "hello" }, new AbortController().signal, vi.fn()))
+    .rejects.toMatchObject({ code: "request_not_accepted", message: "未接收" });
 });

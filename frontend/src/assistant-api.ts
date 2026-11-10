@@ -1,6 +1,7 @@
 import type {
   PersonalAgentAccess,
   WorkbenchMessage,
+  WorkbenchModelPreferences,
   WorkbenchSession,
   WorkbenchAgentRun,
   WorkbenchAnalysisArtifact,
@@ -15,6 +16,7 @@ import type {
   KnowledgeBase,
   AIMemoryRecord,
   AIMemoryPolicy,
+  AIMemoryPolicyInput,
   AIMemoryWriteInput,
   PersonalEnvironment,
   PersonalEnvironmentActionRequest,
@@ -73,10 +75,51 @@ export interface PersonalArtifact {
 export type AssistantSession = WorkbenchSession & {
   metadata?: WorkbenchSession["metadata"] & {
     conversationKind?: "main" | "side" | "personal_main" | "personal_side";
+    runtimeProfileId?: string;
   };
 };
 
+// Additive runtime-profile fields until the pinned SDK includes them.
+export interface AssistantRuntimeProfile {
+  id: string;
+  revision: number;
+  name: string;
+  scope: "chat" | "heya";
+  enabled: boolean;
+  assets: { kind: "mcp" | "skill" | "hook"; id: string; version: string; required: boolean }[];
+  modelPreferences?: WorkbenchModelPreferences;
+  maxOutputTokens?: number;
+}
+
+export type AssistantRuntimeRun = WorkbenchAgentRun & { runtimeAssembly?: unknown };
+
+const isOrdinarySession = (session: AssistantSession) =>
+  ["", "main", "side"].includes(session.metadata?.conversationKind ?? "");
+
+export const isCancellationPending = (run: WorkbenchAgentRun) =>
+  run.status === "canceled" && run.output?.cancellationPending === true;
+
+export const isActiveRun = (run: WorkbenchAgentRun) =>
+  ["queued", "running"].includes(run.status) || isCancellationPending(run);
+
+export const isTerminalRun = (run: WorkbenchAgentRun) =>
+  !isCancellationPending(run) && ["completed", "failed", "canceled", "callback_timeout"].includes(run.status);
+
+export const isReadOnlyRun = (run: WorkbenchAgentRun) => run.providerKind === "native" || run.output?.executionReadOnly === true || run.output?.stopReason === "legacy_reconciliation_required";
+
+export const isDurableRun = (run: WorkbenchAgentRun) => run.providerKind === "native" || (run.providerKind === "dsh" && run.executionOwner === "external");
+
 export const assistantApi = {
+  runtimeProfiles: () => assistantList<AssistantRuntimeProfile>("/copilot/workbench/runtime-profiles"),
+  selectRuntimeProfile: async (id: string, profileId: string) => {
+    const session = await assistantRequest<AssistantSession>(
+      `/copilot/sessions/${encodeURIComponent(id)}/runtime-profile`,
+      { method: "PUT", body: JSON.stringify({ profileId }) },
+    );
+    if (session?.id !== id || (session.metadata?.runtimeProfileId ?? "") !== profileId)
+      throw new ApiError(502, "response_contract_mismatch", "运行配置回执与会话不匹配");
+    return session;
+  },
   workspaceRuntime: async (assistantId: string) => {
     const result = await assistantRequest<PersonalWorkspaceRuntime>("/copilot/assistant/environment/runtime");
     if (result?.assistantId !== assistantId) throw new ApiError(502, "response_contract_mismatch", "运行状态与助手不匹配");
@@ -214,8 +257,9 @@ export const assistantApi = {
   inspections: () =>
     assistantList<WorkbenchInspectionRun>("/copilot/inspection-runs"),
   knowledgeBases: () => assistantList<KnowledgeBase>("/ai/knowledge-bases"),
-  memories: () => assistantList<AIMemoryRecord>("/ai/memory"),
+  memories: () => assistantList<AIMemoryRecord>("/ai/memory?includeDeleted=true"),
   memoryPolicies: () => assistantList<AIMemoryPolicy>("/ai/memory/policies"),
+  saveMemoryPolicy: (input: AIMemoryPolicyInput) => assistantRequest<AIMemoryPolicy>("/ai/memory/policies", {method: "POST", body: JSON.stringify(input)}),
   saveMemory: (input: AIMemoryWriteInput) =>
     assistantRequest<AIMemoryRecord>("/ai/memory", {
       method: "POST",
@@ -258,6 +302,26 @@ export const assistantApi = {
       data?: { b64_json?: string; url?: string }[];
     }>;
   },
+  chatMain: () => assistantRequest<AssistantSession>("/copilot/sessions/main", { method: "POST", body: JSON.stringify({agentProviderId: "dsh"}) }),
+  chatSessions: async () =>
+    (await assistantList<AssistantSession>("/copilot/sessions")).filter(isOrdinarySession),
+  session: async (id: string, personal: boolean) => {
+    const session = await assistantRequest<AssistantSession>(
+      `/copilot/sessions/${encodeURIComponent(id)}`,
+    );
+    if (session?.id !== id)
+      throw new ApiError(502, "response_contract_mismatch", "会话回执与请求不匹配");
+    const kind = session.metadata?.conversationKind;
+    const matches = personal ? kind === "personal_main" || kind === "personal_side" : isOrdinarySession(session);
+    return matches ? session : null;
+  },
+  chatTasks: async (sessionId: string) => {
+    if (!sessionId.trim()) throw new ApiError(400, "invalid_argument", "请先选择对话");
+    return assistantList<AssistantRuntimeRun>(
+      `/copilot/agent-runs?sessionId=${encodeURIComponent(sessionId)}`,
+    );
+  },
+  chatSide: (title: string) => assistantRequest<AssistantSession>("/copilot/sessions", { method: "POST", body: JSON.stringify({title, mode: "general", agentProviderId: "dsh"}) }),
   sessions: () =>
     assistantList<AssistantSession>("/copilot/assistant/sessions"),
   messages: (id: string) =>
@@ -269,12 +333,12 @@ export const assistantApi = {
       method: "POST",
       body: JSON.stringify({ title, mode: "general", source: "workbench" }),
     }),
-  tasks: () => assistantList<WorkbenchAgentRun>("/copilot/assistant/tasks"),
+  tasks: () => assistantList<AssistantRuntimeRun>("/copilot/assistant/tasks"),
   findRequest: async (sessionId: string, requestId: string) => {
     const run = await assistantRequest<WorkbenchAgentRun>(
       `/copilot/sessions/${encodeURIComponent(sessionId)}/native-request?requestId=${encodeURIComponent(requestId)}`,
     );
-    if (run?.sessionId !== sessionId || run?.providerKind !== "native")
+    if (run?.sessionId !== sessionId || !isDurableRun(run))
       throw new ApiError(
         502,
         "response_contract_mismatch",
@@ -456,7 +520,8 @@ export async function streamAssistant(
         seen.add(key);
         if (seen.size > 10000)
           throw new Error("Assistant stream exceeds limit");
-        if (event.type === "error") throw new Error(event.message);
+        if (event.type === "error")
+          throw new ApiError(response.status, event.code ?? "stream_error", event.message);
         terminal ||=
           event.type === "message.done" ||
           (event.type === "agent.status" &&

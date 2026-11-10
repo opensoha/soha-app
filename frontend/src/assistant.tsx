@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   App,
   Alert,
@@ -45,14 +45,26 @@ import {
 } from "./assistant-avatar-image";
 import type { AssistantChatTask } from "./assistant-api";
 import type { TextAreaRef } from "antd/es/input/TextArea";
-import { assistantApi, streamAssistant } from "@/assistant-api";
+import { ApiError } from "@/api";
+import {
+  isActiveRun,
+  isCancellationPending,
+  isReadOnlyRun,
+  isDurableRun,
+  isTerminalRun,
+  assistantApi,
+  streamAssistant,
+} from "@/assistant-api";
 import { selectAssistantOwner, useAppStore } from "@/store";
-import { NativeTaskProgress } from "@/assistant-native-task";
+import { openBrowserURL } from "@/native/host";
+import { AssistantRuntimeAssembly, AssistantRuntimeProfileControl } from "./assistant-runtime-profile";
+import { RunTaskProgress } from "@/assistant-native-task";
 import { useRequestRecovery } from "@/assistant-request-recovery";
 import { AssistantAvatar, AssistantProfile } from "@/assistant-profile";
 import { AssistantWorkspace as PersonalVMWorkspace } from "@/assistant-workspace";
 import { ProfessionalTask } from "@/assistant-professional-task";
 import {
+  hasMemoryDegradation,
   AssistantBackground,
   AssistantModel,
   MessageBackground,
@@ -65,6 +77,11 @@ import {
 import "./assistant.css";
 
 type Section = "chat" | "tasks" | "results" | "me";
+
+function isRunSystemReply(item: WorkbenchMessage) {
+  return item.role === "system" && typeof item.metadata?.agentRunId === "string" &&
+    Boolean(item.metadata.agentRunId);
+}
 
 function messageImages(item: WorkbenchMessage): WorkbenchImageAttachment[] {
   const images = item.metadata?.images;
@@ -131,15 +148,26 @@ const environmentNames: Record<PersonalEnvironment["state"], string> = {
   deleted: "持久数据已删除",
 };
 
-export function AssistantPage() {
-  const owner = useAppStore(selectAssistantOwner);
-  return <AssistantWorkspace key={owner ?? "signed-out"} />;
+async function readConversation<T>(read: () => Promise<T>) {
+  try {
+    return await read();
+  } catch (error) {
+    if (error instanceof ApiError && (error.status === 403 || error.status === 404))
+      return null;
+    throw error;
+  }
 }
 
-function AssistantWorkspace() {
+export function AssistantPage({ ordinary = false }: { ordinary?: boolean }) {
+  const owner = useAppStore(selectAssistantOwner);
+  return <AssistantWorkspace key={`${owner}:${ordinary}`} ordinary={ordinary} />;
+}
+
+function AssistantWorkspace({ ordinary }: { ordinary: boolean }) {
   const { message } = App.useApp();
   const client = useQueryClient();
   const bootstrap = useAppStore((state) => state.bootstrap);
+  const serverUrl = useAppStore((state) => state.host?.serverUrl);
   const canExportData = useAppStore((state) =>
     ["darwin", "linux", "windows"].includes(state.host?.app.platform ?? ""),
   );
@@ -161,6 +189,9 @@ function AssistantWorkspace() {
   const [topics, setTopics] = useState(false);
   const [sideOpen, setSideOpen] = useState(false);
   const [professionalOpen, setProfessionalOpen] = useState(false);
+  const [streamingRuntime, setStreamingRuntime] = useState<
+    Record<string, { assembly?: unknown; hooks?: unknown } | undefined>
+  >({});
   const [backgrounds, setBackgrounds] = useState<
     Record<string, AssistantBackgroundSelection>
   >({});
@@ -184,18 +215,28 @@ function AssistantWorkspace() {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [live, setLive] = useState<Record<string, string>>({});
   const [pending, setPending] = useState<Record<string, boolean>>({});
+  const [memoryWarnings, setMemoryWarnings] = useState<Record<string, boolean>>({});
+  const [stopping, setStopping] = useState<Record<string, boolean>>({});
+  const [profileChecks, setProfileChecks] = useState<Record<string, {
+    requested: string;
+    status: "checking" | "unavailable" | "saved" | "observed";
+  }>>({});
   const [result, setResult] = useState<WorkbenchAnalysisArtifact>();
   const streams = useRef<Record<string, AbortController>>({});
-  const requests = useRef<Record<string, { content: string; id: string }>>({});
+  const runIds = useRef<Record<string, string>>({});
+  const runMessageStates = useRef(new Map<string, "active" | "refreshed">());
+  const requests = useRef<Record<string, { content: string; id: string; recoverable: boolean }>>({});
   const bottom = useRef<HTMLDivElement>(null);
   const access = useQuery({
     queryKey: ["personal-agent-access", owner],
-    queryFn: assistantApi.access,
-    enabled: canChat && Boolean(owner),
+    queryFn: () => readConversation(assistantApi.access),
+    enabled: !ordinary && canChat && Boolean(owner),
     retry: false,
     refetchInterval: 5000,
   });
-  const canUseAgent = canChat && access.data?.status === "approved";
+  const canUseAgent = !ordinary && canChat && access.data?.status === "approved";
+  const enabled = ordinary ? canChat : canUseAgent;
+  const main = useQuery({ queryKey: ["ordinary-main", owner], queryFn: assistantApi.chatMain, enabled: ordinary && canChat, retry: false });
   const requestAccess = useMutation({
     mutationFn: assistantApi.requestAccess,
     onSuccess: () =>
@@ -292,15 +333,97 @@ function AssistantWorkspace() {
     environmentDeletion.isPending ||
     environmentExport.isPending;
   const sessions = useQuery({
-    queryKey: ["assistant-sessions", owner],
-    queryFn: assistantApi.sessions,
-    enabled: canUseAgent,
+    queryKey: ["assistant-sessions", owner, ordinary],
+    queryFn: ordinary ? assistantApi.chatSessions : assistantApi.sessions,
+    enabled,
     refetchInterval: 5000,
   });
+  const mainSessionId = ordinary ? main.data?.id : assistant.data?.mainSessionId;
+  const selectedId = params.get("session");
+  const id = selectedId || mainSessionId || "";
+  const listedSession = sessions.data?.find((item) => item.id === id);
+  const ordinaryMain = ordinary && id === mainSessionId ? main.data : undefined;
+  const detailKey = ["assistant-session", owner, ordinary, id];
+  const profileCheck = profileChecks[id];
+  const profileUnconfirmed = profileCheck?.status === "checking" || profileCheck?.status === "unavailable";
+  const needsDetail = enabled && Boolean(id) && (Boolean(selectedId) ||
+    Boolean(profileCheck) || client.getQueryData(detailKey) === null || (!listedSession && !ordinaryMain && !sessions.isPending));
+  const detail = useQuery({
+    queryKey: detailKey,
+    queryFn: () => readConversation(() => assistantApi.session(id, !ordinary)),
+    enabled: needsDetail && !profileUnconfirmed,
+    retry: false,
+    staleTime: profileCheck ? 5000 : 0,
+    refetchInterval: 5000,
+  });
+  const detailUnavailable = needsDetail && detail.data === null;
+  const current = needsDetail && (!profileUnconfirmed || detail.data !== undefined)
+    ? detail.data ?? undefined
+    : listedSession ?? ordinaryMain;
+  const canUseSession = enabled && Boolean(current);
+  const usesDsh = !current?.metadata?.agentProviderId ||
+    ["dsh", "internal", "native"].includes(current.metadata.agentProviderId);
+  const runtimeProfiles = useQuery({
+    queryKey: ["assistant-runtime-profiles", owner],
+    queryFn: assistantApi.runtimeProfiles,
+    enabled: canUseSession && usesDsh,
+    retry: false,
+  });
+  const scope = ordinary ? "chat" : "heya";
+  const profileId = current?.metadata?.runtimeProfileId ?? "";
+  const runtimeProfile = runtimeProfiles.isSuccess ? runtimeProfiles.data.find(
+    (profile) => profile.enabled && profile.scope === scope && profile.id === (profileId || `${scope}-default`),
+  ) : undefined;
+  const updateSession = (sessionId: string, session: typeof detail.data) => {
+    client.setQueryData(["assistant-session", owner, ordinary, sessionId], session);
+    client.setQueryData<typeof sessions.data>(["assistant-sessions", owner, ordinary], (items) =>
+      session ? items?.map((item) => item.id === sessionId ? session : item) : items,
+    );
+    if (session && ordinary && sessionId === mainSessionId)
+      client.setQueryData(["ordinary-main", owner], session);
+  };
+  const checkRuntimeProfile = async (sessionId: string, requested: string) => {
+    if (owner !== selectAssistantOwner(useAppStore.getState())) return;
+    setProfileChecks((checks) => ({ ...checks, [sessionId]: { requested, status: "checking" } }));
+    const queryKey = ["assistant-session", owner, ordinary, sessionId];
+    await client.cancelQueries({ queryKey, exact: true });
+    if (owner !== selectAssistantOwner(useAppStore.getState())) return;
+    try {
+      const session = await readConversation(() => assistantApi.session(sessionId, !ordinary));
+      if (owner !== selectAssistantOwner(useAppStore.getState())) return;
+      updateSession(sessionId, session);
+      const status = session && (session.metadata?.runtimeProfileId ?? "") === requested ? "saved" : "observed";
+      setProfileChecks((checks) => ({ ...checks, [sessionId]: { requested, status } }));
+    } catch {
+      if (owner !== selectAssistantOwner(useAppStore.getState())) return;
+      setProfileChecks((checks) => ({ ...checks, [sessionId]: { requested, status: "unavailable" } }));
+    }
+  };
+  const selectProfile = useMutation({
+    mutationFn: ({ sessionId, profileId }: { sessionId: string; profileId: string }) =>
+      assistantApi.selectRuntimeProfile(sessionId, profileId),
+    onSuccess: async (session, { sessionId }) => {
+      await client.cancelQueries({ queryKey: ["assistant-session", owner, ordinary, sessionId], exact: true });
+      if (owner !== selectAssistantOwner(useAppStore.getState())) return;
+      updateSession(sessionId, session);
+      setProfileChecks((checks) => ({ ...checks, [sessionId]: { requested: session.metadata?.runtimeProfileId ?? "", status: "saved" } }));
+    },
+    onError: (_error, { sessionId, profileId }) => checkRuntimeProfile(sessionId, profileId),
+  });
+  const selectingCurrentProfile = selectProfile.isPending && selectProfile.variables?.sessionId === id;
+  const canOpenProfileSettings = Boolean(
+    serverUrl && bootstrap?.permissionSnapshot.permissionKeys.includes("settings.ai.view"),
+  );
+  const openProfileSettings = (profileId: string) => {
+    const target = new URL("/ai-workbench/model-settings", serverUrl);
+    target.searchParams.set("runtimeProfile", profileId);
+    void openBrowserURL(target.href).catch(() => message.error("无法在浏览器中打开运行配置"));
+  };
+  const taskQueryKey = ordinary ? ["assistant-tasks", owner, true, id] : ["assistant-tasks", owner, false];
   const tasks = useQuery({
-    queryKey: ["assistant-tasks", owner],
-    queryFn: assistantApi.tasks,
-    enabled: canUseAgent,
+    queryKey: taskQueryKey,
+    queryFn: () => ordinary ? assistantApi.chatTasks(id) : assistantApi.tasks(),
+    enabled: ordinary ? canUseSession : canUseAgent,
     refetchInterval: 5000,
   });
   const artifacts = useQuery({
@@ -309,14 +432,49 @@ function AssistantWorkspace() {
     enabled: canUseAgent && section === "results",
     refetchInterval: 5000,
   });
-  const id = params.get("session") || assistant.data?.mainSessionId || "";
-  const current = sessions.data?.find((item) => item.id === id);
-  const canUseSession = canUseAgent && Boolean(current);
+  useEffect(() => {
+    if (ordinary && main.data?.id)
+      void client.invalidateQueries({queryKey: ["assistant-sessions", owner, ordinary]});
+  }, [ordinary, main.data?.id, client, owner]);
+  const activeRun = tasks.data?.find(run => run.sessionId === id && !isReadOnlyRun(run) && isActiveRun(run));
+  const cancellingRun = tasks.data?.find(run => run.sessionId === id && !isReadOnlyRun(run) && isCancellationPending(run));
+  const progressRun = activeRun ?? tasks.data?.find(run => run.sessionId === id && isReadOnlyRun(run));
+
+  const refreshTerminalMessages = useCallback(async (runId: string, sessionId: string) => {
+    if (runMessageStates.current.get(runId) === "refreshed") return;
+    runMessageStates.current.set(runId, "refreshed");
+    const queryKey = ["assistant-messages", owner, sessionId];
+    // Discard an in-flight read which may predate the durable final reply.
+    await client.cancelQueries({ queryKey, exact: true });
+    await client.invalidateQueries({ queryKey, exact: true });
+  }, [client, owner]);
+
   const requestRecovery = useRequestRecovery(
     owner,
     id,
     canUseSession && !pending[id],
+    taskQueryKey,
+    tasks.data,
+    (run) => {
+      const session = run.sessionId;
+      if (!session || session !== id) return;
+      const terminal = isTerminalRun(run);
+      if (terminal) {
+        void refreshTerminalMessages(run.id, session);
+      } else {
+        void client.invalidateQueries({ queryKey: ["assistant-messages", owner, session], exact: true });
+      }
+      if (isReadOnlyRun(run) || terminal) {
+        if (runIds.current[session] && runIds.current[session] !== run.id) return;
+        delete runIds.current[session];
+        delete requests.current[session];
+        setStopping(values => values[session] ? ({...values, [session]: false}) : values);
+      } else runIds.current[session] = run.id;
+    },
   );
+  const knownRun = tasks.data?.find(run => run.sessionId === id && run.id === runIds.current[id]);
+  const awaitingTerminal = Boolean(runIds.current[id] && (!knownRun || (!isReadOnlyRun(knownRun) && !isTerminalRun(knownRun))));
+  const isStopping = Boolean(stopping[id] || requestRecovery.cancellation || cancellingRun);
   const backgroundKey = `${owner}:${id}`;
   const background =
     backgrounds[backgroundKey] ?? sessionBackground(current?.metadata);
@@ -324,18 +482,69 @@ function AssistantWorkspace() {
     setBackgrounds((values) => ({ ...values, [backgroundKey]: selection }));
   const messages = useQuery({
     queryKey: ["assistant-messages", owner, id],
-    queryFn: () => assistantApi.messages(id),
+    queryFn: () => readConversation(() => assistantApi.messages(id)),
     enabled: canUseSession,
     refetchInterval: tasks.data?.some(
-      (run) =>
-        run.sessionId === id && ["queued", "running"].includes(run.status),
+      (run) => run.sessionId === id && isActiveRun(run),
     )
       ? 2500
       : false,
   });
+  useEffect(() => {
+    if (!tasks.isSuccess) return;
+    let newestTerminal: WorkbenchAgentRun | undefined;
+    for (const run of tasks.data) {
+      if (!run.sessionId || isReadOnlyRun(run)) continue;
+      if (isActiveRun(run) && !runMessageStates.current.has(run.id))
+        runMessageStates.current.set(run.id, "active");
+      if (!isTerminalRun(run)) continue;
+      if (runMessageStates.current.get(run.id) === "active")
+        void refreshTerminalMessages(run.id, run.sessionId);
+      if (run.sessionId === id && (!newestTerminal ||
+        (run.queuedAt ?? run.createdAt ?? "") > (newestTerminal.queuedAt ?? newestTerminal.createdAt ?? "")))
+        newestTerminal = run;
+    }
+    if (!canUseSession || !newestTerminal || runMessageStates.current.has(newestTerminal.id)) return;
+    const terminalId = newestTerminal.id;
+    if (messages.data?.some((item) =>
+      (item.role === "assistant" || isRunSystemReply(item)) && item.metadata?.agentRunId === terminalId,
+    )) {
+      runMessageStates.current.set(terminalId, "refreshed");
+      return;
+    }
+    void refreshTerminalMessages(terminalId, id);
+  }, [canUseSession, id, messages.data, refreshTerminalMessages, tasks.data, tasks.isSuccess]);
 
+  const conversationDenied = detailUnavailable || messages.data === null;
+  const composerLocked = !canUseSession || conversationDenied || Boolean(selectingCurrentProfile || profileUnconfirmed || tasks.isPending || tasks.isError || awaitingTerminal || isStopping || activeRun || pending[id] || requestRecovery.pending || requestRecovery.error || current?.activity || listedSession?.activity);
+
+  const latestRun = tasks.data?.filter(run => run.sessionId === id).sort((a, b) => (b.queuedAt ?? "").localeCompare(a.queuedAt ?? ""))[0];
+  const runsById = new Map((tasks.isError ? [] : tasks.data ?? []).map((run) => [run.id, run]));
+  const renderRuntimeSummary = (item: WorkbenchMessage) => {
+    if (item.role !== "assistant" && !isRunSystemReply(item)) return null;
+    const runId = item.metadata?.agentRunId;
+    const candidate = typeof runId === "string" ? runsById.get(runId) : undefined;
+    const run = candidate?.sessionId === item.sessionId ? candidate : undefined;
+    return (
+      <AssistantRuntimeAssembly
+        value={item.metadata?.runtimeAssembly}
+        fallback={run?.runtimeAssembly}
+        hookOutcomes={run?.output?.runtimeHooks ?? item.metadata?.runtimeHooks}
+        toolExecutions={run?.toolExecutions}
+      />
+    );
+  };
+  const latestReply = messages.data?.filter(item => item.role !== "user").at(-1);
+  const latestUser = messages.data?.filter(item => item.role === "user").at(-1);
+  const latestMessage = messages.data?.at(-1);
+  const durableMemoryDegraded = latestRun
+    ? hasMemoryDegradation(latestRun) || (latestReply?.metadata?.agentRunId === latestRun.id && hasMemoryDegradation(latestReply)) || ((latestUser?.metadata?.agentRunId === latestRun.id || latestRun.input?.requestMessageId === latestUser?.id) && hasMemoryDegradation(latestUser))
+    : hasMemoryDegradation(latestMessage) || (!latestMessage && hasMemoryDegradation(current));
+  const memoryDegraded = memoryWarnings[id] === undefined
+    ? durableMemoryDegraded
+    : memoryWarnings[id] || hasMemoryDegradation(knownRun) || Boolean(knownRun && knownRun.id === latestRun?.id && durableMemoryDegraded);
   const side = useMutation({
-    mutationFn: assistantApi.side,
+    mutationFn: ordinary ? assistantApi.chatSide : assistantApi.side,
     onSuccess: (data) => {
       setSideOpen(false);
       setTitle("");
@@ -345,19 +554,83 @@ function AssistantWorkspace() {
     onError: () => message.error("旁聊创建失败，请重试"),
   });
   const cancel = useMutation({
-    mutationFn: assistantApi.cancel,
+    mutationFn: async ({session, runId, requestId}: {session: string; runId: string; requestId?: string}) => {
+      const target = tasks.data?.find(run => run.id === runId && run.sessionId === session);
+      if (target && isReadOnlyRun(target))
+        throw new Error("历史任务只读，请核对服务端状态");
+      streams.current[session]?.abort();
+      if (requestId) requestRecovery.markCancelling(session, requestId, runId);
+      else requestRecovery.markRunCancelling(session, runId);
+      setStopping(values => values[session] ? ({...values, [session]: false}) : values);
+      const run = await assistantApi.cancel(runId);
+      if (run?.id !== runId || run.sessionId !== session)
+        throw new Error("停止回执与原任务不匹配");
+      return run;
+    },
     onSuccess: (run) => {
-      client.setQueryData<WorkbenchAgentRun[]>(
-        ["assistant-tasks", owner],
-        (runs) => runs?.map((item) => (item.id === run.id ? run : item)),
+      requestRecovery.settleCancellation(run);
+      if (isTerminalRun(run) && run.sessionId && runIds.current[run.sessionId] === run.id) {
+        delete runIds.current[run.sessionId];
+        delete requests.current[run.sessionId];
+        setStopping(values => ({...values, [run.sessionId!]: false}));
+      }
+      const matchingTasks = {
+        queryKey: ordinary ? ["assistant-tasks", owner, true, run.sessionId] : ["assistant-tasks", owner, false],
+      };
+      client.setQueriesData<WorkbenchAgentRun[]>(
+        matchingTasks,
+        (runs) => runs && [...runs.filter((item) => item.id !== run.id), run],
       );
-      void tasks.refetch();
+      void client.invalidateQueries(matchingTasks);
       message.success(
-        run.status === "canceled" ? "任务已取消" : "已请求取消，等待执行端确认",
+        isTerminalRun(run) ? `任务状态：${statusNames[run.status]}` : "已请求取消，等待执行端确认",
       );
     },
     onError: () => message.error("任务取消失败，请检查最新状态"),
   });
+  async function stop() {
+    setStopping(values => ({...values, [id]: true}));
+    streams.current[id]?.abort();
+    const recovery = requestRecovery.cancellation;
+    const local = requests.current[id];
+    const requestId = recovery ? recovery.requestId : local?.recoverable ? local.id : undefined;
+    let runId = recovery?.runId || (awaitingTerminal ? runIds.current[id] : undefined);
+    if (!runId && !requestId) runId = cancellingRun?.id ?? activeRun?.id;
+    try {
+      if (!runId && requestId) {
+        requestRecovery.markCancelling(id, requestId);
+        setStopping(values => ({...values, [id]: false}));
+        const run = await assistantApi.findRequest(id, requestId);
+        if (isReadOnlyRun(run) || isTerminalRun(run)) {
+          requestRecovery.markCancelling(id, requestId, run.id);
+          requestRecovery.settleCancellation(run);
+          delete requests.current[id];
+          setStopping(values => ({...values, [id]: false}));
+          return;
+        }
+        runId = run.id;
+      }
+      if (!runId) throw new Error("原任务尚未读取");
+      runIds.current[id] = runId;
+      await cancel.mutateAsync({session: id, runId, requestId});
+    } catch {
+      message.error("取消未确认，请重试停止；输入保持锁定。");
+    }
+  }
+  useEffect(() => {
+    const run = knownRun;
+    if (!run || (!isTerminalRun(run) && !isReadOnlyRun(run))) return;
+    delete runIds.current[id];
+    if (stopping[id]) {
+      delete requests.current[id];
+      setStopping(values => ({...values, [id]: false}));
+    }
+  }, [knownRun, id, stopping]);
+  useEffect(() => {
+    if (!conversationDenied) return;
+    streams.current[id]?.abort();
+    setLive(values => values[id] ? ({...values, [id]: ""}) : values);
+  }, [conversationDenied, id]);
   useEffect(
     () => () => {
       Object.values(streams.current).forEach((controller) =>
@@ -409,13 +682,15 @@ function AssistantWorkspace() {
     taskIntent: WorkbenchTaskIntent = { capabilities: [] },
     appearance = appearanceDrafts[id],
   ): Promise<boolean> {
-    if (!canUseSession || !id || !content || streams.current[id]) return false;
+    if (!canUseSession || !id || !content || streams.current[id] || composerLocked) return false;
+    if (ordinary && appearance) return false;
+    const explicitTask = Boolean(taskIntent.capabilities?.length);
+    const useDshForTurn = usesDsh || explicitTask;
     const input = {
       content,
-      assistantTask: taskIntent.capabilities?.length ? undefined : appearance,
+      assistantTask: explicitTask ? undefined : appearance,
       mode: "general",
-      taskIntent,
-      modelPreferences: background.modelPreferences,
+      ...(useDshForTurn ? { taskIntent, modelPreferences: background.modelPreferences ?? {} } : {}),
       knowledgeContext: {
         enabled: Boolean(background.knowledgeBaseIds?.length),
         knowledgeBaseIds: background.knowledgeBaseIds ?? [],
@@ -424,21 +699,16 @@ function AssistantWorkspace() {
         memoryIds: background.memoryIds ?? [],
         images: chatImages[id],
       },
-      agentProviderId: taskIntent.capabilities?.length ? "internal" : undefined,
+      agentProviderId: explicitTask ? "dsh" : undefined,
     };
     const selection = JSON.stringify(input);
     const controller = new AbortController();
     const request =
       requests.current[id]?.content === selection
         ? requests.current[id]
-        : { content: selection, id: crypto.randomUUID() };
+        : { content: selection, id: crypto.randomUUID(), recoverable: !appearance && useDshForTurn };
     requests.current[id] = request;
-    if (
-      !appearance &&
-      (!current?.metadata?.agentProviderId ||
-        current.metadata.agentProviderId === "internal" ||
-        taskIntent.capabilities?.length)
-    ) {
+    if (request.recoverable) {
       try {
         requestRecovery.remember(id, request.id);
       } catch (error) {
@@ -448,22 +718,46 @@ function AssistantWorkspace() {
         return false;
       }
     }
+    delete runIds.current[id];
+    setMemoryWarnings(items => ({...items, [id]: false}));
     streams.current[id] = controller;
     setPending((items) => ({ ...items, [id]: true }));
     setChatImages((values) => ({ ...values, [id]: undefined }));
     if (!taskIntent.capabilities?.length)
       setDrafts((items) => ({ ...items, [id]: "" }));
     setLive((items) => ({ ...items, [id]: "" }));
+    setStreamingRuntime((items) => ({ ...items, [id]: undefined }));
     let profileChanged = false;
     let appearanceFailed = false;
+    let acceptanceSeen = false;
     try {
       await streamAssistant(
         id,
         { ...input, requestId: request.id },
         controller.signal,
         (event) => {
-          if (event.type === "agent.status" && event.runId)
-            requestRecovery.acknowledge(id, request.id);
+          if ("metadata" in event && event.metadata && typeof event.metadata === "object") {
+            const metadata = event.metadata as Record<string, unknown>;
+            if ("runtimeAssembly" in metadata || "runtimeHooks" in metadata)
+              setStreamingRuntime((items) => ({
+                ...items,
+                [id]: {
+                  assembly: metadata.runtimeAssembly ?? items[id]?.assembly,
+                  hooks: metadata.runtimeHooks ?? items[id]?.hooks,
+                },
+              }));
+          }
+          if (hasMemoryDegradation(event)) setMemoryWarnings(items => ({...items, [id]: true}));
+          acceptanceSeen = true;
+          if (event.type === "agent.status" && event.runId) {
+            if (event.providerKind !== "native") {
+              runIds.current[id] = event.runId;
+              if (!runMessageStates.current.has(event.runId))
+                runMessageStates.current.set(event.runId, "active");
+            }
+            if (request.recoverable)
+              requestRecovery.acknowledge(id, request.id, false, event.runId, event.providerKind === "native");
+          }
           if (
             event.type === "tool.completed" &&
             ["assistant.rename", "assistant.avatar"].includes(
@@ -487,13 +781,18 @@ function AssistantWorkspace() {
             setLive((items) => ({ ...items, [id]: event.content }));
         },
       );
-      delete requests.current[id];
+      if (!controller.signal.aborted) delete requests.current[id];
       if (appearance && !appearanceFailed)
         setAppearanceDrafts((values) => ({ ...values, [id]: undefined }));
       if (appearanceFailed)
         setDrafts((values) => ({ ...values, [id]: values[id] || content }));
       return !appearanceFailed;
     } catch (error) {
+      if (!controller.signal.aborted && !acceptanceSeen && request.recoverable &&
+          error instanceof ApiError &&
+          (error.code === "request_not_accepted" || (error.status === 200 && error.code === "agent_unsupported")) &&
+          requestRecovery.discardUnaccepted(id, request.id))
+        delete requests.current[id];
       setChatImages((values) => ({
         ...values,
         [id]: values[id] || input.contextSelection.images,
@@ -532,13 +831,13 @@ function AssistantWorkspace() {
         await client.invalidateQueries({
           queryKey: ["assistant-messages", owner, id],
         });
-        setLive((items) => ({ ...items, [id]: "" }));
+        if (!controller.signal.aborted) setLive((items) => ({ ...items, [id]: "" }));
         void tasks.refetch();
       }
     }
   }
   if (!canChat) return <Empty description="当前账号没有 AI 对话使用权限" />;
-  if (!canUseAgent)
+  if (!ordinary && !canUseAgent)
     return (
       <section className="app-assistant" aria-label="Heya 开通">
         <img src="/heya-avatar.svg" width={100} height={100} alt="Heya 嘿呀" />
@@ -566,34 +865,49 @@ function AssistantWorkspace() {
         )}
       </section>
     );
-  if (sessions.isError || assistant.isError)
+  if (sessions.isError || (!ordinary && assistant.isError) || (ordinary && main.isError))
     return (
       <Empty description="个人会话读取失败">
         <Button
           onClick={() => {
             void sessions.refetch();
-            void assistant.refetch();
+            if (ordinary) void main.refetch();
+            else void assistant.refetch();
           }}
         >
           重试
         </Button>
       </Empty>
     );
-  if (!sessions.isPending && assistant.data && !current)
+  if (conversationDenied || (!needsDetail && !sessions.isPending && !current && (ordinary ? main.data : assistant.data)))
     return (
-      <Empty description="这个会话不属于 Heya">
-        <Button onClick={() => openChat(assistant.data!.mainSessionId)}>
-          返回 Heya 主要聊天
-        </Button>
+      <Empty description={ordinary ? "普通会话尚未读取或无权访问" : "这个会话不属于 Heya"}>
+        {mainSessionId && id !== mainSessionId ? (
+          <Button onClick={() => openChat(mainSessionId)}>返回主聊天</Button>
+        ) : null}
+        {detail.isError || messages.isError ? (
+          <Button onClick={() => {
+            if (detail.isError) void detail.refetch();
+            else if (canUseSession) void messages.refetch();
+          }}>
+            重试
+          </Button>
+        ) : null}
+      </Empty>
+    );
+  if (needsDetail && detail.isError && !current)
+    return (
+      <Empty description="会话读取失败">
+        <Button onClick={() => void detail.refetch()}>重试</Button>
       </Empty>
     );
   const topicList = (
     <div className="app-assistant-topics">
       <Button
-        type={id === assistant.data?.mainSessionId ? "primary" : "text"}
+        type={id === mainSessionId ? "primary" : "text"}
         block
-        onClick={() => assistant.data && openChat(assistant.data.mainSessionId)}
-        disabled={!assistant.data}
+        onClick={() => mainSessionId && openChat(mainSessionId)}
+        disabled={!mainSessionId}
       >
         主聊天
       </Button>
@@ -606,8 +920,8 @@ function AssistantWorkspace() {
           onClick={() => setSideOpen(true)}
         />
       </div>
-      {sessions.data
-        ?.filter((item) => item.id !== assistant.data?.mainSessionId)
+      {[...(sessions.data ?? []), ...(!listedSession && current ? [current] : [])]
+        .filter((item) => item.id !== mainSessionId)
         .map((item) => (
           <Button
             type="text"
@@ -621,7 +935,10 @@ function AssistantWorkspace() {
         ))}
     </div>
   );
-  const roots = tasks.data?.filter((run) => !run.parentRunId) ?? [];
+  const roots = tasks.data?.filter((run) => !run.parentRunId && (
+    (canUseSession && run.sessionId === id) ||
+    (!ordinary && sessions.data?.some(session => session.id === run.sessionId))
+  )) ?? [];
   const canDeleteData = Boolean(
     assistant.data &&
     environment.data?.assistantId === assistant.data.id &&
@@ -655,20 +972,20 @@ function AssistantWorkspace() {
         <img src="/heya-avatar.svg" alt="" />
         <div>
           <Typography.Text strong>
-            {assistant.data?.name || "heya"}
+            {ordinary ? "Chat" : assistant.data?.name || "heya"}
           </Typography.Text>
           <Typography.Text type="secondary">
-            {id === assistant.data?.mainSessionId
+            {id === mainSessionId
               ? "主聊天"
               : current?.title || "准备中"}
           </Typography.Text>
         </div>
-        <Tag>个人助手</Tag>
+        <Tag>{ordinary ? "Chat" : "个人助手"}</Tag>
       </header>
       <Segmented
         className="app-assistant-sections"
         value={section}
-        options={sections}
+        options={ordinary ? sections.filter(item => ["chat", "tasks"].includes(item.value)) : sections}
         onChange={(value) => setSection(value as Section)}
       />
       {requestRecovery.pending && !pending[id] ? (
@@ -679,16 +996,22 @@ function AssistantWorkspace() {
           action={<Button onClick={requestRecovery.recheck}>重新读取</Button>}
         />
       ) : null}
+      {memoryDegraded ? <Alert type="warning" title="长期记忆暂不可用，本次对话将继续" description="本次无法读取或自动保存的长期记忆不会作为已成功使用或保存；可以继续对话，稍后查看个人记忆状态。" /> : null}
+      {needsDetail && detail.isError ? (
+        <Alert type="error" title="会话读取失败" action={<Button onClick={() => void detail.refetch()}>重新读取会话</Button>} />
+      ) : null}
+      {tasks.isError ? <Alert type="error" title="任务状态读取失败，暂不能发送新消息" action={<Button onClick={() => void tasks.refetch()}>重新读取任务</Button>} /> : null}
       {requestRecovery.error ? (
         <Alert type="error" title={requestRecovery.error} />
       ) : null}
+      {isStopping ? <Alert type="warning" title="取消处理中，等待服务端终态" description="已停止接收；部分结果保留，副作用尚未确认。" action={<Button disabled={cancel.isPending} onClick={() => void stop()}>重试停止</Button>} /> : null}
       <div className={`app-assistant-workspace is-${section}`}>
         {section === "chat" ? (
           <>
             <aside>{topicList}</aside>
             <div className="app-assistant-chat">
               <div className="app-assistant-messages" aria-live="polite">
-                {messages.isPending || assistant.isPending ? <Spin /> : null}
+                {messages.isPending || (ordinary ? main.isPending : assistant.isPending) ? <Spin /> : null}
                 {messages.isError ? (
                   <Alert
                     type="error"
@@ -716,7 +1039,7 @@ function AssistantWorkspace() {
                       )}
                       {item.role === "user"
                         ? "你"
-                        : assistant.data?.name || "heya"}
+                        : ordinary ? "Chat" : assistant.data?.name || "heya"}
                     </Typography.Text>
                     <div className="app-assistant-message-content">
                       {item.role === "user" &&
@@ -741,74 +1064,91 @@ function AssistantWorkspace() {
                         )}
                     </div>
                     <MessageBackground item={item} />
-                    <Button
-                      size="small"
-                      type="text"
-                      onClick={() =>
-                        setDrafts((values) => ({
-                          ...values,
-                          [id]: `引用：${item.content.slice(0, 2000)}\n\n${values[id] || ""}`,
-                        }))
-                      }
-                    >
-                      引用回复
-                    </Button>
-                    <AssistantAppearanceResult
-                      metadata={item.metadata}
-                      busy={pending[id]}
-                      onContinue={() => {
-                        setDrafts((values) => ({
-                          ...values,
-                          [id]: values[id]
-                            ? `${values[id]}\n调整你的头像：`
-                            : "调整你的头像：",
-                        }));
-                        setAppearanceDrafts((values) => ({
-                          ...values,
-                          [id]: { kind: "avatar", useCurrentAvatar: true },
-                        }));
-                        composer.current?.focus({ cursor: "end" });
-                      }}
-                      onUndo={() =>
-                        void send(
-                          "撤销这次形象更改",
-                          { capabilities: [] },
-                          { kind: "undo", messageId: item.id },
-                        )
-                      }
-                    />
-                    <MessageApprovals item={item} />
-                    {bootstrap?.permissionSnapshot.permissionKeys.includes(
-                      "ai.memory.update",
-                    ) &&
-                    bootstrap.permissionSnapshot.permissionKeys.includes(
-                      "ai.memory.view",
-                    ) ? (
-                      <Button
-                        size="small"
-                        type="text"
-                        onClick={() =>
-                          setMemoryDraft({
-                            fact: item.content,
-                            refs: [
-                              `soha://session/${encodeURIComponent(item.sessionId)}/message/${encodeURIComponent(item.id)}`,
-                            ],
-                          })
-                        }
-                      >
-                        保存为个人记忆
-                      </Button>
-                    ) : null}
+                    {renderRuntimeSummary(item)}
+                    {!isRunSystemReply(item) && (
+                      <>
+                        <Button
+                          size="small"
+                          type="text"
+                          onClick={() =>
+                            setDrafts((values) => ({
+                              ...values,
+                              [id]: `引用：${item.content.slice(0, 2000)}\n\n${values[id] || ""}`,
+                            }))
+                          }
+                        >
+                          引用回复
+                        </Button>
+                        <AssistantAppearanceResult
+                          metadata={item.metadata}
+                          busy={pending[id]}
+                          onContinue={() => {
+                            setDrafts((values) => ({
+                              ...values,
+                              [id]: values[id]
+                                ? `${values[id]}\n调整你的头像：`
+                                : "调整你的头像：",
+                            }));
+                            setAppearanceDrafts((values) => ({
+                              ...values,
+                              [id]: { kind: "avatar", useCurrentAvatar: true },
+                            }));
+                            composer.current?.focus({ cursor: "end" });
+                          }}
+                          onUndo={() =>
+                            void send(
+                              "撤销这次形象更改",
+                              { capabilities: [] },
+                              { kind: "undo", messageId: item.id },
+                            )
+                          }
+                        />
+                        <MessageApprovals item={item} readOnly={tasks.data?.some(run => run.id === item.metadata?.agentRunId && isReadOnlyRun(run))} />
+                        {bootstrap?.permissionSnapshot.permissionKeys.includes(
+                          "ai.memory.update",
+                        ) &&
+                        bootstrap.permissionSnapshot.permissionKeys.includes(
+                          "ai.memory.view",
+                        ) ? (
+                          <Button
+                            size="small"
+                            type="text"
+                            onClick={() =>
+                              setMemoryDraft({
+                                fact: item.content,
+                                refs: [
+                                  `soha://session/${encodeURIComponent(item.sessionId)}/message/${encodeURIComponent(item.id)}`,
+                                ],
+                              })
+                            }
+                          >
+                            保存为个人记忆
+                          </Button>
+                        ) : null}
+                      </>
+                    )}
                   </div>
                 ))}
-                {pending[id] ? (
+                {pending[id] || live[id] ? (
                   <div className="app-assistant-message">
                     <Typography.Text type="secondary">
-                      {assistant.data?.name || "heya"}
+                      {ordinary ? "Chat" : assistant.data?.name || "heya"}
                     </Typography.Text>
                     <div>{live[id] || "正在回复…"}</div>
+                    <AssistantRuntimeAssembly
+                      value={streamingRuntime[id]?.assembly}
+                      fallback={!tasks.isError ? knownRun?.runtimeAssembly : undefined}
+                      hookOutcomes={(!tasks.isError ? knownRun?.output?.runtimeHooks : undefined) ?? streamingRuntime[id]?.hooks}
+                      toolExecutions={!tasks.isError ? knownRun?.toolExecutions : undefined}
+                    />
                   </div>
                 ) : null}
+                {!pending[id] && !tasks.isError && latestRun && !messages.data?.some(
+                  (item) => item.role !== "user" && item.metadata?.agentRunId === latestRun.id,
+                ) && (
+                  <AssistantRuntimeAssembly value={latestRun.runtimeAssembly} hookOutcomes={latestRun.output?.runtimeHooks} toolExecutions={latestRun.toolExecutions} />
+                )}
+                {progressRun && isDurableRun(progressRun) ? <RunTaskProgress key={progressRun.id} run={progressRun} /> : null}
                 <div ref={bottom} />
               </div>
               <div
@@ -922,6 +1262,39 @@ function AssistantWorkspace() {
                     ) : null}
                   </div>
                 )}
+                {usesDsh && canUseSession && !conversationDenied && (
+                  <Space orientation="vertical" size={4}>
+                    <AssistantRuntimeProfileControl
+                      scope={scope}
+                      profileId={profileId}
+                      profiles={runtimeProfiles.isSuccess ? runtimeProfiles.data : undefined}
+                      selected={runtimeProfile}
+                      disabled={composerLocked || selectProfile.isPending || !runtimeProfiles.isSuccess || Boolean(current?.metadata?.archivedAt)}
+                      loading={runtimeProfiles.isPending || selectingCurrentProfile || profileCheck?.status === "checking"}
+                      onChange={(profileId) => selectProfile.mutate({ sessionId: id, profileId })}
+                      onManage={canOpenProfileSettings ? openProfileSettings : undefined}
+                    />
+                    {runtimeProfiles.isError && (
+                      <Button size="small" onClick={() => void runtimeProfiles.refetch()}>
+                        运行配置读取失败，重试
+                      </Button>
+                    )}
+                    {profileCheck?.status === "checking" && (
+                      <Typography.Text type="secondary">正在读取服务端运行配置…</Typography.Text>
+                    )}
+                    {profileCheck?.status === "unavailable" && (
+                      <Alert type="warning" title="运行配置保存未确认，读取会话失败。确认前暂停发送。" action={
+                        <Button size="small" onClick={() => void checkRuntimeProfile(id, profileCheck.requested)}>重试读取会话</Button>
+                      } />
+                    )}
+                    {profileCheck?.status === "observed" && (
+                      <Alert type="warning" title="已读取服务端运行配置，所选配置未生效。" />
+                    )}
+                    {profileCheck?.status === "saved" && profileId === profileCheck.requested && (
+                      <Typography.Text type="secondary">运行配置已保存，下一轮生效。</Typography.Text>
+                    )}
+                  </Space>
+                )}
                 <div className="app-assistant-composer-row">
                   <Popover
                     fresh
@@ -953,6 +1326,7 @@ function AssistantWorkspace() {
                           添加图片
                         </Button>
                         <AssistantBackground
+                          mode={ordinary ? "chat" : "heya"}
                           key={backgroundKey}
                           selection={background}
                           onChange={setBackground}
@@ -960,7 +1334,7 @@ function AssistantWorkspace() {
                         <Button
                           type="text"
                           icon={<ExperimentOutlined aria-hidden />}
-                          disabled={!id || pending[id]}
+                          disabled={!id || composerLocked}
                           onClick={() => {
                             setAddOpen(false);
                             setProfessionalOpen(true);
@@ -1009,7 +1383,7 @@ function AssistantWorkspace() {
                   </Popover>
                   <Input.TextArea
                     ref={composer}
-                    disabled={preparingImage}
+                    disabled={preparingImage || composerLocked}
                     onPaste={(event) => {
                       if (event.clipboardData.files[0]) {
                         event.preventDefault();
@@ -1043,17 +1417,22 @@ function AssistantWorkspace() {
                       .reverse()
                       .find((item) => item.role !== "user")}
                   />
-                  <AssistantModel
-                    selection={background}
-                    onChange={setBackground}
-                    disabled={!id || !!pending[id] || preparingImage}
-                  />
-                  {pending[id] ? (
+                  {usesDsh && (
+                    <AssistantModel
+                      selection={background}
+                      profilePreferences={runtimeProfile?.modelPreferences}
+                      onChange={setBackground}
+                      disabled={composerLocked || preparingImage}
+                    />
+                  )}
+                  {pending[id] || activeRun || awaitingTerminal || isStopping ? (
                     <Button
                       shape="circle"
                       aria-label="停止接收"
+                      disabled={cancel.isPending}
+                      title={isStopping ? "取消未确认，重试停止" : "停止并取消任务"}
                       icon={<StopOutlined />}
-                      onClick={() => streams.current[id]?.abort()}
+                      onClick={() => void stop()}
                     />
                   ) : (
                     <Button
@@ -1061,7 +1440,7 @@ function AssistantWorkspace() {
                       shape="circle"
                       aria-label="发送"
                       icon={<ArrowUpOutlined />}
-                      disabled={!id || !drafts[id]?.trim()}
+                      disabled={!id || !drafts[id]?.trim() || composerLocked}
                       onClick={() => void send()}
                     ></Button>
                   )}
@@ -1092,10 +1471,11 @@ function AssistantWorkspace() {
                       ? run.input.question
                       : `${run.providerKind} 任务`}
                   </Typography.Text>
-                  <Tag>{statusNames[run.status] || run.status}</Tag>
+                  <Tag>{isCancellationPending(run) ? "取消处理中" : statusNames[run.status] || run.status}</Tag>
                   <TaskUsage value={run.output?.usage} />
-                  {run.providerKind === "native" ? (
-                    <NativeTaskProgress key={`${owner}:${run.id}`} run={run} />
+                  <AssistantRuntimeAssembly value={run.runtimeAssembly} hookOutcomes={run.output?.runtimeHooks} toolExecutions={run.toolExecutions} />
+                  {isDurableRun(run) ? (
+                    <RunTaskProgress key={`${owner}:${run.id}`} run={run} />
                   ) : null}
                   {run.errorMessage ? (
                     <Alert type="error" title={run.errorMessage} />
@@ -1106,15 +1486,15 @@ function AssistantWorkspace() {
                         打开对话
                       </Button>
                     ) : null}
-                    {["queued", "running"].includes(run.status) ? (
+                    {run.sessionId && !isReadOnlyRun(run) && isActiveRun(run) ? (
                       <Button
                         loading={
-                          cancel.isPending && cancel.variables === run.id
+                          cancel.isPending && cancel.variables?.runId === run.id
                         }
                         disabled={cancel.isPending}
-                        onClick={() => cancel.mutate(run.id)}
+                        onClick={() => cancel.mutate({session: run.sessionId!, runId: run.id})}
                       >
-                        取消任务
+                        {isCancellationPending(run) ? "重试停止" : "取消任务"}
                       </Button>
                     ) : null}
                   </Space>
@@ -1465,7 +1845,7 @@ function AssistantWorkspace() {
                 助手：{assistant.data?.id}
               </Typography.Paragraph>
               <Typography.Paragraph code>
-                主聊天：{assistant.data?.mainSessionId}
+                主聊天：{mainSessionId}
               </Typography.Paragraph>
             </details>
           </div>
@@ -1505,6 +1885,7 @@ function AssistantWorkspace() {
       ) : null}
       {memoryDraft ? (
         <MemoryEditor
+          mode={ordinary ? "chat" : "heya"}
           key={backgroundKey}
           initial={memoryDraft}
           selection={background.memoryIds ?? []}
@@ -1572,7 +1953,7 @@ function TaskApprovals({
     if (id) ids.add(id);
   }
   if (
-    run.providerKind === "native" &&
+    isDurableRun(run) &&
     Array.isArray(run.output?.approvalRequestIds)
   ) {
     for (const id of run.output.approvalRequestIds.slice(0, 8)) {
@@ -1585,7 +1966,8 @@ function TaskApprovals({
         <AssistantApproval
           key={id}
           id={id}
-          continuesTask={run.providerKind === "native"}
+          continuesTask={isDurableRun(run) && !isReadOnlyRun(run)}
+          readOnly={isReadOnlyRun(run)}
         />
       ))}
     </>
@@ -1604,15 +1986,24 @@ function approvalId(tool: {
     : undefined;
 }
 
-function MessageApprovals({ item }: { item: WorkbenchMessage }) {
-  const tools = item.metadata?.toolExecutions;
+function MessageApprovals({ item, readOnly }: { item: WorkbenchMessage; readOnly?: boolean }) {
+  const metadata = item.metadata;
+  const agentStatus = metadata?.agentStatus;
+  const providerKind = agentStatus && typeof agentStatus === "object" && "providerKind" in agentStatus
+    ? agentStatus.providerKind
+    : undefined;
+  const historical = readOnly || metadata?.executionReadOnly === true ||
+    metadata?.agentStopReason === "legacy_reconciliation_required" ||
+    metadata?.agentProviderId === "native" ||
+    (typeof providerKind === "string" && providerKind.trim().toLowerCase() === "native");
+  const tools = metadata?.toolExecutions;
   const ids = Array.isArray(tools)
     ? tools.map(approvalId).filter((id): id is string => Boolean(id))
     : [];
   return (
     <>
       {[...new Set(ids)].map((id) => (
-        <AssistantApproval key={id} id={id} />
+        <AssistantApproval key={id} id={id} readOnly={historical} />
       ))}
     </>
   );
@@ -1621,11 +2012,15 @@ function MessageApprovals({ item }: { item: WorkbenchMessage }) {
 function AssistantApproval({
   id,
   continuesTask = false,
+  readOnly = false,
 }: {
   id: string;
   continuesTask?: boolean;
+  readOnly?: boolean;
 }) {
   const { message, modal } = App.useApp();
+  const confirmation = useRef<ReturnType<typeof modal.confirm> | null>(null);
+  useEffect(() => () => confirmation.current?.destroy(), [readOnly]);
   const owner = useAppStore(selectAssistantOwner);
   const permissions = useAppStore(
     (state) => state.bootstrap?.permissionSnapshot.permissionKeys ?? [],
@@ -1673,7 +2068,7 @@ function AssistantApproval({
           审批结果会继续推进原任务；助手等待领域执行与验收回执后再回答。
         </Typography.Paragraph>
       ) : null}
-      {request.status === "pending" ? (
+      {!readOnly && request.status === "pending" ? (
         <Space>
           {(["approve", "reject", "cancel"] as const)
             .filter((action) =>
@@ -1683,21 +2078,19 @@ function AssistantApproval({
               <Button
                 key={action}
                 disabled={decide.isPending}
-                onClick={() =>
-                  action === "approve"
-                    ? modal.confirm({
-                        title: "批准并执行已保存的变更？",
-                        content: (
-                          <pre>
-                            {JSON.stringify(request.toolInput, null, 2)}
-                          </pre>
-                        ),
-                        okText: "批准并执行",
-                        cancelText: "返回",
-                        onOk: () => decide.mutateAsync(action),
-                      })
-                    : decide.mutate(action)
-                }
+                onClick={() => {
+                  if (action === "approve")
+                    confirmation.current = modal.confirm({
+                      title: "批准并执行已保存的变更？",
+                      content: (
+                        <pre>{JSON.stringify(request.toolInput, null, 2)}</pre>
+                      ),
+                      okText: "批准并执行",
+                      cancelText: "返回",
+                      onOk: () => decide.mutateAsync(action),
+                    });
+                  else decide.mutate(action);
+                }}
               >
                 {
                   { approve: "批准", reject: "拒绝", cancel: "取消申请" }[

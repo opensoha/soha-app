@@ -3,7 +3,7 @@ import {
   BookOutlined,
   FolderOpenOutlined,
 } from "@ant-design/icons";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Alert,
   App,
@@ -17,17 +17,22 @@ import {
   Select,
   Segmented,
   Space,
+  Switch,
   Typography,
 } from "antd";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   AIMemoryRecord,
+  AIMemoryPolicy,
   WorkbenchMessage,
   WorkbenchSession,
   WorkbenchModelPreferences,
 } from "@opensoha/contracts/gen/ts/sohaapi";
 import { assistantApi } from "@/assistant-api";
-import { useAppStore } from "@/store";
+import { selectAssistantOwner, useAppStore } from "@/store";
+
+const memoryReadEnabled = (policy?: AIMemoryPolicy) => Boolean(policy?.enabled && (policy.readEnabled ?? policy.enabled));
+const memoryWriteEnabled = (policy?: AIMemoryPolicy) => Boolean(policy?.enabled && (policy.writeEnabled ?? policy.enabled));
 
 export type AssistantBackgroundSelection = {
   modelPreferences?: WorkbenchModelPreferences;
@@ -42,13 +47,12 @@ export function sessionBackground(
   const knowledge = metadata?.knowledgeContext;
   return {
     modelPreferences:
-      model &&
-      typeof model === "object" &&
-      "publicModel" in model &&
-      typeof model.publicModel === "string"
+      model && typeof model === "object"
         ? {
-            publicModel: model.publicModel.slice(0, 256),
-            reasoningEffort: model.reasoningEffort ?? "auto",
+            ...(typeof model.publicModel === "string"
+              ? { publicModel: model.publicModel.slice(0, 256) }
+              : {}),
+            ...(model.reasoningEffort ? { reasoningEffort: model.reasoningEffort } : {}),
           }
         : undefined,
     knowledgeBaseIds:
@@ -71,7 +75,9 @@ export function sessionBackground(
 export function AssistantBackground({
   selection,
   onChange,
+  mode = "heya",
 }: {
+  mode?: "chat" | "heya";
   selection: AssistantBackgroundSelection;
   onChange: (value: AssistantBackgroundSelection) => void;
 }) {
@@ -140,6 +146,7 @@ export function AssistantBackground({
       </Modal>
       {memoryOpen ? (
         <MemoryEditor
+          mode={mode}
           selection={selection.memoryIds ?? []}
           onChange={(memoryIds) => patch({ memoryIds })}
           onClose={() => setMemoryOpen(false)}
@@ -151,35 +158,36 @@ export function AssistantBackground({
 
 export function AssistantModel({
   selection,
+  profilePreferences,
   onChange,
   disabled,
 }: {
   selection: AssistantBackgroundSelection;
+  profilePreferences?: WorkbenchModelPreferences;
   onChange: (value: AssistantBackgroundSelection) => void;
   disabled: boolean;
 }) {
   const bootstrap = useAppStore((state) => state.bootstrap);
+  const owner = useAppStore(selectAssistantOwner);
   const [open, setOpen] = useState(false);
   const catalog = useQuery({
-    queryKey: ["assistant-catalog", bootstrap?.currentUser.userId],
+    queryKey: ["assistant-catalog", owner],
     queryFn: assistantApi.catalog,
     enabled:
       bootstrap?.permissionSnapshot.permissionKeys.includes(
-        "observe.ai.view",
+        "observe.ai.chat",
       ) ?? false,
   });
-  const model =
-    selection.modelPreferences?.publicModel || catalog.data?.defaultPublicModel;
-  const effort = selection.modelPreferences?.reasoningEffort || "auto";
-  const efforts =
-    catalog.data?.modelOptions?.find((item) => item.publicModel === model)
-      ?.reasoningEfforts ?? [];
+  const fallbackModel = profilePreferences?.publicModel || catalog.data?.defaultPublicModel;
+  const model = selection.modelPreferences?.publicModel || fallbackModel;
+  const modelOption = catalog.data?.modelOptions?.find((item) => item.publicModel === model);
+  const configuredEffort = selection.modelPreferences?.reasoningEffort;
+  const profileEffort = profilePreferences?.reasoningEffort;
+  const effort = configuredEffort || profileEffort || "auto";
+  const efforts = modelOption?.reasoningEfforts ?? [];
+  const unsupportedEffort = effort !== "auto" && !efforts.includes(effort);
   const labels = { auto: "自动", low: "轻度", medium: "标准", high: "深度" };
-  const capacity = usageCount(
-    usageRecord(
-      catalog.data?.modelOptions?.find((item) => item.publicModel === model),
-    ).contextWindowTokens,
-  );
+  const capacity = usageCount(usageRecord(modelOption).contextWindowTokens);
   const label = model || "默认模型";
   return (
     <Popover
@@ -209,8 +217,8 @@ export function AssistantModel({
             options={[
               {
                 value: "",
-                label: catalog.data?.defaultPublicModel
-                  ? `默认 · ${catalog.data.defaultPublicModel}`
+                label: fallbackModel
+                  ? `${profilePreferences?.publicModel ? "配置" : "默认"} · ${fallbackModel}`
                   : "默认模型",
               },
               ...(catalog.data?.modelOptions ?? []).map((item) => ({
@@ -231,24 +239,27 @@ export function AssistantModel({
           <Segmented
             block
             aria-label="思考强度"
-            disabled={disabled || !efforts.length}
-            value={effort}
-            options={["auto" as const, ...efforts].map((value) => ({
-              value,
-              label: labels[value],
-            }))}
+            disabled={disabled || (!efforts.length && !unsupportedEffort && !profileEffort)}
+            value={profileEffort && !configuredEffort ? "inherit" : effort}
+            options={[
+              ...["auto" as const, ...efforts].map((value) => ({ value, label: labels[value] })),
+              ...(profileEffort ? [{ value: "inherit", label: `配置 · ${labels[profileEffort]}` }] : []),
+              ...(unsupportedEffort && configuredEffort ? [{ value: effort, label: labels[effort], disabled: true }] : []),
+            ]}
             onChange={(reasoningEffort) =>
               onChange({
                 ...selection,
                 modelPreferences: {
                   ...selection.modelPreferences,
                   reasoningEffort:
-                    reasoningEffort as WorkbenchModelPreferences["reasoningEffort"],
+                    reasoningEffort === "inherit" ? undefined : reasoningEffort as WorkbenchModelPreferences["reasoningEffort"],
                 },
               })
             }
           />
-          {!efforts.length && (
+          {unsupportedEffort ? (
+            <Typography.Text type="warning">当前模型未确认支持此思考强度，请调整模型或强度。</Typography.Text>
+          ) : !efforts.length && (
             <Typography.Text type="secondary">
               当前模型自动管理思考强度
             </Typography.Text>
@@ -276,6 +287,16 @@ export function AssistantModel({
         <DownOutlined />
       </Button>
     </Popover>
+  );
+}
+
+export function hasMemoryDegradation(value: unknown): boolean {
+  const record = (input: unknown): Record<string, unknown> => input && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : {};
+  const root = record(value);
+  return [root, record(root.metadata), record(root.output), record(root.sessionPatch)].some(item =>
+    item.memoryStatus === "degraded" || [item, record(item.contextSnapshot), record(item.contextEnvelope)].some(snapshot =>
+      Array.isArray(snapshot.truncations) && snapshot.truncations.includes("memory_unavailable"),
+    ),
   );
 }
 
@@ -340,7 +361,7 @@ export function MessageBackground({ item }: { item: WorkbenchMessage }) {
           {truncations.length ? (
             <Typography.Paragraph type="secondary">
               资料裁剪：
-              {truncations.map((value) => value.slice(0, 512)).join("；")}
+              {truncations.map((value) => value === "memory_unavailable" ? "长期记忆暂不可用，本次对话不使用无法读取的记忆" : value.slice(0, 512)).join("；")}
             </Typography.Paragraph>
           ) : null}
         </div>
@@ -358,7 +379,9 @@ export function MemoryEditor({
   onChange,
   onClose,
   initial,
+  mode = "heya",
 }: {
+  mode?: "chat" | "heya";
   selection: string[];
   onChange: (ids: string[]) => void;
   onClose: () => void;
@@ -377,23 +400,48 @@ export function MemoryEditor({
   const records = useQuery({
     queryKey: ["assistant-memory", owner],
     queryFn: assistantApi.memories,
+    refetchInterval: 3000,
   });
+  useEffect(() => {
+    const quarantined = new Set(records.data?.filter(record => record.quarantined).map(record => record.id));
+    const allowed = selection.filter(id => !quarantined.has(id));
+    if (allowed.length !== selection.length) onChange(allowed);
+  }, [records.data, selection, onChange]);
   const policies = useQuery({
     queryKey: ["assistant-memory-policies", owner],
     queryFn: assistantApi.memoryPolicies,
   });
   const activePolicies = (policies.data ?? []).filter(
     (policy) =>
-      policy.enabled &&
-      policy.explicitWriteOnly &&
+      (!policies.data?.some(item => item.ownerId === owner && item.mode === mode) || (policy.ownerId === owner && policy.mode === mode)) &&
+      memoryWriteEnabled(policy) &&
+      (!policy.mode || policy.mode === mode) &&
+      (!policy.ownerId || policy.ownerId === owner) &&
       policy.ownerTypes.includes("user"),
   );
   const policy =
     activePolicies.find((item) => `${item.id}:${item.version}` === policyKey) ??
     activePolicies[0];
+  const personalPolicy = policies.data?.find(item => item.ownerId === owner && item.mode === mode);
+  const effectivePolicy = personalPolicy ?? policies.data?.find(item => !item.ownerId && (!item.mode || item.mode === mode) && item.enabled);
+  const changePolicy = useMutation({
+    mutationFn: (change: {readEnabled?: boolean; writeEnabled?: boolean; automatic?: boolean}) => assistantApi.saveMemoryPolicy({
+      id: personalPolicy?.id ?? `personal-${mode}`, name: `${mode} 个人记忆`, mode,
+      ttlDays: Math.max(1, Math.round((personalPolicy?.defaultTtl ?? 30 * 864e11) / 864e11)),
+      consentMode: change.automatic === true ? "automatic" : change.automatic === false ? "explicit" : personalPolicy?.explicitWriteOnly === false ? "automatic" : "explicit",
+      readEnabled: change.readEnabled ?? memoryReadEnabled(effectivePolicy),
+      writeEnabled: change.writeEnabled ?? memoryWriteEnabled(effectivePolicy),
+    }),
+    onSuccess: async (_, change) => {
+      if (change.readEnabled === false) onChange([]);
+      await client.invalidateQueries({queryKey: ["assistant-memory-policies", owner]});
+      message.success("授权已更新；关闭后停止后续使用，历史对话保留。");
+    },
+  });
   const save = useMutation({
     mutationFn: async () => {
-      if (!owner || !policy || !fact.trim() || !canWrite)
+      if (!owner || !policy || !fact.trim() || !canWrite ||
+          (editing && records.data?.find(record => record.id === editing.id)?.quarantined))
         throw new Error("需要有效个人记忆策略与写入权限。");
       const now = new Date();
       const digest = await crypto.subtle.digest(
@@ -431,26 +479,34 @@ export function MemoryEditor({
       await client.invalidateQueries({ queryKey: ["assistant-memory", owner] });
       setEditing(undefined);
       setFact("");
-      message.success("个人记忆已保存；勾选后用于背景。");
+      message.success("个人记忆已接收；同步状态以列表为准。");
     },
   });
   const remove = useMutation({
     mutationFn: assistantApi.deleteMemory,
     onSuccess: async (_, id) => {
       onChange(selection.filter((item) => item !== id));
+      if (editing?.id === id) { setEditing(undefined); setFact(""); }
       await client.invalidateQueries({ queryKey: ["assistant-memory", owner] });
     },
   });
+  const recordMode = (record: AIMemoryRecord) => policies.data?.find(item => item.id === record.policyId)?.mode;
   return (
     <Modal
       open
       title="个人记忆"
       onCancel={onClose}
-      footer={<Button onClick={onClose}>完成</Button>}
+      footer={<Space><Button disabled={!selection.length} onClick={() => onChange([])}>清空本次选择</Button><Button onClick={onClose}>完成</Button></Space>}
     >
       <Typography.Paragraph type="secondary">
-        仅支持自己的显式记忆。刷新后需重新勾选；删除后不进入新请求，历史对话保留。组织共享记忆尚未接入。
+        Chat 仅显式保存；Heya 自动记忆需主动启用。勾选本人另一入口的记忆后，共享至本次会话；默认不跨入口选择。删除或撤权立即停止后续使用，后台传播状态如下，历史对话保留。关闭记忆不影响普通聊天。
       </Typography.Paragraph>
+      {canWrite ? <Space orientation="vertical">
+        <Typography.Text>{mode === "chat" ? "Chat" : "Heya"} 记忆授权</Typography.Text>
+        <Space>允许读取<Switch aria-label="允许读取记忆" checked={memoryReadEnabled(effectivePolicy)} disabled={changePolicy.isPending || policies.isError} onChange={readEnabled => changePolicy.mutate({readEnabled})} /></Space>
+        <Space>允许写入<Switch aria-label="允许写入记忆" checked={memoryWriteEnabled(effectivePolicy)} disabled={changePolicy.isPending || policies.isError} onChange={writeEnabled => changePolicy.mutate({writeEnabled})} /></Space>
+        {mode === "heya" ? <Space>自动记忆（主动授权）<Switch aria-label="Heya 自动记忆" checked={Boolean(personalPolicy?.enabled && personalPolicy.explicitWriteOnly === false)} disabled={changePolicy.isPending || policies.isError} onChange={automatic => changePolicy.mutate({automatic})} /></Space> : null}
+      </Space> : null}
       {records.isError || policies.isError ? (
         <Alert type="error" title="记忆读取失败或当前不可用。" />
       ) : null}
@@ -458,18 +514,20 @@ export function MemoryEditor({
         .filter(
           (record) =>
             record.ownerType === "user" &&
-            record.ownerId === owner &&
-            record.status === "active" &&
-            record.sourceType === "explicit_user" &&
-            (!record.expiresAt || Date.parse(record.expiresAt) > Date.now()),
+            record.ownerId === owner,
         )
         .map((record) => (
           <div key={record.id} style={{ marginBottom: 16 }}>
+            <Typography.Text type="secondary">{recordMode(record) === "chat" ? "Chat" : recordMode(record) === "heya" ? "Heya" : "历史共享"} · 同步状态：{({pending: "保存中", synced: "已同步", delete_pending: "已禁用，删除传播中", deleted: "已删除", error: "外部同步失败，使用前仍校验权限与来源", disabled: "未同步至外部记忆"} as Record<string, string>)[record.syncStatus ?? ""] ?? "历史记录"}</Typography.Text>
+            {record.quarantined ? <Alert type="warning" title="已隔离，待核对" description={record.quarantineReason || "此条记忆暂不可引用或改正，请核对来源；可删除。"} /> : null}
+            {record.status === "deleted" || record.deletedAt ? <Typography.Paragraph>已停止使用此条记忆。</Typography.Paragraph> : <>
             <Checkbox
               checked={selection.includes(record.id)}
               disabled={
-                !activePolicies.some(
+                record.quarantined === true || record.status !== "active" || Boolean(record.deletedAt) || !record.expiresAt || Date.parse(record.expiresAt) <= Date.now() || Date.parse(record.validFrom) > Date.now() || (personalPolicy !== undefined && !memoryReadEnabled(personalPolicy)) ||
+                !(policies.data ?? []).some(
                   (policy) =>
+                    memoryReadEnabled(policy) &&
                     policy.id === record.policyId &&
                     policy.version === record.policyVersion,
                 )
@@ -490,10 +548,15 @@ export function MemoryEditor({
                 ? new Date(record.expiresAt).toLocaleString()
                 : "未知"}
             </Typography.Paragraph>
+            <Typography.Paragraph type="secondary">来源：{record.sourceRefs?.length ? record.sourceRefs.join(" · ") : "用户明确提供"}</Typography.Paragraph>
+            {Object.entries(record.sourceHashes ?? {}).map(([source, hash]) => <Typography.Paragraph key={source} type="secondary">来源校验：{source} · {hash}</Typography.Paragraph>)}
+            {recordMode(record) && recordMode(record) !== mode ? <Typography.Paragraph type="secondary">请到 {recordMode(record) === "heya" ? "Heya" : "Chat"} 入口改正，保留原记忆范围。</Typography.Paragraph> : null}
             {canWrite ? (
               <Space>
                 <Button
                   size="small"
+                  disabled={record.quarantined === true || Boolean(recordMode(record) && recordMode(record) !== mode)}
+                  title={recordMode(record) && recordMode(record) !== mode ? `请到 ${recordMode(record) === "heya" ? "Heya" : "Chat"} 入口改正，保留原记忆范围` : undefined}
                   onClick={() => {
                     setEditing(record);
                     setFact(record.fact);
@@ -512,6 +575,7 @@ export function MemoryEditor({
                 </Popconfirm>
               </Space>
             ) : null}
+            </>}
           </div>
         ))}
       {canWrite ? (
@@ -536,7 +600,7 @@ export function MemoryEditor({
           <Button
             type="primary"
             disabled={
-              !policy || !fact.trim() || records.isError || policies.isError
+              !policy || !fact.trim() || records.isError || policies.isError || Boolean(editing && records.data?.find(record => record.id === editing.id)?.quarantined)
             }
             loading={save.isPending}
             onClick={() => save.mutate()}
@@ -545,7 +609,7 @@ export function MemoryEditor({
           </Button>
         </Space>
       ) : null}
-      {save.isError || remove.isError ? (
+      {save.isError || remove.isError || changePolicy.isError ? (
         <Alert
           type="error"
           title="记忆变更未确认，请核对最新状态；输入已保留。"
