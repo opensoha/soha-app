@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "@ant-design/icons": "^6.0.1",
-    "@opensoha/contracts": "git+https://github.com/opensoha/soha-contracts.git#d1eaebb02c5bb222badf52dc43d569ccedc34c02",
+    "@opensoha/contracts": "git+https://github.com/opensoha/soha-contracts.git#4aef3ea31f6a892c36473e58908652b571cc2813",
     "@tanstack/react-query": "^5.75.7",
     "antd": "6.4.3",
     "react": "^18.3.1",
