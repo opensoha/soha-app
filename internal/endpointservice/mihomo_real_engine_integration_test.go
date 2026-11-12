@@ -175,7 +175,7 @@ type realAppUpstream struct {
 	badRelay          atomic.Pointer[net.UDPAddr]
 }
 
-func realAppSource(t *testing.T, id, ip string, until time.Time) *realAppUpstream {
+func realAppSource(t *testing.T, id, ip, sourcePassword string, until time.Time) *realAppUpstream {
 	t.Helper()
 	u := &realAppUpstream{}
 	serve := func(host string) string {
@@ -218,7 +218,7 @@ func realAppSource(t *testing.T, id, ip string, until time.Time) *realAppUpstrea
 						return
 					}
 					password := make([]byte, int(length[0]))
-					if _, err := io.ReadFull(c, password); err != nil || string(user) != "fixture" || string(password) != "fixture-secret-0123456789abcdef0123456789abcdef" {
+					if _, err := io.ReadFull(c, password); err != nil || string(user) != "fixture" || string(password) != sourcePassword {
 						return
 					}
 					c.Write([]byte{1, 0})
@@ -308,6 +308,34 @@ func realAppSource(t *testing.T, id, ip string, until time.Time) *realAppUpstrea
 	u.loopback = serve("127.0.0.1")
 	u.address = serve(ip)
 	return u
+}
+
+func TestRealAppSourceFixtureAuthentication(t *testing.T) {
+	sourcePassword := randomID()
+	until := time.Now().Add(5 * time.Second)
+	for _, id := range []string{"A", "B"} {
+		t.Run(id, func(t *testing.T) {
+			source := realAppSource(t, id, "127.0.0.1", sourcePassword, until)
+			client, err := proxy.SOCKS5("tcp", source.loopback, &proxy.Auth{User: "fixture", Password: sourcePassword}, &net.Dialer{Timeout: time.Second})
+			if err != nil {
+				t.Fatal(err)
+			}
+			connection, err := client.Dial("tcp", "203.0.113.1:443")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { connection.Close() })
+			realAppEcho(t, connection, id, false)
+			denied, err := proxy.SOCKS5("tcp", source.loopback, &proxy.Auth{User: "fixture", Password: randomID()}, &net.Dialer{Timeout: time.Second})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if connection, err := denied.Dial("tcp", "203.0.113.1:443"); err == nil {
+				connection.Close()
+				t.Fatal("source accepted another scenario's credential")
+			}
+		})
+	}
 }
 
 func realAppTCP(t *testing.T, address, user, secret string) net.Conn {
@@ -606,7 +634,8 @@ func realAppEngineScenario(t *testing.T, binary, digest, version, mode string) {
 	config.Protection.CIDRs = []string{"10.1.1.0/24"}
 	ip := realAppFixtureIP(t)
 	until := now.Add(90 * time.Second)
-	aSource, bSource := realAppSource(t, "A", ip, until), realAppSource(t, "B", ip, until)
+	sourcePassword := randomID()
+	aSource, bSource := realAppSource(t, "A", ip, sourcePassword, until), realAppSource(t, "B", ip, sourcePassword, until)
 	sources := map[string]*realAppUpstream{"node-a": aSource, "node-b": bSource}
 	var witnessPackets atomic.Int64
 	if badRelay {
@@ -641,7 +670,7 @@ func realAppEngineScenario(t *testing.T, binary, digest, version, mode string) {
 		if u == nil {
 			return nil, fmt.Errorf("unknown node")
 		}
-		d, err := proxy.SOCKS5("tcp", u.loopback, &proxy.Auth{User: "fixture", Password: "fixture-secret-0123456789abcdef0123456789abcdef"}, &net.Dialer{})
+		d, err := proxy.SOCKS5("tcp", u.loopback, &proxy.Auth{User: "fixture", Password: sourcePassword}, &net.Dialer{})
 		if err != nil {
 			return nil, err
 		}
@@ -658,7 +687,7 @@ func realAppEngineScenario(t *testing.T, binary, digest, version, mode string) {
 		if u == nil {
 			return nil, fmt.Errorf("unknown node")
 		}
-		return proxytransport.DialSOCKS5UDP(ctx, u.loopback, "fixture", "fixture-secret-0123456789abcdef0123456789abcdef", target, until)
+		return proxytransport.DialSOCKS5UDP(ctx, u.loopback, "fixture", sourcePassword, target, until)
 	}, func(context.Context, string, string) error { return nil }, until)
 	if err != nil {
 		t.Fatal(err)
@@ -678,14 +707,15 @@ func realAppEngineScenario(t *testing.T, binary, digest, version, mode string) {
 		nodes := []map[string]any{}
 		for _, id := range []string{"node-a", "node-b"} {
 			host, port, _ := net.SplitHostPort(sources[id].address)
-			nodes = append(nodes, map[string]any{"name": id, "type": "socks5", "server": host, "port": port, "username": "fixture", "password": "fixture-secret-0123456789abcdef0123456789abcdef", "udp": true})
+			nodes = append(nodes, map[string]any{"name": id, "type": "socks5", "server": host, "port": port, "username": "fixture", "password": sourcePassword, "udp": true})
 		}
 		content, _ := yaml.Marshal(map[string]any{"proxies": nodes})
 		config.DirectProjection = &api.NetworkProxyDirectProjection{SchemaVersion: "proxy-direct/v1", RuntimeID: p.RuntimeID, ProfileID: p.ProfileID, BundleID: p.BundleID, Revision: p.Revision, ActiveRevision: p.ActiveRevision, SourceRevision: p.SourceRevision, OrgRevision: p.OrgRevision, ProjectionHash: p.ProjectionHash, ProcessEpoch: p.ProcessEpoch, ExpiresAt: p.ExpiresAt, DeliveryMode: api.NetworkProxyDirectProjectionDeliveryMode(mode), UpstreamDisclosure: "upstream_parameters", Format: "mihomo_yaml", Groups: p.Groups, Rules: p.Rules, Content: string(content)}
 		config.Projection = nil
 		config.DeliveryMode = mode
 	}
-	controller, err := NewConfiguredMihomoController(Config{MihomoControllerURL: fmt.Sprintf("http://127.0.0.1:%d", config.ControllerPort), StateDirectory: t.TempDir(), MihomoControllerSecretFile: "operator-owned-fixture-secret-0123456789abcdef0123456789abcdef", MihomoProcess: MihomoProcessConfig{Ownership: "soha_owned", Binary: binary, SHA256: digest, Version: version}}, strings.Repeat("s", 32))
+	testStateDirectory := t.TempDir()
+	controller, err := NewConfiguredMihomoController(Config{MihomoControllerURL: fmt.Sprintf("http://127.0.0.1:%d", config.ControllerPort), StateDirectory: testStateDirectory, MihomoControllerSecretFile: filepath.Join(testStateDirectory, "operator-owned-fixture-secret-0123456789abcdef0123456789abcdef"), MihomoProcess: MihomoProcessConfig{Ownership: "soha_owned", Binary: binary, SHA256: digest, Version: version}}, strings.Repeat("s", 32))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -4,10 +4,19 @@ Independent Wails 3 desktop client for connecting to a Soha Server. The App owns
 
 ## Prerequisites
 
-- Go 1.27.3
+- Go 1.27.4
+
 - Node.js 22.12+ (or a supported 24/26 release) and npm 10+
 - Wails CLI pinned to `v3.0.0-beta.16`
 - macOS 13 Ventura or newer for macOS builds and installations (required by Go 1.27)
+
+The current Go SDK pin is an unpublished immutable integration candidate. Public
+proxy availability and release qualification are not established. Local validation
+uses an owned standard module proxy through per-command `GOPROXY` and an exact
+`GONOSUMDB=github.com/opensoha/soha-contracts` exception; it does not use a local
+module replacement. Other dependencies retain normal public proxy and checksum
+verification. The server Docker builder accepts the same optional `GOPROXY` and
+`GONOSUMDB` build arguments; neither setting is exported into the runtime stage.
 
 ```sh
 go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.16
