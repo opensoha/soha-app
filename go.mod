@@ -5,7 +5,7 @@ go 1.27.4
 require (
 	github.com/Microsoft/go-winio v0.6.3
 	github.com/godbus/dbus/v5 v5.2.2
-	github.com/opensoha/soha-contracts v0.1.30-0.20261112071503-e0b9d2f86a68
+	github.com/opensoha/soha/contracts v0.0.0-20261113083804-3d8938200237
 	github.com/totallygamerjet/bsdiff v1.0.0
 	github.com/wailsapp/wails/v3 v3.0.0-beta.16
 	github.com/zalando/go-keyring v0.2.6

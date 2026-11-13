@@ -1,7 +1,7 @@
 package endpointservice
 
 import (
-	ec "github.com/opensoha/soha-contracts/endpointcontrol"
+	ec "github.com/opensoha/soha/contracts/endpointcontrol"
 	"testing"
 	"time"
 )

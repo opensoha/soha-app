@@ -10,10 +10,12 @@ Independent Wails 3 desktop client for connecting to a Soha Server. The App owns
 - Wails CLI pinned to `v3.0.0-beta.16`
 - macOS 13 Ventura or newer for macOS builds and installations (required by Go 1.27)
 
-The current Go SDK pin is an unpublished immutable integration candidate. Public
+The Go SDK module is `github.com/opensoha/soha/contracts`, sourced from the
+Root `opensoha/soha` repository under `contracts/`. The current pin is an
+unpublished immutable integration candidate. Public
 proxy availability and release qualification are not established. Local validation
 uses an owned standard module proxy through per-command `GOPROXY` and an exact
-`GONOSUMDB=github.com/opensoha/soha-contracts` exception; it does not use a local
+`GONOSUMDB=github.com/opensoha/soha/contracts` exception; it does not use a local
 module replacement. Other dependencies retain normal public proxy and checksum
 verification. The server Docker builder accepts the same optional `GOPROXY` and
 `GONOSUMDB` build arguments; neither setting is exported into the runtime stage.

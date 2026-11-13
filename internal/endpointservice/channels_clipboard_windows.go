@@ -18,7 +18,7 @@ import (
 	"unicode/utf16"
 	"unsafe"
 
-	ec "github.com/opensoha/soha-contracts/endpointcontrol"
+	ec "github.com/opensoha/soha/contracts/endpointcontrol"
 	"golang.org/x/sys/windows"
 )
 

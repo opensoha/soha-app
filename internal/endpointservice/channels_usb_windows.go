@@ -8,7 +8,7 @@ import (
 	"errors"
 	"strings"
 
-	ec "github.com/opensoha/soha-contracts/endpointcontrol"
+	ec "github.com/opensoha/soha/contracts/endpointcontrol"
 	"golang.org/x/sys/windows"
 )
 

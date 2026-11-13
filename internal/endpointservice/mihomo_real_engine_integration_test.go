@@ -21,8 +21,8 @@ import (
 	"testing"
 	"time"
 
-	api "github.com/opensoha/soha-contracts/gen/go/sohaapi"
-	"github.com/opensoha/soha-contracts/proxytransport"
+	api "github.com/opensoha/soha/contracts/gen/go/sohaapi"
+	"github.com/opensoha/soha/contracts/proxytransport"
 	"go.yaml.in/yaml/v3"
 	"golang.org/x/net/proxy"
 )
