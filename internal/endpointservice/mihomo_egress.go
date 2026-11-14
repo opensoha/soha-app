@@ -6,8 +6,8 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	api "github.com/opensoha/soha-contracts/gen/go/sohaapi"
-	"github.com/opensoha/soha-contracts/proxypolicy"
+	api "github.com/opensoha/soha/contracts/gen/go/sohaapi"
+	"github.com/opensoha/soha/contracts/proxypolicy"
 	"net"
 	"net/http"
 	"net/netip"
@@ -18,7 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/opensoha/soha-contracts/proxytransport"
+	"github.com/opensoha/soha/contracts/proxytransport"
 	"golang.org/x/net/proxy"
 )
 

@@ -142,7 +142,7 @@ var winNativeWininet = windows.NewLazySystemDLL("wininet.dll")
 
 type winNativeOption struct {
 	Option uint32
-	Value  uint64
+	Value  uint64 // Native union: DWORD, LPWSTR, or FILETIME.
 }
 type winNativeOptionList struct {
 	Size         uint32
@@ -187,7 +187,7 @@ func winNativeProxyGet(field string) (nativeValue, error) {
 	if id == 1 {
 		value.Number = uint32(option.Value)
 	} else if option.Value != 0 {
-		ptr := (*uint16)(unsafe.Pointer(uintptr(option.Value)))
+		ptr := *(**uint16)(unsafe.Pointer(&option.Value))
 		defer windows.NewLazySystemDLL("kernel32.dll").NewProc("GlobalFree").Call(uintptr(option.Value))
 		text, err := winNativeBoundedUTF16(ptr)
 		if err != nil {

@@ -3,7 +3,7 @@ package endpointservice
 import (
 	"context"
 	"errors"
-	api "github.com/opensoha/soha-contracts/gen/go/sohaapi"
+	api "github.com/opensoha/soha/contracts/gen/go/sohaapi"
 	"net/netip"
 	"path/filepath"
 	"reflect"

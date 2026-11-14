@@ -3,6 +3,7 @@ package endpointservice
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -14,7 +15,7 @@ func nmEAPFixture(t *testing.T) (nmEAPInput, nmEAPCapability) {
 	profile.EAPMethod, profile.InnerMethod, profile.CredentialSource, profile.ProfileRevision = "ttls", "pap", "user-input", "sha256:"+strings.Repeat("a", 64)
 	return nmEAPInput{DeviceID: "device-1", Incarnation: "attempt-1", Profile: profile,
 			Device:   nmEAPDevice{Path: "/org/freedesktop/NetworkManager/Devices/4", Interface: "wlan0", MAC: "02:00:00:00:00:04", Medium: "wifi", Managed: true},
-			Material: nmEAPMaterial{Method: "ttls", InnerMethod: "pap", CAFile: "/protected/ca.pem", Password: []byte("test-secret")}},
+			Material: nmEAPMaterial{Method: "ttls", InnerMethod: "pap", CAFile: filepath.Join(t.TempDir(), "ca.pem"), Password: []byte("test-secret")}},
 		nmEAPCapability{Owner: ":1.7", AddConnection2: true, ExactServerMatch: true, TLS12: true, TLS: true, TTLSPAP: true}
 }
 func nmAllowFile(string, bool) error { return nil }
@@ -26,12 +27,13 @@ func TestNMEAPSettingsTrustAndSecrets(t *testing.T) {
 			candidate := input
 			if method == "tls" {
 				candidate.Profile.EAPMethod, candidate.Profile.InnerMethod, candidate.Profile.CredentialSource = "tls", "", ""
-				candidate.Material = nmEAPMaterial{Method: "tls", CAFile: "/protected/ca.pem", ClientCertificateFile: "/protected/cert.pem", PrivateKeyFile: "/protected/key.pem"}
+				directory := filepath.Dir(input.Material.CAFile)
+				candidate.Material = nmEAPMaterial{Method: "tls", CAFile: input.Material.CAFile, ClientCertificateFile: filepath.Join(directory, "cert.pem"), PrivateKeyFile: filepath.Join(directory, "key.pem")}
 			}
 			checkedKey := false
 			settings, err := buildNMEAPSettings(candidate, capability, func(path string, private bool) error {
 				if private {
-					checkedKey = path == "/protected/key.pem"
+					checkedKey = path == candidate.Material.PrivateKeyFile
 				}
 				return nil
 			}, time.Now())

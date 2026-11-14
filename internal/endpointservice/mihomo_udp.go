@@ -8,9 +8,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/opensoha/soha-contracts/proxyadapter"
-	"github.com/opensoha/soha-contracts/proxypolicy"
-	"github.com/opensoha/soha-contracts/proxytransport"
+	"github.com/opensoha/soha/contracts/proxyadapter"
+	"github.com/opensoha/soha/contracts/proxypolicy"
+	"github.com/opensoha/soha/contracts/proxytransport"
 )
 
 func guardNodeType(c MihomoConfiguration) string {

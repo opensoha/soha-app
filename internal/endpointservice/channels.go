@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	ec "github.com/opensoha/soha-contracts/endpointcontrol"
+	ec "github.com/opensoha/soha/contracts/endpointcontrol"
 )
 
 const channelStateDescription = "OpenSoha endpoint native channel state"

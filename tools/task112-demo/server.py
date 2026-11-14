@@ -33,13 +33,14 @@ VPN_ENTRANCES = {
     "demo-vpn-tokyo": ("东京 / Tokyo", 89),
 }
 VPN_API = "/network-access/vpn/"
+RADIUS_802_1X_PROTOCOL = "radius_802_1x"
 PRINCIPAL = {
     "userId": "task112-demo-user", "userName": LOGIN, "email": "demo@example.invalid",
     "displayName": "Soha Demo", "permissionKeys": ["identity.portal.view"],
 }
 NETWORK_OPTIONS = [
     {"siteId": "demo-site", "siteName": "演示办公区 / Demo Office", "accessMedium": medium,
-     "authentication": "radius_802_1x", "accessProfile": "full", "policyVersion": 1,
+     "authentication": RADIUS_802_1X_PROTOCOL, "accessProfile": "full", "policyVersion": 1,
      **({"ssid": "Soha Demo Wi-Fi"} if medium == "wifi" else {})}
     for medium in ("wifi", "wired")
 ]

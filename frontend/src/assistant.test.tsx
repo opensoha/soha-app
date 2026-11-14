@@ -1735,16 +1735,58 @@ it("shows auto-memory write failure from the live server event without blocking 
 });
 
 
-it("restores auto-memory degradation only from the matching current user message", async () => {
-  vi.mocked(assistantApi.tasks).mockResolvedValueOnce([{id:"auto-restored",sessionId:"main",providerKind:"dsh",executionOwner:"external",status:"completed",input:{requestMessageId:"current-request"}}] as never);
-  vi.mocked(assistantApi.messages).mockResolvedValueOnce([{id:"current-request",sessionId:"main",role:"user",content:"当前请求",metadata:{agentRunId:"auto-restored",memoryStatus:"degraded",memoryWarning:"raw detail"}}] as never);
-  const element = await render(true);
-  await waitForAssistantText(element, "长期记忆暂不可用，本次对话将继续");
-  expect(element.textContent).not.toContain("raw detail");
-  expect(element.querySelector<HTMLTextAreaElement>('textarea[aria-label="给助手发消息"]')?.disabled).toBe(false);
-  await act(async () => {client!.setQueryData(["assistant-tasks",selectAssistantOwner(useAppStore.getState()),false],[{id:"new-clean",sessionId:"main",status:"completed"}]);});
-  await settleQueries();
-  expect(element.textContent).not.toContain("长期记忆暂不可用，本次对话将继续");
+it.each(["agentRunId", "requestMessageId"])("restores auto-memory degradation only from the matching current user message (%s)", async (matchingField) => {
+  const run = {
+    id: "auto-restored", sessionId: "main", providerKind: "dsh", executionOwner: "external", status: "completed",
+    input: matchingField === "requestMessageId" ? { requestMessageId: "current-request" } : {},
+  };
+  vi.mocked(assistantApi.tasks).mockResolvedValueOnce([run] as never);
+  let persistedMessages: Awaited<ReturnType<typeof assistantApi.messages>> = [{
+    id: "current-request", sessionId: "main", role: "user", content: "当前请求",
+    createdAt: "2026-01-01T00:00:00Z",
+    metadata: {
+      ...(matchingField === "agentRunId" ? { agentRunId: run.id } : {}),
+      memoryStatus: "degraded", memoryWarning: "raw detail",
+    },
+  }];
+  const previousMessages = vi.mocked(assistantApi.messages).getMockImplementation()!;
+  // Cold terminal recovery re-reads messages; persisted evidence survives that read.
+  vi.mocked(assistantApi.messages).mockImplementation(async () => persistedMessages);
+  try {
+    const element = await render(true);
+    await waitForAssistantText(element, "长期记忆暂不可用，本次对话将继续");
+    expect(element.textContent).toContain("当前请求");
+    expect(assistantApi.messages).toHaveBeenNthCalledWith(2, "main");
+    expect(element.textContent).not.toContain("raw detail");
+    expect(composerInput(element).disabled).toBe(false);
+    await act(async () => {
+      client!.setQueryData(["assistant-tasks", selectAssistantOwner(useAppStore.getState()), false], [{
+        id: "new-clean", sessionId: "main", status: "completed", input: { requestMessageId: "next-request" },
+      }]);
+    });
+    await settleQueries();
+    // The degraded historical user message no longer matches the current Run.
+    expect(element.textContent).toContain("当前请求");
+    expect(element.textContent).not.toContain("长期记忆暂不可用，本次对话将继续");
+    persistedMessages = [...persistedMessages, {
+      id: "clean-reply", sessionId: "main", role: "assistant", content: "本轮回复正常",
+      createdAt: "2026-01-01T00:01:00Z",
+      metadata: { agentRunId: "new-clean", contextSnapshot: { truncations: [] } },
+    }];
+    const queryKey = ["assistant-messages", selectAssistantOwner(useAppStore.getState()), "main"];
+    await act(async () => { await client!.invalidateQueries({ queryKey, exact: true }); });
+    await waitForAssistantText(element, "本轮回复正常");
+    expect(element.textContent).not.toContain("长期记忆暂不可用，本次对话将继续");
+    // A later read must not resurrect the old warning after the clean reply.
+    await act(async () => { await client!.invalidateQueries({ queryKey, exact: true }); });
+    await settleQueries();
+    expect(element.textContent).toContain("本轮回复正常");
+    expect(element.textContent).not.toContain("长期记忆暂不可用，本次对话将继续");
+    expect(element.textContent).not.toContain("raw detail");
+    expect(composerInput(element).disabled).toBe(false);
+  } finally {
+    vi.mocked(assistantApi.messages).mockImplementation(previousMessages);
+  }
 });
 
 

@@ -1,7 +1,7 @@
 package endpointservice
 
 import (
-	api "github.com/opensoha/soha-contracts/gen/go/sohaapi"
+	api "github.com/opensoha/soha/contracts/gen/go/sohaapi"
 
 	"encoding/json"
 	"time"

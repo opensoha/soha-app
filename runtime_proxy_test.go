@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/opensoha/soha-app/internal/endpointservice"
-	api "github.com/opensoha/soha-contracts/gen/go/sohaapi"
+	api "github.com/opensoha/soha/contracts/gen/go/sohaapi"
 	"net/http"
 	"net/http/httptest"
 	"strings"

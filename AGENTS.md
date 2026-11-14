@@ -2,7 +2,7 @@
 
 ## 所有权与任务分派
 
-- 本仓负责 Wails App、原生桥接、网络控制和 `frontend/` 中的 App 界面；控制台 Web 源码归属 `soha-web`，服务端协议以 `soha-contracts` 为源。
+- 本仓负责 Wails App、原生桥接、网络控制和 `frontend/` 中的 App 界面；控制台 Web 源码归属 `soha-web`，服务端协议以 Root `soha/contracts` 为源；正式 npm pin 的分发资格与 Go 源码候选分别核验。
 - 在已确认的 OpenSoha 多仓工作区读取 `../AGENTS.md` 一次；独立克隆使用本仓规则，不要求初始化相邻仓库或规划工具。已有且未变化的规则可复用，交接后缺少关键约束时补读相关部分。
 - 实现或实质审查前确定属于 App 前端、Go 桥接、原生服务、网络控制还是平台打包，并读取对应实现、调用者与测试；不为目录对称创建空仓库技能。
 - 构建与平台打包读取 [Taskfile](Taskfile.yml)、[CI](.github/workflows/ci.yml) 和 [发布流程](.github/workflows/release.yml)。计划和工具不构成安装、系统权限变更或发布的授权。

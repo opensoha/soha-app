@@ -26,7 +26,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/opensoha/soha-contracts/proxytransport"
+	"github.com/opensoha/soha/contracts/proxytransport"
 	"go.yaml.in/yaml/v3"
 	"golang.org/x/net/proxy"
 )

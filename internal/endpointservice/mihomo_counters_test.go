@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/opensoha/soha-contracts/proxytransport"
+	"github.com/opensoha/soha/contracts/proxytransport"
 )
 
 type counterHarness struct {
