@@ -11,11 +11,13 @@ Independent Wails 3 desktop client for connecting to a Soha Server. The App owns
 - macOS 13 Ventura or newer for macOS builds and installations (required by Go 1.27)
 
 The Go SDK module is `github.com/opensoha/soha/contracts`, sourced from the
-Root `opensoha/soha` repository under `contracts/`. The current pin is an
-unpublished immutable integration candidate. Public
-proxy availability and release qualification are not established. Local validation
-uses an owned standard module proxy through per-command `GOPROXY` and an exact
-`GONOSUMDB=github.com/opensoha/soha/contracts` exception; it does not use a local
+main `opensoha/soha` repository under `contracts/`. The exact dependency is pinned
+in this repository's `go.mod`. App Task and CI entries use `GOWORK=off` so an
+outer development workspace cannot silently replace that declared dependency.
+Source integration and public proxy/release qualification are separate checks;
+record the actual version and inputs instead of assuming a local workspace
+proves distribution availability. Explicit isolated proxy qualification may use
+per-command `GOPROXY` and a module-scoped `GONOSUMDB` exception without a local
 module replacement. Other dependencies retain normal public proxy and checksum
 verification. The server Docker builder accepts the same optional `GOPROXY` and
 `GONOSUMDB` build arguments; neither setting is exported into the runtime stage.
@@ -43,7 +45,13 @@ Set `SOHA_APP_NATIVE_NETWORK=disabled` on the acceptance process to disable all 
 SOHA_SERVER_URL=https://soha.example.com wails3 build
 ```
 
-The production build compiles `frontend/` and embeds `frontend/dist`. It does not read or build `soha-web`.
+The production build compiles `frontend/` and embeds `frontend/dist`. The console source is in the main `opensoha/soha` repository under `web/`; App builds do not read or build that component.
+
+App remains an independent repository and frontend. Shared contract source lives
+in `soha/contracts`; Core and Web development skills live in the main repository's
+`.agents/skills/`. This repository's [AGENTS.md](AGENTS.md) and build entries own
+App development; referring to the main repository does not require merging it or
+adding a second frontend source tree.
 
 ## Desktop UI conventions
 
