@@ -4,6 +4,7 @@ import {
   changePassword,
   createNetworkAccessGrant,
   getBootstrap,
+  getNetworkAdmissionChoices,
   getNetworkConnectionOptions,
   getPortalApplication,
   getPortalBootstrap,
@@ -216,6 +217,39 @@ describe('API transport', () => {
     const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit]
     expect(path).toBe('/api/v1/network-access/connection-options?deviceId=endpoint-mac-1')
     expect(new Headers(init.headers).get('Authorization')).toBe('Bearer device-access')
+  })
+
+  it('loads bootstrap metadata with an explicit includeBootstrap request', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({
+      items: [{
+        siteId: 'site-1',
+        siteName: 'Shanghai HQ',
+        accessMedium: 'wifi',
+        ssid: 'Soha-Staff',
+        authentication: 'radius_802_1x', // gitleaks:allow -- public protocol enum
+        accessProfile: 'full',
+        policyVersion: 8,
+        accessNetworkId: 'access-1',
+        networkName: 'Staff Wi-Fi',
+        recommendationPriority: 3,
+        autoConnect: true,
+      }],
+      bootstrapNetworks: [{
+        accessNetworkId: 'guest-1',
+        siteId: 'site-1',
+        name: 'Visitor',
+        ssid: 'Soha-Guest',
+        priority: 1,
+        autoConnect: false,
+      }],
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    setAccessToken('device-access')
+
+    const result = await getNetworkAdmissionChoices('endpoint-mac-1')
+    expect(result.items[0].accessNetworkId).toBe('access-1')
+    expect(result.bootstrapNetworks).toHaveLength(1)
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/network-access/connection-options?deviceId=endpoint-mac-1&includeBootstrap=true')
   })
 
   it('keeps password login JSON in the standard HTTP request body', async () => {

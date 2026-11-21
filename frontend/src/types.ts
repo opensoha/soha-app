@@ -239,6 +239,24 @@ export interface NetworkConnectionOption {
   authentication: 'radius_802_1x' // gitleaks:allow -- public protocol enum
   accessProfile: 'onboarding' | 'full' | 'restricted' | 'quarantine' | 'deny'
   policyVersion: number
+  accessNetworkId?: string
+  networkName?: string
+  recommendationPriority?: number
+  autoConnect?: boolean
+}
+
+export interface NetworkBootstrapOption {
+  accessNetworkId: string
+  siteId: string
+  name: string
+  ssid: string
+  priority: number
+  autoConnect: boolean
+}
+
+export interface NetworkConnectionOptions {
+  items: NetworkConnectionOption[]
+  bootstrapNetworks: NetworkBootstrapOption[]
 }
 
 export interface AdmissionInput {
@@ -281,6 +299,7 @@ export interface AdmissionStatus {
 }
 
 export interface NetworkLinkStatus {
+  known?: boolean
   connected: boolean
   medium?: NetworkAccessMedium
   interfaceName?: string

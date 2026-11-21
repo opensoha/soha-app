@@ -20,7 +20,7 @@ import {
   getAuthProviders,
   getBootstrap,
   getLoginOptions,
-  getNetworkConnectionOptions,
+  getNetworkAdmissionChoices,
   getVPNConnectionOptions,
   getVPNCurrentConnection,
   createVPNIntent,
@@ -184,7 +184,7 @@ vi.mock("@/api", () => {
       .fn()
       .mockResolvedValue({ items: [], unreadCount: 0 }),
     getLoginOptions: vi.fn(),
-    getNetworkConnectionOptions: vi.fn(),
+    getNetworkAdmissionChoices: vi.fn(),
  getVPNConnectionOptions: vi.fn(),
  getVPNCurrentConnection: vi.fn(),
  createVPNIntent: vi.fn(),
@@ -435,7 +435,7 @@ describe("desktop app", () => {
       verification: { sliderEnabled: false },
     });
     vi.mocked(getAuthProviders).mockResolvedValue([]);
-    vi.mocked(getNetworkConnectionOptions).mockResolvedValue([
+    vi.mocked(getNetworkAdmissionChoices).mockResolvedValue({ items: [
       {
         siteId: "site-1",
         siteName: "上海总部",
@@ -453,7 +453,7 @@ describe("desktop app", () => {
         accessProfile: "full",
         policyVersion: 7,
       },
-    ]);
+    ], bootstrapNetworks: [] });
     vi.mocked(loginWithPassword).mockResolvedValue({
       accessToken: "password-token",
       user: principal,
@@ -972,7 +972,47 @@ describe("desktop app", () => {
     expect(container.querySelector(".nav-item.active")?.textContent).toContain("网络");
   });
 
+  it.each([false, true])("gates an approved automatic Wi-Fi attempt (profile changes during probe: %s)", async (changesDuringProbe) => {
+    const approved = { id: "authorized-ssid", siteId: "site-1", accessMedium: "wifi" as const, ssid: "Staff-A", adapterId: "wifi-1", state: "installed" as const };
+    const denied = { ...approved, id: "denied-ssid", ssid: "Staff-B" };
+    const status = { supported: true, profiles: [approved, denied], adapters: [{ id: "wifi-1", name: "en0", medium: "wifi" as const, macAddress: "02:00:00:00:00:01", enabled: true, linkUp: true }] };
+    vi.mocked(getAdmissionStatus).mockResolvedValue(status);
+    vi.mocked(getNetworkAdmissionChoices).mockResolvedValue({
+      items: [{ accessNetworkId: approved.id, siteId: "site-1", siteName: "上海总部", accessMedium: "wifi", ssid: approved.ssid,
+        authentication: "radius_802_1x", // gitleaks:allow -- public protocol enum
+        accessProfile: "full", policyVersion: 7, autoConnect: true, recommendationPriority: 1 }],
+      bootstrapNetworks: [],
+    });
+    const client = await renderAppToHome();
+    await clickNavigation("网络");
+    await chooseAdmissionProfile("Staff-A");
+    expect(document.body.textContent).not.toContain("Staff-B");
+    const autoConnect = container.querySelector<HTMLInputElement>('label.ant-checkbox-wrapper input');
+    await act(async () => autoConnect?.click());
+    expect(runAdmissionAction).not.toHaveBeenCalled();
+    vi.mocked(runAdmissionAction).mockResolvedValue(status);
+    const disconnected = { known: true, connected: false, dnsServers: [] };
+    if (changesDuringProbe) {
+      let releaseProbe!: (result: typeof disconnected) => void;
+      vi.mocked(getNetworkLinkStatus).mockImplementationOnce(() => new Promise((resolve) => { releaseProbe = resolve; }));
+      await act(async () => client.setQueryData(["native-network-link"], disconnected));
+      await waitForUI(() => expect(releaseProbe).toBeTypeOf("function"));
+      await act(async () => client.setQueriesData({ queryKey: ["network-admission"] }, {
+        ...status,
+        profiles: [{ ...approved, eapMethod: "ttls", innerMethod: "pap", credentialInteraction: "system-prompt" }],
+      }));
+      await act(async () => releaseProbe(disconnected));
+      expect(runAdmissionAction).not.toHaveBeenCalled();
+      return;
+    }
+    vi.mocked(getNetworkLinkStatus).mockResolvedValue(disconnected);
+    await act(async () => client.setQueryData(["native-network-link"], disconnected));
+    await waitForUI(() => expect(runAdmissionAction).toHaveBeenCalledWith("connect", { profileId: approved.id }));
+    expect(runAdmissionAction).toHaveBeenCalledTimes(1);
+  });
+
   it("requires system installation and activation before offering EAP Wi-Fi connection", async () => {
+    useAuthorizedWiFi("Soha-Staff");
     const pending = { supported: true, profiles: [{ id: "eap-1", siteId: "site-1", accessMedium: "wifi" as const, ssid: "Soha-Staff", adapterId: "wifi-1", state: "installation_required" as const, artifactPath: "/Users/example/Soha-EAP-test.mobileconfig" }], adapters: [{ id: "wifi-1", name: "en0", medium: "wifi" as const, macAddress: "02:00:00:00:00:01", enabled: true, linkUp: true }] };
     vi.mocked(getAdmissionStatus).mockResolvedValue(pending);
     await renderAppToHome();
@@ -998,6 +1038,7 @@ describe("desktop app", () => {
   });
 
   it("uses a transient TTLS admission password without caching it and clears it after failure", async () => {
+    useAuthorizedWiFi("Staff-password");
     const profile = { id: "ttls-1", siteId: "site-1", accessMedium: "wifi" as const, ssid: "Staff-password", adapterId: "wifi-1", state: "installed" as const, eapMethod: "ttls" as const, innerMethod: "pap" as const, credentialInteraction: "app-input" as const, supported: true };
     const status = { supported: true, profiles: [profile], adapters: [{ id: "wifi-1", name: "en0", medium: "wifi" as const, macAddress: "02:00:00:00:00:01", enabled: true, linkUp: true }] };
     vi.mocked(getAdmissionStatus).mockResolvedValue(status);
@@ -1021,6 +1062,7 @@ describe("desktop app", () => {
   });
 
   it("uses the system TTLS password prompt without collecting a password", async () => {
+    useAuthorizedWiFi("Staff-prompt");
     const status = { supported: true, profiles: [{ id: "ttls-prompt", siteId: "site-1", accessMedium: "wifi" as const, ssid: "Staff-prompt", adapterId: "wifi-1", state: "action_required" as const, eapMethod: "ttls" as const, innerMethod: "pap" as const, credentialInteraction: "system-prompt" as const, supported: true }], adapters: [{ id: "wifi-1", name: "en0", medium: "wifi" as const, macAddress: "02:00:00:00:00:01", enabled: true, linkUp: true }] };
     vi.mocked(getAdmissionStatus).mockResolvedValue(status);
     vi.mocked(runAdmissionAction).mockResolvedValueOnce(status);
@@ -1036,6 +1078,7 @@ describe("desktop app", () => {
   });
 
   it("does not offer unsupported TTLS admission while retaining precise removal", async () => {
+    useAuthorizedWiFi("Staff-password");
     const status = { supported: true, profiles: [{ id: "ttls-1", siteId: "site-1", accessMedium: "wifi" as const, ssid: "Staff-password", adapterId: "wifi-1", state: "installed" as const, eapMethod: "ttls" as const, innerMethod: "pap" as const, supported: false, unsupportedReason: "method_unsupported" }], adapters: [{ id: "wifi-1", name: "en0", medium: "wifi" as const, macAddress: "02:00:00:00:00:01", enabled: true, linkUp: true }] };
     vi.mocked(getAdmissionStatus).mockResolvedValue(status);
     await renderAppToHome();
@@ -1050,6 +1093,7 @@ describe("desktop app", () => {
   });
 
   it("requires a new explicit choice when the selected admission profile disappears", async () => {
+    useAuthorizedWiFi("Staff-A", "Staff-B");
     const first = { id: "eap-1", siteId: "site-1", accessMedium: "wifi" as const, ssid: "Staff-A", adapterId: "wifi-1", state: "installed" as const };
     const second = { ...first, id: "eap-2", ssid: "Staff-B" };
     const status = { supported: true, profiles: [first, second], adapters: [{ id: "wifi-1", name: "en0", medium: "wifi" as const, macAddress: "02:00:00:00:00:01", enabled: true, linkUp: true }] };
@@ -1060,13 +1104,13 @@ describe("desktop app", () => {
     expect(findButton(container, "连接 Wi-Fi")?.disabled).toBe(false);
     const refreshed = { ...status, profiles: [second] };
     vi.mocked(getAdmissionStatus).mockResolvedValue(refreshed);
-    await act(async () => client.setQueryData(["network-admission"], refreshed));
+    await act(async () => client.setQueriesData({ queryKey: ["network-admission"] }, refreshed));
     await waitForUI(() => expect(container.textContent).toContain("请重新选择"));
     expect(findButton(container, "连接 Wi-Fi")?.disabled).toBe(true);
     expect(findButton(container, "准备接入配置")?.disabled).toBe(true);
     expect(findButton(container, "移除本机配置")).toBeNull();
     expect(runAdmissionAction).not.toHaveBeenCalled();
-    await act(async () => client.setQueryData(["network-admission"], status));
+    await act(async () => client.setQueriesData({ queryKey: ["network-admission"] }, status));
     expect(findButton(container, "连接 Wi-Fi")?.disabled).toBe(true);
     expect(container.textContent).toContain("请重新选择");
     await chooseAdmissionProfile("Staff-B");
@@ -2265,6 +2309,18 @@ async function setInput(input: HTMLInputElement | null, value: string) {
     setValue?.call(input, value);
     input?.dispatchEvent(new Event("input", { bubbles: true }));
   });
+}
+
+function useAuthorizedWiFi(...ssids: string[]) {
+  vi.mocked(getNetworkAdmissionChoices).mockResolvedValue({
+    items: ssids.map((ssid) => ({
+      siteId: "site-1", siteName: "上海总部", accessMedium: "wifi", ssid,
+      authentication: "radius_802_1x", // gitleaks:allow -- public protocol enum
+      accessProfile: "full", policyVersion: 7,
+    })),
+    bootstrapNetworks: [],
+  });
+  vi.mocked(getNetworkLinkStatus).mockResolvedValue({ known: true, connected: false, dnsServers: [] });
 }
 
 async function chooseAdmissionProfile(ssid: string) {

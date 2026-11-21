@@ -31,3 +31,16 @@ func TestEndpointInventoryClassification(t *testing.T) {
 		t.Fatalf("parsed DNS servers = %#v", dns)
 	}
 }
+
+func TestAdmissionLinkObservationIgnoresLinkLocalAddresses(t *testing.T) {
+	address := func(ip string, size, bits int) net.Addr {
+		return &net.IPNet{IP: net.ParseIP(ip), Mask: net.CIDRMask(size, bits)}
+	}
+	local := []net.Addr{address("169.254.42.1", 16, 32), address("fe80::1", 64, 128)}
+	if hasRoutableLinkAddress(local) {
+		t.Fatal("link-local addresses should not prove a connection")
+	}
+	if !hasRoutableLinkAddress(append(local, address("fd00::1", 64, 128))) {
+		t.Fatal("IPv6-only connectivity must prevent automatic switching")
+	}
+}

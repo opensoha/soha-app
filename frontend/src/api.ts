@@ -16,7 +16,9 @@ import type {
   LoginOptions,
   NetworkAccessGrantInput,
   NetworkAccessGrantSecret,
+  NetworkBootstrapOption,
   NetworkConnectionOption,
+  NetworkConnectionOptions,
   PortalBootstrap,
   PortalLaunchDecision,
   Principal,
@@ -191,11 +193,17 @@ export function registerEndpointDevice(
   ).then(() => undefined);
 }
 
-export async function getNetworkConnectionOptions(
-  deviceId: string,
-): Promise<NetworkConnectionOption[]> {
+export async function getNetworkConnectionOptions(deviceId: string): Promise<NetworkConnectionOption[]> {
+  return (await readNetworkConnectionOptions(deviceId, false)).items;
+}
+
+export function getNetworkAdmissionChoices(deviceId: string): Promise<NetworkConnectionOptions> {
+  return readNetworkConnectionOptions(deviceId, true);
+}
+
+async function readNetworkConnectionOptions(deviceId: string, includeBootstrap: boolean): Promise<NetworkConnectionOptions> {
   const payload = await request(
-    `/network-access/connection-options?deviceId=${encodeURIComponent(deviceId)}`,
+    `/network-access/connection-options?deviceId=${encodeURIComponent(deviceId)}${includeBootstrap ? "&includeBootstrap=true" : ""}`,
   );
   if (
     !isRecord(payload) ||
@@ -204,7 +212,12 @@ export async function getNetworkConnectionOptions(
   ) {
     throw contractError();
   }
-  return payload.items as NetworkConnectionOption[];
+  const items = payload.items as NetworkConnectionOption[];
+  const bootstrapNetworks = includeBootstrap ? payload.bootstrapNetworks ?? [] : [];
+  if (!Array.isArray(bootstrapNetworks) || !bootstrapNetworks.every(isNetworkBootstrapOption)) {
+    throw contractError();
+  }
+  return { items, bootstrapNetworks: bootstrapNetworks as NetworkBootstrapOption[] };
 }
 
 export async function getProfile(): Promise<UserProfile> {
@@ -745,9 +758,32 @@ function isNetworkConnectionOption(
     )
   )
     return false;
+  if (
+    (value.accessNetworkId !== undefined &&
+      (typeof value.accessNetworkId !== "string" || value.accessNetworkId.length === 0)) ||
+    (value.networkName !== undefined &&
+      (typeof value.networkName !== "string" || value.networkName.length === 0)) ||
+    (value.recommendationPriority !== undefined &&
+      (!Number.isInteger(value.recommendationPriority) ||
+        (value.recommendationPriority as number) < 1 ||
+        (value.recommendationPriority as number) > 10_000)) ||
+    (value.autoConnect !== undefined && typeof value.autoConnect !== "boolean")
+  )
+    return false;
   return value.accessMedium === "wired"
     ? value.ssid === undefined
     : typeof value.ssid === "string" && value.ssid.length > 0;
+}
+
+function isNetworkBootstrapOption(value: unknown): value is NetworkBootstrapOption {
+  return (
+    isRecord(value) &&
+    hasStrings(value, ["accessNetworkId", "siteId", "name", "ssid"]) &&
+    Number.isInteger(value.priority) &&
+    (value.priority as number) >= 1 &&
+    (value.priority as number) <= 10_000 &&
+    typeof value.autoConnect === "boolean"
+  );
 }
 
 function isIdentityApplication(

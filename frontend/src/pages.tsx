@@ -45,7 +45,7 @@ import {
   getAuthProviders,
   getBootstrap,
   getLoginOptions,
-  getNetworkConnectionOptions,
+  getNetworkAdmissionChoices,
   getProfile,
   loginWithProvider,
   loginWithPassword,
@@ -54,6 +54,7 @@ import {
 } from "@/api";
 import { applyBranding } from "@/branding";
 import { type Text, useText } from "@/i18n";
+import { networkChoiceScope } from "@/network-choice-preferences";
 import {
   HostError,
   activateServerSwitch,
@@ -1076,12 +1077,15 @@ export function NetworkPage() {
 function NetworkAdmissionView({ medium }: { medium: NetworkConnectionMedium }) {
   const text = useText();
   const host = useAppStore((state) => state.host);
+  const userId = useAppStore((state) => state.session?.user.userId ?? state.bootstrap?.currentUser.userId ?? "");
   const deviceId = host?.app.deviceId || "";
+  const scope = networkChoiceScope(host?.serverUrl || "", deviceId, userId);
   const optionsQuery = useQuery({
-    queryKey: ["network-connection-options", deviceId],
-    queryFn: () => getNetworkConnectionOptions(deviceId),
+    queryKey: ["network-connection-options", scope],
+    queryFn: () => getNetworkAdmissionChoices(deviceId),
     enabled: Boolean(deviceId),
     retry: 1,
+    refetchInterval: 10_000,
   });
   const linkQuery = useQuery({
     queryKey: ["native-network-link"],
@@ -1089,13 +1093,16 @@ function NetworkAdmissionView({ medium }: { medium: NetworkConnectionMedium }) {
     refetchInterval: 10_000,
     retry: false,
   });
-  const options = optionsQuery.data || [];
+  const options = optionsQuery.data?.items || [];
 
   const activeLink = !linkQuery.isError && linkQuery.data?.connected && linkQuery.data.medium === medium
     ? linkQuery.data
     : null;
+  const linkStatus = linkQuery.isSuccess ? linkQuery.data : undefined;
+  const linkKnown = Boolean(linkStatus?.known || linkStatus?.connected || linkStatus?.demo);
   const linkState = activeLink ? text.networkConnected
-    : linkQuery.isError || linkQuery.isPending ? text.networkLinkUnknown : text.networkDisconnected;
+    : !linkKnown || (linkStatus?.connected && !linkStatus.medium)
+      ? text.networkLinkUnknown : text.networkDisconnected;
 
   return (
     <section className="network-connection-panel network-connection-workspace" aria-label={medium === "wifi" ? text.networkWifi : text.networkWired}>
@@ -1109,11 +1116,18 @@ function NetworkAdmissionView({ medium }: { medium: NetworkConnectionMedium }) {
         />
       ) : null}
       <AdmissionPanel
+        key={scope}
         medium={medium}
         linkState={linkState}
         link={activeLink}
         options={options}
-        enabled={host?.app.platform === "windows" || host?.app.platform === "darwin"}
+        bootstrapNetworks={optionsQuery.data?.bootstrapNetworks || []}
+        optionsStatus={optionsQuery.isPending ? "loading" : optionsQuery.isError ? "error" : "ready"}
+        linkKnownDisconnected={linkKnown && linkStatus?.connected === false}
+        hasHealthyLink={linkStatus?.connected === true}
+        scope={scope}
+        wiredConnectSupported={host?.app.platform === "windows" || host?.app.platform === "linux"}
+        enabled={["windows", "darwin", "linux"].includes(host?.app.platform ?? "")}
       />
     </section>
   );

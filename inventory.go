@@ -34,12 +34,45 @@ type EndpointNetworkInterface struct {
 }
 
 type NetworkLinkStatus struct {
+	Known         bool     `json:"known,omitempty"`
 	Connected     bool     `json:"connected"`
 	Medium        string   `json:"medium,omitempty"`
 	InterfaceName string   `json:"interfaceName,omitempty"`
 	IPAddress     string   `json:"ipAddress,omitempty"`
 	Gateway       string   `json:"gateway,omitempty"`
 	DNSServers    []string `json:"dnsServers"`
+}
+
+func observedNetworkAddress() NetworkLinkStatus {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return NetworkLinkStatus{DNSServers: []string{}}
+	}
+	status := NetworkLinkStatus{Known: true, DNSServers: []string{}}
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addresses, err := iface.Addrs()
+		if err != nil {
+			status.Known = false
+			continue
+		}
+		if hasRoutableLinkAddress(addresses) {
+			return NetworkLinkStatus{Known: true, Connected: true, DNSServers: []string{}}
+		}
+	}
+	return status
+}
+
+func hasRoutableLinkAddress(addresses []net.Addr) bool {
+	for _, addr := range addresses {
+		prefix, err := netip.ParsePrefix(addr.String())
+		if err == nil && prefix.Addr().Unmap().IsGlobalUnicast() {
+			return true
+		}
+	}
+	return false
 }
 
 func collectEndpointInventory(appVersion string, collectedAt time.Time) (string, EndpointDeviceReportedFacts) {

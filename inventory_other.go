@@ -9,5 +9,5 @@ func collectPlatformFacts() (string, EndpointDeviceReportedFacts) {
 }
 
 func collectNetworkLinkStatus() NetworkLinkStatus {
-	return NetworkLinkStatus{DNSServers: []string{}}
+	return observedNetworkAddress()
 }
