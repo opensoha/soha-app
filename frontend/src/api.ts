@@ -14,6 +14,7 @@ import type {
   IdentityApplication,
   LinkedIdentity,
   LoginOptions,
+  NasSessionObservation,
   NetworkAccessGrantInput,
   NetworkAccessGrantSecret,
   NetworkBootstrapOption,
@@ -201,9 +202,9 @@ export function getNetworkAdmissionChoices(deviceId: string): Promise<NetworkCon
   return readNetworkConnectionOptions(deviceId, true);
 }
 
-async function readNetworkConnectionOptions(deviceId: string, includeBootstrap: boolean): Promise<NetworkConnectionOptions> {
+async function readNetworkConnectionOptions(deviceId: string, includeAdmissionDetails: boolean): Promise<NetworkConnectionOptions> {
   const payload = await request(
-    `/network-access/connection-options?deviceId=${encodeURIComponent(deviceId)}${includeBootstrap ? "&includeBootstrap=true" : ""}`,
+    `/network-access/connection-options?deviceId=${encodeURIComponent(deviceId)}${includeAdmissionDetails ? "&includeBootstrap=true&includeNasSession=true" : ""}`,
   );
   if (
     !isRecord(payload) ||
@@ -213,7 +214,7 @@ async function readNetworkConnectionOptions(deviceId: string, includeBootstrap: 
     throw contractError();
   }
   const items = payload.items as NetworkConnectionOption[];
-  const bootstrapNetworks = includeBootstrap ? payload.bootstrapNetworks ?? [] : [];
+  const bootstrapNetworks = includeAdmissionDetails ? payload.bootstrapNetworks ?? [] : [];
   if (!Array.isArray(bootstrapNetworks) || !bootstrapNetworks.every(isNetworkBootstrapOption)) {
     throw contractError();
   }
@@ -767,12 +768,27 @@ function isNetworkConnectionOption(
       (!Number.isInteger(value.recommendationPriority) ||
         (value.recommendationPriority as number) < 1 ||
         (value.recommendationPriority as number) > 10_000)) ||
-    (value.autoConnect !== undefined && typeof value.autoConnect !== "boolean")
+    (value.autoConnect !== undefined && typeof value.autoConnect !== "boolean") ||
+    (value.nasSession !== undefined && !isNasSessionObservation(value.nasSession))
   )
     return false;
   return value.accessMedium === "wired"
     ? value.ssid === undefined
     : typeof value.ssid === "string" && value.ssid.length > 0;
+}
+
+function isNasSessionObservation(value: unknown): value is NasSessionObservation {
+  if (
+    !isRecord(value) ||
+    !["pending", "observed", "ended", "unknown"].includes(value.state as string)
+  )
+    return false;
+  return (
+    value.lastReceivedAt === undefined ||
+    (typeof value.lastReceivedAt === "string" &&
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value.lastReceivedAt) &&
+      Number.isFinite(Date.parse(value.lastReceivedAt)))
+  );
 }
 
 function isNetworkBootstrapOption(value: unknown): value is NetworkBootstrapOption {

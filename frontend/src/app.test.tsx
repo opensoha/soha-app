@@ -1037,6 +1037,43 @@ describe("desktop app", () => {
     expect(localStorage.getItem("soha-app-preferences") ?? "").not.toContain("mobileconfig");
   });
 
+  it("shows the last Core NAS observation independently of an unknown local link", async () => {
+    const approved = { id: "tls-ssid", siteId: "site-1", accessMedium: "wifi" as const, ssid: "Staff-TLS", adapterId: "wifi-1", state: "installed" as const, eapMethod: "tls" as const };
+    const admission = { supported: true, profiles: [approved], adapters: [{ id: "wifi-1", name: "en0", medium: "wifi" as const, macAddress: "02:00:00:00:00:01", enabled: true, linkUp: true }] };
+    vi.mocked(getAdmissionStatus).mockResolvedValue(admission);
+    const observedAt = "2026-11-22T08:30:00Z";
+    const option = { accessNetworkId: approved.id, siteId: "site-1", siteName: "上海总部", accessMedium: "wifi" as const, ssid: approved.ssid,
+      authentication: "radius_802_1x" as const, accessProfile: "full" as const, policyVersion: 7,
+      nasSession: { state: "observed" as const, lastReceivedAt: observedAt } };
+    vi.mocked(getNetworkAdmissionChoices).mockResolvedValue({ items: [option], bootstrapNetworks: [] });
+    vi.mocked(getNetworkLinkStatus).mockResolvedValue({ known: false, connected: false, dnsServers: [] });
+    const client = await renderAppToHome();
+    await clickNavigation("网络");
+    await chooseAdmissionProfile("Staff-TLS");
+    await waitForUI(() => expect(container.textContent).toContain("已观测到 NAS 会话"));
+    expect(container.textContent).toContain("本机链路");
+    const observation = container.querySelector('[aria-label="最近 Core/NAS 会话观测"]');
+    expect(observation?.textContent).toContain("已观测到 NAS 会话");
+    expect(observation?.querySelector("time")?.getAttribute("datetime")).toBe(observedAt);
+
+    const admissionKey = client.getQueryCache().findAll({ queryKey: ["network-admission"] })[0]?.queryKey;
+    expect(admissionKey).toBeDefined();
+    await act(async () => client.setQueryData(admissionKey!, { ...admission, profiles: [{ ...approved, eapMethod: "ttls" }] }));
+    await waitForUI(() => expect(observation?.textContent).toContain("TTLS 会话无法核对到本机"));
+    expect(observation?.querySelector("time")).toBeNull();
+    await act(async () => client.setQueryData(admissionKey!, admission));
+
+    const optionsKey = client.getQueryCache().findAll({ queryKey: ["network-connection-options"] })[0]?.queryKey;
+    expect(optionsKey).toBeDefined();
+    vi.mocked(getNetworkAdmissionChoices).mockResolvedValue({ items: [{ ...option, nasSession: { state: "ended" as const } }], bootstrapNetworks: [] });
+    await act(async () => client.setQueryData(optionsKey!, { items: [{ ...option, nasSession: { state: "ended" as const } }], bootstrapNetworks: [] }));
+    await waitForUI(() => expect(observation?.textContent).toContain("会话已结束或授权已失效"));
+    expect(observation?.querySelector("time")).toBeNull();
+    vi.mocked(getNetworkAdmissionChoices).mockResolvedValue({ items: [{ ...option, nasSession: undefined }], bootstrapNetworks: [] });
+    await act(async () => client.setQueryData(optionsKey!, { items: [{ ...option, nasSession: undefined }], bootstrapNetworks: [] }));
+    await waitForUI(() => expect(observation?.textContent).toContain("不可用"));
+  });
+
   it("uses a transient TTLS admission password without caching it and clears it after failure", async () => {
     useAuthorizedWiFi("Staff-password");
     const profile = { id: "ttls-1", siteId: "site-1", accessMedium: "wifi" as const, ssid: "Staff-password", adapterId: "wifi-1", state: "installed" as const, eapMethod: "ttls" as const, innerMethod: "pap" as const, credentialInteraction: "app-input" as const, supported: true };

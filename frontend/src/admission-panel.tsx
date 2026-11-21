@@ -100,6 +100,15 @@ export function AdmissionPanel({ medium, linkState, link, options, bootstrapNetw
   const needsPassword = selected?.eapMethod === "ttls";
   const needsAppPassword = needsPassword && selected?.credentialInteraction === "app-input";
   const systemPasswordPrompt = needsPassword && selected?.credentialInteraction === "system-prompt";
+  const nasSession = needsPassword ? undefined : selectedChoice?.option.nasSession;
+  const nasSessionStatus = needsPassword ? text.networkNasTtlsCannotConfirm : nasSession ? {
+    pending: text.networkNasPending,
+    observed: text.networkNasObserved,
+    ended: text.networkNasEnded,
+    unknown: text.networkNasUnknown,
+  }[nasSession.state] : text.networkNasUnavailable;
+  const nasReceivedAt = nasSession?.lastReceivedAt;
+  const nasReceivedLabel = nasReceivedAt ? new Date(nasReceivedAt).toLocaleString(chinese ? "zh-CN" : "en-US") : undefined;
   const methodSupported = methodSupportedFor(selected);
   const passwordBytes = new TextEncoder().encode(password).length;
   const validPassword = passwordBytes > 0 && passwordBytes <= 72;
@@ -218,6 +227,7 @@ export function AdmissionPanel({ medium, linkState, link, options, bootstrapNetw
       queryClient.setQueryData(["network-admission", scope], status);
       if (variables.action === "connect" || variables.action === "check") void queryClient.invalidateQueries({ queryKey: ["native-network-link"] });
       if (variables.action === "connect") {
+        void queryClient.invalidateQueries({ queryKey: ["network-connection-options", scope] });
         const profile = status.profiles.find((item) => item.id === variables.input?.profileId);
         if (status.demo) void message.success(demoConnectNote);
         else if (profile?.credentialInteraction === "system-prompt") void message.info(text.networkAdmissionSystemPasswordHelp);
@@ -336,6 +346,10 @@ export function AdmissionPanel({ medium, linkState, link, options, bootstrapNetw
         <div><dt>{text.networkGatewayAddress}</dt><dd>{link?.gateway || "—"}</dd></div>
         <div><dt>{text.networkDNSServers}</dt><dd>{link?.dnsServers.join(", ") || "—"}</dd></div>
       </dl>
+      {selectedChoice?.option.accessNetworkId && optionsReady ? <dl aria-label={text.networkNasSessionTitle} className="network-status-values">
+        <div><dt>{text.networkNasSessionTitle}</dt><dd aria-live="polite">{nasSessionStatus}</dd></div>
+        {nasReceivedAt ? <div><dt>{text.networkNasLastReceived}</dt><dd><time dateTime={nasReceivedAt}>{nasReceivedLabel}</time></dd></div> : null}
+      </dl> : null}
       {unsupported ? <Alert showIcon type="info" description={text.networkAdmissionUnsupported} /> : query.isError ? (
         <Alert showIcon type="warning" title={text.networkAdmissionFailed} action={<Button size="small" onClick={() => void query.refetch()}>{text.retry}</Button>} />
       ) : <>

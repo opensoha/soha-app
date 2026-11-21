@@ -231,6 +231,11 @@ export interface NetworkAccessGrantSecret {
 
 export type NetworkAccessMedium = 'wifi' | 'wired'
 
+export interface NasSessionObservation {
+  state: 'pending' | 'observed' | 'ended' | 'unknown'
+  lastReceivedAt?: string
+}
+
 export interface NetworkConnectionOption {
   siteId: string
   siteName: string
@@ -243,6 +248,7 @@ export interface NetworkConnectionOption {
   networkName?: string
   recommendationPriority?: number
   autoConnect?: boolean
+  nasSession?: NasSessionObservation
 }
 
 export interface NetworkBootstrapOption {
