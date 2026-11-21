@@ -1,22 +1,28 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   ApiError,
+  buildWebMyAppsURL,
   changePassword,
   createNetworkAccessGrant,
+  deployWorkspaceHostedApp,
   getBootstrap,
   getNetworkConnectionOptions,
   getPortalApplication,
   getPortalBootstrap,
+  getPortalColleagueApps,
   launchPortalApplication,
+  listMyHostedApps,
   loginWithProvider,
   loginWithPassword,
   logoutServer,
   registerEndpointDevice,
   requestResponse,
+  searchAppHostingAudience,
   setAccessToken,
   setPortalFavorite,
   setSessionListener,
   updateProfile,
+  validateExternalHostedAppURL,
 } from '@/api'
 import {
   checkForUpdates,
@@ -818,6 +824,148 @@ describe('API transport', () => {
     expect(JSON.parse(decodedRequestBody(init))).toEqual({
       url: 'https://soha.example.com/auth/browser-handoff/handoff-1',
     })
+  })
+
+  it('queries and strictly validates app-hosting portal catalog, audience candidates, owned apps, and workspace deployments', async () => {
+    const author = {
+      userId: 'user-author',
+      displayName: '张伟',
+      avatarUrl: 'https://soha.example.com/avatar/zhangwei.png',
+      teamNames: ['市场部'],
+    }
+    const hostedApp = {
+      id: 'hosted-1',
+      name: '排班小工具',
+      description: '运营组排班面板',
+      kind: 'static' as const,
+      dnsLabel: 'schedule-a1b2',
+      host: 'schedule-a1b2.apps.example.com',
+      url: 'https://schedule-a1b2.apps.example.com/',
+      spaFallback: true,
+      ownerUserId: 'user-author',
+      ownerProfile: author,
+      maintainerUserIds: [],
+      visibility: { mode: 'selected' as const, teamIds: ['team-ops'], userIds: ['user-2'] },
+      status: 'online' as const,
+      activeRevisionId: 'rev-1',
+      activeRevisionNumber: 1,
+      totalBytes: 2048,
+      routeGeneration: 3,
+      createdAt: '2026-11-21T01:00:00Z',
+      updatedAt: '2026-11-21T01:05:00Z',
+    }
+    const revision = {
+      id: 'rev-1',
+      appId: 'hosted-1',
+      revisionNumber: 1,
+      kind: 'static' as const,
+      status: 'ready' as const,
+      bundleSha256: 'a'.repeat(64),
+      fileCount: 3,
+      totalBytes: 2048,
+      spaFallback: true,
+      createdBy: 'user-author',
+      createdAt: '2026-11-21T01:05:00Z',
+    }
+    const catalog = {
+      items: [
+        {
+          id: hostedApp.id,
+          name: hostedApp.name,
+          description: hostedApp.description,
+          kind: hostedApp.kind,
+          dnsLabel: hostedApp.dnsLabel,
+          host: hostedApp.host,
+          url: hostedApp.url,
+          author,
+          updatedAt: hostedApp.updatedAt,
+        },
+      ],
+      authors: [{ ...author, visibleAppCount: 2 }],
+      myAppsCount: 1,
+      total: 1,
+    }
+    const candidates = {
+      users: [{ id: 'user-2', username: 'lisi', displayName: '李四', department: '财务部' }],
+      teams: [{ id: 'team-ops', name: '运营部', slug: 'ops' }],
+    }
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ data: catalog }))
+      .mockResolvedValueOnce(jsonResponse({ data: candidates }))
+      .mockResolvedValueOnce(jsonResponse({ data: { items: [hostedApp], total: 1 } }))
+      .mockResolvedValueOnce(jsonResponse({ data: { app: hostedApp, revision, created: true } }, 201))
+      .mockResolvedValueOnce(jsonResponse({ data: { app: hostedApp, revision: { ...revision, appId: 'other-app' }, created: true } }))
+    vi.stubGlobal('fetch', fetchMock)
+    setAccessToken('hosting-token')
+
+    await expect(
+      getPortalColleagueApps({ query: ' 张伟 ', kind: 'static', authorUserId: 'user-author', limit: 24, offset: 0 }),
+    ).resolves.toEqual(catalog)
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      '/api/v1/app-hosting/portal/apps?query=%E5%BC%A0%E4%BC%9F&kind=static&authorUserId=user-author&limit=24&offset=0',
+    )
+
+    await expect(searchAppHostingAudience(' 财务 ', 20)).resolves.toEqual(candidates)
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/v1/app-hosting/audience-candidates?query=%E8%B4%A2%E5%8A%A1&limit=20')
+
+    await expect(listMyHostedApps()).resolves.toEqual([hostedApp])
+    expect(fetchMock.mock.calls[2]?.[0]).toBe('/api/v1/app-hosting/apps?scope=mine&limit=100')
+
+    const deployPayload = {
+      name: '排班小工具',
+      spaFallback: true,
+      visibility: { mode: 'selected' as const, teamIds: ['team-ops'], userIds: ['user-2'] },
+      source: {
+        kind: 'personal_environment' as const,
+        sourcePath: 'dist',
+        assistantId: 'assistant-1',
+        environmentVersion: 4,
+      },
+      idempotencyKey: 'idem-123',
+    }
+    await expect(deployWorkspaceHostedApp(deployPayload)).resolves.toEqual({
+      app: hostedApp,
+      revision,
+      created: true,
+    })
+    expect(fetchMock.mock.calls[3]?.[0]).toBe('/api/v1/app-hosting/workspace-deployments')
+    expect(JSON.parse(decodedRequestBody(fetchMock.mock.calls[3]?.[1] as RequestInit))).toEqual(deployPayload)
+
+    // Rejects mismatched revision.appId receipt
+    await expect(deployWorkspaceHostedApp(deployPayload)).rejects.toMatchObject({
+      code: 'response_contract_mismatch',
+    })
+  })
+
+  it('validates external hosted app URLs and Web my-apps URLs against scheme and credential injection', () => {
+    expect(
+      validateExternalHostedAppURL('https://schedule-a1b2.apps.example.com/board?tab=1', 'https://soha.example.com'),
+    ).toBe('https://schedule-a1b2.apps.example.com/board?tab=1')
+
+    expect(
+      validateExternalHostedAppURL('http://schedule-a1b2.apps.localhost:8080/', 'http://127.0.0.1:8080'),
+    ).toBe('http://schedule-a1b2.apps.localhost:8080/')
+
+    expect(() =>
+      validateExternalHostedAppURL('http://schedule-a1b2.apps.example.com/', 'https://soha.example.com'),
+    ).toThrow()
+    expect(() =>
+      validateExternalHostedAppURL('http://schedule-a1b2.apps.example.com/', 'http://remote.example.com'),
+    ).toThrow()
+    expect(() => validateExternalHostedAppURL('javascript:alert(1)', 'https://soha.example.com')).toThrow()
+    expect(() => validateExternalHostedAppURL('file:///etc/passwd', 'https://soha.example.com')).toThrow()
+    expect(() =>
+      validateExternalHostedAppURL('https://user:secret@schedule.apps.example.com/', 'https://soha.example.com'),
+    ).toThrow()
+    expect(() => validateExternalHostedAppURL('/relative/path', 'https://soha.example.com')).toThrow()
+
+    expect(buildWebMyAppsURL('https://soha.example.com')).toBe('https://soha.example.com/portal/my-apps')
+    expect(buildWebMyAppsURL('http://localhost:8080')).toBe('http://localhost:8080/portal/my-apps')
+    expect(() => buildWebMyAppsURL('javascript:alert(1)')).toThrow()
+    expect(() => buildWebMyAppsURL('https://admin:pass@soha.example.com')).toThrow()
+    expect(() => buildWebMyAppsURL('http://soha.example.com')).toThrow()
   })
 })
 

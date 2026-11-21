@@ -47,14 +47,20 @@ import type { AssistantChatTask } from "./assistant-api";
 import type { TextAreaRef } from "antd/es/input/TextArea";
 import { ApiError } from "@/api";
 import {
+  buildArtifactHostingSource,
   isActiveRun,
   isCancellationPending,
+  isPublishablePersonalArtifact,
   isReadOnlyRun,
   isDurableRun,
   isTerminalRun,
   assistantApi,
   streamAssistant,
 } from "@/assistant-api";
+import {
+  WorkspaceAppPublishModal,
+  type WorkspaceAppPublishDraft,
+} from "@/assistant-app-publish";
 import { selectAssistantOwner, useAppStore } from "@/store";
 import { openBrowserURL } from "@/native/host";
 import { AssistantRuntimeAssembly, AssistantRuntimeProfileControl } from "./assistant-runtime-profile";
@@ -222,6 +228,8 @@ function AssistantWorkspace({ ordinary }: { ordinary: boolean }) {
     status: "checking" | "unavailable" | "saved" | "observed";
   }>>({});
   const [result, setResult] = useState<WorkbenchAnalysisArtifact>();
+  const [publishDraft, setPublishDraft] =
+    useState<WorkspaceAppPublishDraft | null>(null);
   const streams = useRef<Record<string, AbortController>>({});
   const runIds = useRef<Record<string, string>>({});
   const runMessageStates = useRef(new Map<string, "active" | "refreshed">());
@@ -1527,13 +1535,29 @@ function AssistantWorkspace({ ordinary }: { ordinary: boolean }) {
                   <Typography.Paragraph>
                     {entry.artifact.summary}
                   </Typography.Paragraph>
-                  <Space>
+                  <Space wrap>
                     <Button onClick={() => setResult(entry.artifact)}>
                       查看成果
                     </Button>
                     {entry.sessionId ? (
                       <Button onClick={() => openChat(entry.sessionId!)}>
                         打开对话
+                      </Button>
+                    ) : null}
+                    {bootstrap?.permissionSnapshot.permissionKeys.includes(
+                      "apphosting.apps.publish",
+                    ) && isPublishablePersonalArtifact(entry) ? (
+                      <Button
+                        onClick={() =>
+                          setPublishDraft({
+                            defaultName:
+                              entry.artifact.title || entry.artifact.kind,
+                            defaultDescription: entry.artifact.summary,
+                            source: buildArtifactHostingSource(entry),
+                          })
+                        }
+                      >
+                        发布为托管应用
                       </Button>
                     ) : null}
                   </Space>
@@ -1937,6 +1961,11 @@ function AssistantWorkspace({ ordinary }: { ordinary: boolean }) {
           </>
         ) : null}
       </Drawer>
+      <WorkspaceAppPublishModal
+        draft={publishDraft}
+        onClose={() => setPublishDraft(null)}
+        open={Boolean(publishDraft)}
+      />
     </section>
   );
 }

@@ -7,10 +7,17 @@ import type {
 import type {
   Announcement,
   AnnouncementInbox,
+  AppHostingAudienceCandidates,
   AuthProvider,
   Bootstrap,
   Branding,
   EndpointDeviceRegistrationInput,
+  HostedApp,
+  HostedAppKind,
+  HostedAppRevision,
+  HostedAppUserSummary,
+  HostedAppVisibilityApproval,
+  HostedAppVisibilityScope,
   IdentityApplication,
   LinkedIdentity,
   LoginOptions,
@@ -18,11 +25,16 @@ import type {
   NetworkAccessGrantSecret,
   NetworkConnectionOption,
   PortalBootstrap,
+  PortalHostedAppAuthorSummary,
+  PortalHostedAppCatalog,
+  PortalHostedAppItem,
   PortalLaunchDecision,
   Principal,
   ProfileUpdate,
   Session,
   UserProfile,
+  WorkspaceHostedAppDeploymentRequest,
+  WorkspaceHostedAppDeploymentResult,
 } from "@/types";
 import {
   startDesktopAuth,
@@ -363,6 +375,156 @@ export async function setPortalFavorite(
   const data = envelopeData(await request(path, { method: "POST" }));
   if (!isIdentityApplication(data)) throw contractError();
   return data as unknown as IdentityApplication;
+}
+
+export async function getPortalColleagueApps(params?: {
+  query?: string;
+  kind?: HostedAppKind;
+  authorUserId?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<PortalHostedAppCatalog> {
+  const searchParams = new URLSearchParams();
+  const query = params?.query?.trim();
+  const authorUserId = params?.authorUserId?.trim();
+  if (query) searchParams.set("query", query);
+  if (params?.kind) searchParams.set("kind", params.kind);
+  if (authorUserId) searchParams.set("authorUserId", authorUserId);
+  if (typeof params?.limit === "number")
+    searchParams.set("limit", String(params.limit));
+  if (typeof params?.offset === "number")
+    searchParams.set("offset", String(params.offset));
+  const suffix = searchParams.toString();
+  const data = envelopeData(
+    await request(`/app-hosting/portal/apps${suffix ? `?${suffix}` : ""}`),
+  );
+  if (!isPortalHostedAppCatalog(data)) throw contractError();
+  return data;
+}
+
+export async function searchAppHostingAudience(
+  query?: string,
+  limit?: number,
+): Promise<AppHostingAudienceCandidates> {
+  const searchParams = new URLSearchParams();
+  const trimmed = query?.trim();
+  if (trimmed) searchParams.set("query", trimmed);
+  if (typeof limit === "number") searchParams.set("limit", String(limit));
+  const suffix = searchParams.toString();
+  const data = envelopeData(
+    await request(
+      `/app-hosting/audience-candidates${suffix ? `?${suffix}` : ""}`,
+    ),
+  );
+  if (!isAppHostingAudienceCandidates(data)) throw contractError();
+  return data;
+}
+
+export async function listMyHostedApps(): Promise<HostedApp[]> {
+  const data = envelopeData(
+    await request("/app-hosting/apps?scope=mine&limit=100"),
+  );
+  if (
+    !isRecord(data) ||
+    !Array.isArray(data.items) ||
+    data.items.length > 200 ||
+    typeof data.total !== "number" ||
+    data.total < 0 ||
+    !data.items.every(isHostedApp)
+  ) {
+    throw contractError();
+  }
+  return data.items;
+}
+
+export async function deployWorkspaceHostedApp(
+  input: WorkspaceHostedAppDeploymentRequest,
+): Promise<WorkspaceHostedAppDeploymentResult> {
+  const idempotencyKey = input.idempotencyKey?.trim();
+  if (!idempotencyKey || idempotencyKey.length > 128) {
+    throw new ApiError(400, "invalid_argument", "Missing idempotency key");
+  }
+  const data = envelopeData(
+    await request("/app-hosting/workspace-deployments", {
+      method: "POST",
+      body: JSON.stringify({ ...input, idempotencyKey }),
+    }),
+  );
+  if (
+    !isWorkspaceHostedAppDeploymentResult(data) ||
+    (input.appId && data.app.id !== input.appId)
+  ) {
+    throw contractError();
+  }
+  return data;
+}
+
+export function validateExternalHostedAppURL(
+  rawUrl: string,
+  serverURL?: string,
+): string {
+  if (typeof rawUrl !== "string") {
+    throw new ApiError(400, "invalid_hosted_app_url", "Invalid hosted app URL");
+  }
+  const trimmed = rawUrl.trim();
+  if (!trimmed || trimmed.length > 4096 || /^[a-zA-Z][a-zA-Z\d+.-]*:/.test(trimmed) === false) {
+    throw new ApiError(400, "invalid_hosted_app_url", "Invalid hosted app URL");
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new ApiError(400, "invalid_hosted_app_url", "Invalid hosted app URL");
+  }
+  if (
+    parsed.username ||
+    parsed.password ||
+    !parsed.hostname ||
+    (parsed.protocol !== "https:" && parsed.protocol !== "http:")
+  ) {
+    throw new ApiError(400, "invalid_hosted_app_url", "Invalid hosted app URL");
+  }
+  if (parsed.protocol === "http:" && !isLocalDevelopmentHTTPServer(serverURL)) {
+    throw new ApiError(
+      400,
+      "invalid_hosted_app_url",
+      "Hosted app URL must use HTTPS",
+    );
+  }
+  const normalized = parsed.toString();
+  if (normalized.length > 4096) {
+    throw new ApiError(400, "invalid_hosted_app_url", "Invalid hosted app URL");
+  }
+  return normalized;
+}
+
+export function buildWebMyAppsURL(serverURL: string): string {
+  if (typeof serverURL !== "string") {
+    throw new ApiError(400, "invalid_server_url", "Invalid Soha server URL");
+  }
+  const trimmed = serverURL.trim();
+  if (!trimmed || trimmed.length > 2048 || !/^[a-zA-Z][a-zA-Z\d+.-]*:/.test(trimmed)) {
+    throw new ApiError(400, "invalid_server_url", "Invalid Soha server URL");
+  }
+  let server: URL;
+  try {
+    server = new URL(trimmed);
+  } catch {
+    throw new ApiError(400, "invalid_server_url", "Invalid Soha server URL");
+  }
+  if (
+    server.username ||
+    server.password ||
+    !server.hostname ||
+    server.search ||
+    server.hash ||
+    (server.pathname !== "" && server.pathname !== "/") ||
+    (server.protocol !== "https:" &&
+      !(server.protocol === "http:" && isLocalDevelopmentHostname(server.hostname)))
+  ) {
+    throw new ApiError(400, "invalid_server_url", "Invalid Soha server URL");
+  }
+  return new URL("/portal/my-apps", server.origin).toString();
 }
 
 async function request(
@@ -900,4 +1062,283 @@ export async function getVPNCurrentConnection(
   )
     throw contractError();
   return data as unknown as NetworkVPNConnectionView;
+}
+
+function isLocalDevelopmentHTTPServer(serverURL: string | undefined): boolean {
+  if (typeof serverURL !== "string") return false;
+  const trimmed = serverURL.trim();
+  if (!trimmed) return false;
+  try {
+    const server = new URL(trimmed);
+    if (
+      server.protocol !== "http:" ||
+      server.username ||
+      server.password ||
+      !server.hostname
+    ) {
+      return false;
+    }
+    return isLocalDevelopmentHostname(server.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function isLocalDevelopmentHostname(hostname: string): boolean {
+  const lower = hostname.toLowerCase();
+  if (
+    lower === "localhost" ||
+    lower.endsWith(".localhost") ||
+    lower.endsWith(".local") ||
+    lower.endsWith(".test") ||
+    lower === "[::1]" ||
+    lower === "::1"
+  ) {
+    return true;
+  }
+  const parts = lower.split(".");
+  return (
+    parts.length === 4 &&
+    parts[0] === "127" &&
+    parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255)
+  );
+}
+
+function isHostedAppKind(value: unknown): value is HostedAppKind {
+  return value === "static" || value === "dynamic";
+}
+
+function isStringList(value: unknown, maxItems = 200): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.length <= maxItems &&
+    value.every((item) => typeof item === "string")
+  );
+}
+
+function isOptionalString(value: unknown): boolean {
+  return value === undefined || typeof value === "string";
+}
+
+function hasNonEmptyStrings(
+  value: Record<string, unknown>,
+  keys: string[],
+): boolean {
+  return keys.every(
+    (key) => typeof value[key] === "string" && value[key].length > 0,
+  );
+}
+
+function isHostedAppVisibilityScope(
+  value: unknown,
+): value is HostedAppVisibilityScope {
+  return (
+    isRecord(value) &&
+    (value.mode === "private" ||
+      value.mode === "selected" ||
+      value.mode === "organization") &&
+    (value.userIds === undefined || isStringList(value.userIds)) &&
+    (value.teamIds === undefined || isStringList(value.teamIds))
+  );
+}
+
+function isHostedAppUserSummary(value: unknown): value is HostedAppUserSummary {
+  return (
+    isRecord(value) &&
+    typeof value.userId === "string" &&
+    value.userId.length > 0 &&
+    typeof value.displayName === "string" &&
+    value.displayName.length > 0 &&
+    isOptionalString(value.avatarUrl) &&
+    isStringList(value.teamNames, 50)
+  );
+}
+
+function isHostedAppVisibilityApproval(
+  value: unknown,
+): value is HostedAppVisibilityApproval {
+  return (
+    isRecord(value) &&
+    hasStrings(value, [
+      "id",
+      "appId",
+      "appName",
+      "appDnsLabel",
+      "requesterUserId",
+      "createdAt",
+      "updatedAt",
+    ]) &&
+    (value.requesterProfile === undefined ||
+      isHostedAppUserSummary(value.requesterProfile)) &&
+    isHostedAppVisibilityScope(value.currentVisibility) &&
+    isHostedAppVisibilityScope(value.requestedVisibility) &&
+    typeof value.baseRouteGeneration === "number" &&
+    value.baseRouteGeneration >= 1 &&
+    typeof value.policyVersion === "number" &&
+    value.policyVersion >= 1 &&
+    ["pending", "approved", "rejected", "withdrawn", "invalidated"].includes(
+      value.status as string,
+    ) &&
+    isOptionalString(value.reason) &&
+    isOptionalString(value.reviewerUserId) &&
+    isOptionalString(value.reviewComment) &&
+    isOptionalString(value.invalidationReason) &&
+    isOptionalString(value.decidedAt)
+  );
+}
+
+function isPortalHostedAppItem(value: unknown): value is PortalHostedAppItem {
+  return (
+    isRecord(value) &&
+    hasNonEmptyStrings(value, [
+      "id",
+      "name",
+      "dnsLabel",
+      "host",
+      "url",
+      "updatedAt",
+    ]) &&
+    typeof value.description === "string" &&
+    isHostedAppKind(value.kind) &&
+    isHostedAppUserSummary(value.author)
+  );
+}
+
+function isPortalHostedAppAuthorSummary(
+  value: unknown,
+): value is PortalHostedAppAuthorSummary {
+  return (
+    isRecord(value) &&
+    typeof value.userId === "string" &&
+    value.userId.length > 0 &&
+    typeof value.displayName === "string" &&
+    value.displayName.length > 0 &&
+    isOptionalString(value.avatarUrl) &&
+    isStringList(value.teamNames, 50) &&
+    typeof value.visibleAppCount === "number" &&
+    value.visibleAppCount >= 0
+  );
+}
+
+function isPortalHostedAppCatalog(
+  value: unknown,
+): value is PortalHostedAppCatalog {
+  return (
+    isRecord(value) &&
+    Array.isArray(value.items) &&
+    value.items.length <= 100 &&
+    value.items.every(isPortalHostedAppItem) &&
+    Array.isArray(value.authors) &&
+    value.authors.length <= 50 &&
+    value.authors.every(isPortalHostedAppAuthorSummary) &&
+    (value.selectedAuthor === undefined ||
+      isPortalHostedAppAuthorSummary(value.selectedAuthor)) &&
+    typeof value.myAppsCount === "number" &&
+    value.myAppsCount >= 0 &&
+    typeof value.total === "number" &&
+    value.total >= 0
+  );
+}
+
+function isAppHostingAudienceCandidates(
+  value: unknown,
+): value is AppHostingAudienceCandidates {
+  return (
+    isRecord(value) &&
+    Array.isArray(value.users) &&
+    value.users.length <= 200 &&
+    value.users.every(
+      (user) =>
+        isRecord(user) &&
+        hasNonEmptyStrings(user, ["id", "username", "displayName"]) &&
+        isOptionalString(user.department),
+    ) &&
+    Array.isArray(value.teams) &&
+    value.teams.length <= 200 &&
+    value.teams.every(
+      (team) =>
+        isRecord(team) &&
+        hasNonEmptyStrings(team, ["id", "name"]) &&
+        isOptionalString(team.slug),
+    )
+  );
+}
+
+function isHostedApp(value: unknown): value is HostedApp {
+  return (
+    isRecord(value) &&
+    hasNonEmptyStrings(value, [
+      "id",
+      "name",
+      "dnsLabel",
+      "host",
+      "url",
+      "ownerUserId",
+      "createdAt",
+      "updatedAt",
+    ]) &&
+    isOptionalString(value.description) &&
+    isHostedAppKind(value.kind) &&
+    typeof value.spaFallback === "boolean" &&
+    (value.ownerProfile === undefined ||
+      isHostedAppUserSummary(value.ownerProfile)) &&
+    isStringList(value.maintainerUserIds, 50) &&
+    (value.maintainers === undefined ||
+      (Array.isArray(value.maintainers) &&
+        value.maintainers.length <= 50 &&
+        value.maintainers.every(isHostedAppUserSummary))) &&
+    isHostedAppVisibilityScope(value.visibility) &&
+    (value.pendingVisibilityApproval === undefined ||
+      isHostedAppVisibilityApproval(value.pendingVisibilityApproval)) &&
+    ["draft", "online", "offline", "suspended_by_admin"].includes(
+      value.status as string,
+    ) &&
+    isOptionalString(value.suspendedReason) &&
+    isOptionalString(value.activeRevisionId) &&
+    (value.activeRevisionNumber === undefined ||
+      (typeof value.activeRevisionNumber === "number" &&
+        value.activeRevisionNumber >= 0)) &&
+    (value.totalBytes === undefined ||
+      (typeof value.totalBytes === "number" && value.totalBytes >= 0)) &&
+    typeof value.routeGeneration === "number" &&
+    value.routeGeneration >= 0
+  );
+}
+
+function isHostedAppRevision(value: unknown): value is HostedAppRevision {
+  return (
+    isRecord(value) &&
+    hasNonEmptyStrings(value, ["id", "appId", "createdBy", "createdAt"]) &&
+    typeof value.bundleSha256 === "string" &&
+    typeof value.revisionNumber === "number" &&
+    value.revisionNumber >= 1 &&
+    isOptionalString(value.description) &&
+    isHostedAppKind(value.kind) &&
+    ["uploading", "validating", "ready", "failed", "evicted"].includes(
+      value.status as string,
+    ) &&
+    typeof value.fileCount === "number" &&
+    value.fileCount >= 0 &&
+    typeof value.totalBytes === "number" &&
+    value.totalBytes >= 0 &&
+    typeof value.spaFallback === "boolean" &&
+    isOptionalString(value.storageIntegrationId) &&
+    isOptionalString(value.storagePrefix) &&
+    isOptionalString(value.failureStage) &&
+    isOptionalString(value.failureReason) &&
+    isOptionalString(value.idempotencyKey) &&
+    isOptionalString(value.activatedAt)
+  );
+}
+
+function isWorkspaceHostedAppDeploymentResult(
+  value: unknown,
+): value is WorkspaceHostedAppDeploymentResult {
+  return (
+    isRecord(value) &&
+    isHostedApp(value.app) &&
+    isHostedAppRevision(value.revision) &&
+    typeof value.created === "boolean" &&
+    value.revision.appId === value.app.id
+  );
 }

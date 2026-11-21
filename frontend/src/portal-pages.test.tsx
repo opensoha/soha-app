@@ -11,28 +11,34 @@ import {
   ApiError,
   getPortalApplication,
   getPortalBootstrap,
+  getPortalColleagueApps,
   launchPortalApplication,
   setPortalFavorite,
 } from '@/api'
 import { openBrowserURL } from '@/native/host'
 import { useAppStore } from '@/store'
 
-vi.mock('@/api', () => ({
-  ApiError: class ApiError extends Error {
-    constructor(
-      readonly status: number,
-      readonly code: string,
-      message: string,
-      readonly requestId?: string,
-    ) {
-      super(message)
-    }
-  },
-  getPortalApplication: vi.fn(),
-  getPortalBootstrap: vi.fn(),
-  launchPortalApplication: vi.fn(),
-  setPortalFavorite: vi.fn(),
-}))
+vi.mock('@/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api')>()
+  return {
+    ...actual,
+    ApiError: class ApiError extends Error {
+      constructor(
+        readonly status: number,
+        readonly code: string,
+        message: string,
+        readonly requestId?: string,
+      ) {
+        super(message)
+      }
+    },
+    getPortalApplication: vi.fn(),
+    getPortalBootstrap: vi.fn(),
+    getPortalColleagueApps: vi.fn(),
+    launchPortalApplication: vi.fn(),
+    setPortalFavorite: vi.fn(),
+  }
+})
 
 vi.mock('@/native/host', () => ({ openBrowserURL: vi.fn() }))
 
@@ -129,6 +135,12 @@ beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(getPortalBootstrap).mockResolvedValue(bootstrap)
   vi.mocked(getPortalApplication).mockResolvedValue(application)
+  vi.mocked(getPortalColleagueApps).mockResolvedValue({
+    items: [],
+    authors: [],
+    myAppsCount: 0,
+    total: 0,
+  })
   vi.mocked(setPortalFavorite).mockResolvedValue({ ...application, favorite: true })
   vi.mocked(launchPortalApplication).mockResolvedValue({
     application,
@@ -139,6 +151,7 @@ beforeEach(() => {
   })
   vi.mocked(openBrowserURL).mockResolvedValue(undefined)
   useAppStore.setState({
+    bootstrap: null,
     host: {
       serverUrl: 'https://soha.example.com',
       configurationSource: 'saved',
@@ -341,5 +354,200 @@ describe('desktop provider portal', () => {
     expect(container.textContent).toContain('proxy')
     expect(container.textContent).toContain('2026-08-31T00:59:00Z')
     expect(container.textContent).toContain('default')
+  })
+
+  it('shows Web my-apps shortcut when permitted or myAppsCount > 0 and opens safe Web URL', async () => {
+    vi.mocked(getPortalColleagueApps).mockResolvedValue({
+      items: [],
+      authors: [],
+      myAppsCount: 2,
+      total: 0,
+    })
+
+    const container = await renderPortal()
+    await waitForText(container, '我的作品 (2)')
+
+    const myAppsButton = container.querySelector<HTMLButtonElement>('button[aria-label="我的作品"]')
+    expect(myAppsButton).not.toBeNull()
+    await act(async () => myAppsButton?.click())
+
+    await vi.waitFor(() =>
+      expect(openBrowserURL).toHaveBeenCalledWith('https://soha.example.com/portal/my-apps'),
+    )
+  })
+
+  it('browses colleague works, distinguishes same-name authors by department, drills into author works, and validates external URLs', async () => {
+    const zhangMarket = {
+      userId: 'user-zhang-market',
+      displayName: '张伟',
+      teamNames: ['市场部'],
+      visibleAppCount: 2,
+    }
+    const zhangFinance = {
+      userId: 'user-zhang-finance',
+      displayName: '张伟',
+      teamNames: ['财务部'],
+      visibleAppCount: 1,
+    }
+    const scheduleTool = {
+      id: 'hosted-schedule',
+      name: '市场排班看板',
+      description: '大促活动排班与值班日历',
+      kind: 'static' as const,
+      dnsLabel: 'schedule-1a2b',
+      host: 'schedule-1a2b.apps.example.com',
+      url: 'https://schedule-1a2b.apps.example.com/',
+      author: {
+        userId: zhangMarket.userId,
+        displayName: zhangMarket.displayName,
+        teamNames: zhangMarket.teamNames,
+      },
+      updatedAt: '2026-11-21T03:00:00Z',
+    }
+    const unsafeTool = {
+      ...scheduleTool,
+      id: 'hosted-unsafe',
+      name: 'Unsafe Tool',
+      kind: 'dynamic' as const,
+      url: 'javascript:alert(1)',
+    }
+
+    vi.mocked(getPortalColleagueApps).mockImplementation(async (params) => {
+      if (params?.authorUserId === 'user-zhang-market') {
+        return {
+          items: [scheduleTool],
+          authors: [],
+          selectedAuthor: zhangMarket,
+          myAppsCount: 0,
+          total: 1,
+        }
+      }
+      if (params?.kind === 'dynamic') {
+        return {
+          items: [unsafeTool],
+          authors: [],
+          myAppsCount: 0,
+          total: 1,
+        }
+      }
+      if (params?.query === '张伟') {
+        return {
+          items: [scheduleTool],
+          authors: [zhangMarket, zhangFinance],
+          myAppsCount: 0,
+          total: 1,
+        }
+      }
+      return {
+        items: [scheduleTool],
+        authors: [],
+        myAppsCount: 0,
+        total: 1,
+      }
+    })
+
+    const container = await renderPortal()
+    await waitForText(container, 'Soha Console')
+
+    const colleagueTab = [...container.querySelectorAll<HTMLElement>('.ant-segmented-item')].find(
+      (item) => item.textContent?.includes('同事作品'),
+    )
+    await act(async () => colleagueTab?.click())
+    await waitForText(container, '市场排班看板')
+    expect(container.textContent).toContain('大促活动排班与值班日历')
+    expect(container.textContent).toContain('静态页面')
+    expect(container.textContent).toContain('市场部')
+
+    // Search author name to display disambiguated author cards
+    const search = container.querySelector<HTMLInputElement>(
+      'input[aria-label="搜索作品名称或发布者姓名"]',
+    )
+    await act(async () => {
+      if (!search) return
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(search, '张伟')
+      search.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await waitForText(container, '财务部')
+    expect(container.textContent).toContain('2 个可见作品')
+    expect(container.textContent).toContain('1 个可见作品')
+
+    // Drill into 市场部 张伟's author view
+    const marketAuthorCard = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="张伟 市场部"]',
+    )
+    expect(marketAuthorCard).not.toBeNull()
+    await act(async () => marketAuthorCard?.click())
+    await waitForText(container, '返回同事作品')
+    expect(getPortalColleagueApps).toHaveBeenCalledWith(
+      expect.objectContaining({ authorUserId: 'user-zhang-market' }),
+    )
+
+    // Open safe HTTPS hosted app in system browser
+    const openSchedule = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="打开 市场排班看板"]',
+    )
+    await act(async () => openSchedule?.click())
+    await vi.waitFor(() =>
+      expect(openBrowserURL).toHaveBeenCalledWith('https://schedule-1a2b.apps.example.com/'),
+    )
+
+    // Exit author view and switch kind filter to dynamic (unsafe URL must be rejected!)
+    vi.mocked(openBrowserURL).mockClear()
+    const backBtn = [...container.querySelectorAll('button')].find((btn) =>
+      btn.textContent?.includes('返回同事作品'),
+    )
+    await act(async () => backBtn?.click())
+    const dynamicBtn = [...container.querySelectorAll('button')].find(
+      (btn) => btn.textContent === '交互工具',
+    )
+    await act(async () => dynamicBtn?.click())
+    await waitForText(container, 'Unsafe Tool')
+
+    const openUnsafe = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="打开 Unsafe Tool"]',
+    )
+    await act(async () => openUnsafe?.click())
+    expect(openBrowserURL).not.toHaveBeenCalled()
+  })
+
+  it('renders colleague works empty guidance and error retry states', async () => {
+    let failStaticOnce = true
+    vi.mocked(getPortalColleagueApps).mockImplementation(async (params) => {
+      if (params?.kind === 'static' && failStaticOnce) {
+        failStaticOnce = false
+        throw new Error('catalog down')
+      }
+      return { items: [], authors: [], myAppsCount: 0, total: 0 }
+    })
+
+    const container = await renderPortal()
+    await waitForText(container, 'Soha Console')
+
+    const colleagueTab = [...container.querySelectorAll<HTMLElement>('.ant-segmented-item')].find(
+      (item) => item.textContent?.includes('同事作品'),
+    )
+    await act(async () => colleagueTab?.click())
+
+    // Trigger filter so a new colleague query runs and hits the error mock, then retries to empty state
+    const staticBtn = [...container.querySelectorAll('button')].find(
+      (btn) => btn.textContent === '静态页面',
+    )
+    await act(async () => staticBtn?.click())
+    await waitForText(container, '无法加载同事作品')
+
+    const retryBtn = [...container.querySelectorAll('button')].find(
+      (btn) => btn.textContent?.replace(/\s+/g, '') === '重试',
+    )
+    expect(retryBtn).toBeDefined()
+    await act(async () => retryBtn?.click())
+    await waitForText(container, '没有匹配的同事作品')
+
+    const allBtn = [...container.querySelectorAll('button')].find(
+      (btn) => btn.textContent?.replace(/\s+/g, '') === '全部',
+    )
+    expect(allBtn).toBeDefined()
+    await act(async () => allBtn?.click())
+    await waitForText(container, '暂无可见的同事作品')
+    expect(container.textContent).toContain('soha host deploy')
   })
 })

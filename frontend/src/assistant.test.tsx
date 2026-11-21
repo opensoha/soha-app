@@ -2122,3 +2122,106 @@ it("preserves the recent-list approval lock when the verified detail omits activ
   });
   await vi.waitFor(() => expect(composerInput(element).disabled).toBe(false));
 });
+
+it("publishes a static report artifact from results directly via workspace-deployments without sending chat messages", async () => {
+  const originalFetch = globalThis.fetch;
+  const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.startsWith("/api/v1/app-hosting/apps")) {
+      return new Response(JSON.stringify({ data: { items: [], total: 0 } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (url === "/api/v1/app-hosting/workspace-deployments") {
+      return new Response(
+        JSON.stringify({
+          data: {
+            created: true,
+            app: {
+              id: "hosted-art-1",
+              name: "旁聊直接生成的报告",
+              kind: "static",
+              dnsLabel: "report-1-x9y8",
+              host: "report-1-x9y8.apps.example.com",
+              url: "https://report-1-x9y8.apps.example.com/",
+              spaFallback: false,
+              ownerUserId: "user-1",
+              maintainerUserIds: [],
+              visibility: { mode: "private" },
+              status: "online",
+              routeGeneration: 1,
+              createdAt: "2026-11-21T00:00:00Z",
+              updatedAt: "2026-11-21T00:00:00Z",
+            },
+            revision: {
+              id: "rev-art-1",
+              appId: "hosted-art-1",
+              revisionNumber: 1,
+              kind: "static",
+              status: "ready",
+              bundleSha256: "c".repeat(64),
+              fileCount: 1,
+              totalBytes: 512,
+              spaFallback: false,
+              createdBy: "user-1",
+              createdAt: "2026-11-21T00:00:00Z",
+            },
+          },
+        }),
+        { status: 201, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    throw new Error(`unexpected fetch: ${init?.method ?? "GET"} ${url}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  try {
+    const element = await render(true, ["apphosting.apps.publish"]);
+    await click("成果");
+    await waitForAssistantText(element, "旁聊直接生成的报告");
+    await click("发布为托管应用");
+
+    const nameInput = document.body.querySelector<HTMLInputElement>(
+      'input[aria-label="作品名称"]',
+    );
+    expect(nameInput?.value).toBe("旁聊直接生成的报告");
+
+    await click("立即发布");
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain(
+        "https://report-1-x9y8.apps.example.com/",
+      ),
+    );
+
+    const deployCall = fetchMock.mock.calls.find(
+      ([url]) => String(url) === "/api/v1/app-hosting/workspace-deployments",
+    );
+    expect(deployCall).toBeDefined();
+    const body = JSON.parse(String(deployCall?.[1]?.body || "{}"));
+    expect(body).toMatchObject({
+      name: "旁聊直接生成的报告",
+      visibility: { mode: "private" },
+      source: {
+        kind: "conversation_artifact",
+        sessionId: "side",
+        artifactId: "message:side:0",
+      },
+    });
+    expect(body.idempotencyKey).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(streamAssistant).not.toHaveBeenCalled();
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+it("hides artifact publish button when user lacks apphosting.apps.publish", async () => {
+  const element = await render(true, []);
+  await click("成果");
+  await waitForAssistantText(element, "旁聊直接生成的报告");
+  expect(
+    [...element.querySelectorAll("button")].some(
+      (btn) => btn.textContent?.trim() === "发布为托管应用",
+    ),
+  ).toBe(false);
+});

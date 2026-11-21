@@ -147,7 +147,8 @@ vi.mock("@/native/host", () => ({
   openBrowserURL: vi.fn(),
 }));
 
-vi.mock("@/api", () => {
+vi.mock("@/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api")>();
   const user = {
     userId: "user-1",
     userName: "admin",
@@ -158,6 +159,7 @@ vi.mock("@/api", () => {
     tags: [],
   };
   return {
+    ...actual,
     ApiError: class ApiError extends Error {
       constructor(
         readonly status: number,
@@ -199,6 +201,14 @@ vi.mock("@/api", () => {
     changePassword: vi.fn(),
     getPortalApplication: vi.fn(),
     getPortalBootstrap: vi.fn(),
+    getPortalColleagueApps: vi
+      .fn()
+      .mockResolvedValue({ items: [], authors: [], myAppsCount: 0, total: 0 }),
+    searchAppHostingAudience: vi
+      .fn()
+      .mockResolvedValue({ users: [], teams: [] }),
+    listMyHostedApps: vi.fn().mockResolvedValue([]),
+    deployWorkspaceHostedApp: vi.fn(),
     launchPortalApplication: vi.fn(),
     setPortalFavorite: vi.fn(),
   };
