@@ -202,6 +202,65 @@ it("publishes a workspace directory directly via server-side bundling and displa
   await click(button("复制链接"));
   expect(writeText).toHaveBeenCalledWith("https://schedule-tool-a1b2.apps.example.com/");
 });
+it("queues a dynamic workspace deployment without exposing a live link", async () => {
+  setWorkspaceStore(["observe.ai.chat", "apphosting.apps.publish"]);
+  const timestamp = "2026-11-21T00:00:00Z";
+  vi.mocked(deployWorkspaceHostedApp).mockResolvedValue({
+    created: true,
+    app: {
+      id: "hosted-dynamic",
+      name: "forms",
+      kind: "dynamic",
+      dnsLabel: "forms-a1b2",
+      host: "forms-a1b2.apps.example.com",
+      url: "https://forms-a1b2.apps.example.com/",
+      spaFallback: false,
+      ownerUserId: "user-one",
+      maintainerUserIds: [],
+      visibility: { mode: "private" },
+      status: "draft",
+      routeGeneration: 1,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    },
+    revision: {
+      id: "rev-queued",
+      appId: "hosted-dynamic",
+      revisionNumber: 1,
+      kind: "dynamic",
+      status: "validating",
+      bundleSha256: "b".repeat(64),
+      fileCount: 2,
+      totalBytes: 256,
+      spaFallback: false,
+      createdBy: "user-one",
+      createdAt: timestamp,
+    },
+  });
+
+  await open();
+  await click(Array.from(document.querySelectorAll<HTMLElement>('[role="tab"]')).find(e => e.textContent === "发布应用")!);
+  const pathInput = document.querySelector<HTMLInputElement>('input[aria-label="工作空间相对路径"]')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(pathInput, "forms");
+    pathInput.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await click(button("发布为托管应用"));
+  const dynamicOption = Array.from(document.querySelectorAll<HTMLElement>(".ant-segmented-item")).find(
+    (item) => item.textContent === "动态 HTTP 应用",
+  )!;
+  await click(dynamicOption);
+  await click(button("立即发布"));
+
+  expect(deployWorkspaceHostedApp).toHaveBeenCalledOnce();
+  const [request] = vi.mocked(deployWorkspaceHostedApp).mock.calls[0];
+  expect(request.kind).toBe("dynamic");
+  expect(request.spaFallback).toBeUndefined();
+  expect(request.source).toMatchObject({ kind: "personal_environment", sourcePath: "forms" });
+  expect(document.body.textContent).toContain("已提交构建，版本就绪后会自动上线");
+  expect(document.body.textContent).not.toContain("https://forms-a1b2.apps.example.com/");
+});
+
 it("updates an existing hosted app, filters non-deployable apps, and supports collaborator update without visibility/name mutation", async () => {
   setWorkspaceStore(["observe.ai.chat", "apphosting.apps.publish"]);
   const existingApp = {

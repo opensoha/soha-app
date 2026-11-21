@@ -18,6 +18,7 @@ import {
 } from "antd";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  buildWebMyAppsURL,
   deployWorkspaceHostedApp,
   listMyHostedApps,
   searchAppHostingAudience,
@@ -30,6 +31,7 @@ import type {
   AppHostingAudienceTeam,
   AppHostingAudienceUser,
   HostedApp,
+  HostedAppKind,
   HostedAppVisibilityInput,
   HostedAppVisibilityMode,
   WorkspaceHostedAppDeploymentRequest,
@@ -78,6 +80,7 @@ export function WorkspaceAppPublishModal({
 
   const [mode, setMode] = useState<"create" | "update">("create");
   const [selectedAppId, setSelectedAppId] = useState("");
+  const [newKind, setNewKind] = useState<HostedAppKind>("static");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [spaFallback, setSpaFallback] = useState(false);
@@ -102,6 +105,7 @@ export function WorkspaceAppPublishModal({
     if (!open || !draft) return;
     setMode("create");
     setSelectedAppId("");
+    setNewKind("static");
     setName(draft.defaultName?.trim() || "");
     setDescription(draft.defaultDescription?.trim() || "");
     setSpaFallback(false);
@@ -160,9 +164,11 @@ export function WorkspaceAppPublishModal({
     () =>
       (myAppsQuery.data || []).filter(
         (item) =>
-          item.status !== "offline" && item.status !== "suspended_by_admin",
+          item.status !== "offline" &&
+          item.status !== "suspended_by_admin" &&
+          (draft?.source.kind === "personal_environment" || item.kind === "static"),
       ),
-    [myAppsQuery.data],
+    [draft?.source.kind, myAppsQuery.data],
   );
 
   const selectedExistingApp = useMemo<HostedApp | undefined>(
@@ -175,6 +181,7 @@ export function WorkspaceAppPublishModal({
     selectedExistingApp.ownerUserId === currentUserId;
   const canEditMetadataAndVisibility =
     mode === "create" || isSelectedAppOwner;
+  const dynamic = (mode === "create" ? newKind : selectedExistingApp?.kind) === "dynamic";
 
   const selectExistingApp = (appId: string) => {
     setSelectedAppId(appId);
@@ -235,7 +242,9 @@ export function WorkspaceAppPublishModal({
       setLocalError("");
       void queryClient.invalidateQueries({ queryKey: ["app-hosting", "my-apps"] });
       void queryClient.invalidateQueries({ queryKey: ["portal", "colleague-apps"] });
-      onPublished?.(result);
+      if (result.revision.status === "ready" && result.app.status === "online") {
+        onPublished?.(result);
+      }
     },
     onError: (error) => {
       setLocalError(error instanceof Error ? error.message : "发布失败");
@@ -285,7 +294,7 @@ export function WorkspaceAppPublishModal({
         ? {
             name: trimmedName,
             ...(trimmedDescription ? { description: trimmedDescription } : {}),
-            spaFallback,
+            ...(dynamic ? { kind: "dynamic" as const } : { spaFallback }),
             visibility,
             ...(visibilityMode === "organization" && trimmedReason
               ? { visibilityReason: trimmedReason }
@@ -298,7 +307,7 @@ export function WorkspaceAppPublishModal({
             ...(isSelectedAppOwner
               ? { description: trimmedDescription }
               : {}),
-            spaFallback,
+            ...(!dynamic ? { spaFallback } : {}),
             ...(includeVisibility ? { visibility } : {}),
             ...(includeVisibility &&
             visibilityMode === "organization" &&
@@ -368,6 +377,16 @@ export function WorkspaceAppPublishModal({
 
   const pendingApproval =
     receipt?.app.pendingVisibilityApproval?.status === "pending";
+  const isReady = receipt?.revision.status === "ready" && receipt.app.status === "online";
+  const buildFailed = receipt?.revision.status === "failed";
+
+  const openMyApps = async () => {
+    try {
+      await openBrowserURL(buildWebMyAppsURL(serverURL || ""));
+    } catch {
+      void message.error(text.portalLaunchFailed);
+    }
+  };
 
   return (
     <Modal
@@ -378,16 +397,18 @@ export function WorkspaceAppPublishModal({
       footer={
         receipt ? (
           <Space wrap>
-            <Button icon={<CopyOutlined />} onClick={() => void handleCopyPublishedURL()}>
-              {text.publishCopyLink}
-            </Button>
-            <Button
-              icon={<LinkOutlined />}
-              onClick={handleOpenPublishedURL}
-              type="primary"
-            >
-              {text.publishOpenInBrowser}
-            </Button>
+            {isReady ? (
+              <>
+                <Button icon={<CopyOutlined />} onClick={() => void handleCopyPublishedURL()}>
+                  {text.publishCopyLink}
+                </Button>
+                <Button icon={<LinkOutlined />} onClick={handleOpenPublishedURL} type="primary">
+                  {text.publishOpenInBrowser}
+                </Button>
+              </>
+            ) : (
+              <Button onClick={() => void openMyApps()}>{text.publishViewRevisions}</Button>
+            )}
             <Button onClick={onClose}>{text.publishDone}</Button>
           </Space>
         ) : undefined
@@ -405,9 +426,15 @@ export function WorkspaceAppPublishModal({
           <Alert
             showIcon
             title={
-              receipt.created ? text.publishSuccessCreated : text.publishSuccessUpdated
+              buildFailed
+                ? text.publishBuildFailed
+                : !isReady
+                  ? text.publishBuildAccepted
+                  : receipt.created
+                    ? text.publishSuccessCreated
+                    : text.publishSuccessUpdated
             }
-            type="success"
+            type={buildFailed ? "error" : isReady ? "success" : "info"}
           />
           {pendingApproval ? (
             <Alert
@@ -421,9 +448,11 @@ export function WorkspaceAppPublishModal({
             <Tag style={{ marginInlineStart: 8 }}>
               v{receipt.revision.revisionNumber}
             </Tag>
-            <Typography.Paragraph code style={{ marginBlock: "8px 0" }}>
-              {receipt.app.url}
-            </Typography.Paragraph>
+            {isReady ? (
+              <Typography.Paragraph code style={{ marginBlock: "8px 0" }}>
+                {receipt.app.url}
+              </Typography.Paragraph>
+            ) : null}
           </div>
         </Space>
       ) : (
@@ -515,29 +544,46 @@ export function WorkspaceAppPublishModal({
             </>
           ) : null}
 
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 12,
-            }}
-          >
-            <div>
-              <Typography.Text>{text.publishSpaFallback}</Typography.Text>
-              <div>
-                <Typography.Text style={{ fontSize: 12 }} type="secondary">
-                  {text.publishSpaFallbackHelp}
-                </Typography.Text>
-              </div>
-            </div>
-            <Switch
-              aria-label={text.publishSpaFallback}
-              checked={spaFallback}
+          {mode === "create" && draft?.source.kind === "personal_environment" ? (
+            <Segmented
+              aria-label={text.publishAppKind}
+              value={newKind}
               disabled={deployMutation.isPending}
-              onChange={setSpaFallback}
+              options={[
+                { label: text.publishStaticKind, value: "static" },
+                { label: text.publishDynamicKind, value: "dynamic" },
+              ]}
+              onChange={(kind: HostedAppKind) => setNewKind(kind)}
             />
-          </div>
+          ) : null}
+
+          {dynamic ? (
+            <Typography.Text type="secondary">{text.publishDynamicManifest}</Typography.Text>
+          ) : (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+              }}
+            >
+              <div>
+                <Typography.Text>{text.publishSpaFallback}</Typography.Text>
+                <div>
+                  <Typography.Text style={{ fontSize: 12 }} type="secondary">
+                    {text.publishSpaFallbackHelp}
+                  </Typography.Text>
+                </div>
+              </div>
+              <Switch
+                aria-label={text.publishSpaFallback}
+                checked={spaFallback}
+                disabled={deployMutation.isPending}
+                onChange={setSpaFallback}
+              />
+            </div>
+          )}
 
           {canEditMetadataAndVisibility ? (
             <div>

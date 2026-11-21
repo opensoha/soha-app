@@ -609,6 +609,7 @@ export interface WorkspaceHostedAppSource {
 
 export interface WorkspaceHostedAppDeploymentRequest {
   appId?: string
+  kind?: HostedAppKind
   name?: string
   slug?: string
   description?: string
