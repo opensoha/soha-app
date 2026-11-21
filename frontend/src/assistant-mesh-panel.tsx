@@ -74,9 +74,11 @@ function audienceValid(visibility: Visibility, teams: string[], projects: string
     : false;
 }
 
-function lifetimeValid(kind: "experience_card" | "work_pulse", value: number) {
-  return kind === "work_pulse" ? value >= 1 && value <= 336 : value >= 1 && value <= 3650;
+function experienceLifetimeValid(value: number) {
+  return value >= 1 && value <= 3650;
 }
+
+const WORK_PULSE_MAX_HOURS_FALLBACK = 90 * 24;
 
 function showStatus(inquiry: MeshInquiry) {
   return ["processing", "pending", "expired", "invalidated"].includes(inquiry.status);
@@ -142,6 +144,7 @@ export function AssistantMeshPanel({
   const [shareTeams, setShareTeams] = useState<string[]>([]);
   const [shareProjects, setShareProjects] = useState<string[]>([]);
   const [shareLifetime, setShareLifetime] = useState(24);
+  const [sharePulseLifetime, setSharePulseLifetime] = useState<number | null>(null);
   const [shareStatus, setShareStatus] = useState("in_progress");
   const [assetKind, setAssetKind] = useState<MeshAssetKind>("skill");
   const [assetTitle, setAssetTitle] = useState("");
@@ -156,6 +159,7 @@ export function AssistantMeshPanel({
   const [assetTeams, setAssetTeams] = useState<string[]>([]);
   const [assetProjects, setAssetProjects] = useState<string[]>([]);
   const [assetLifetime, setAssetLifetime] = useState(90);
+  const [assetPulseLifetime, setAssetPulseLifetime] = useState<number | null>(null);
 
   const searchQuery = useQuery({
     queryKey: ["assistant-mesh-panel", owner, "search", term],
@@ -180,6 +184,23 @@ export function AssistantMeshPanel({
     staleTime: 0,
     refetchInterval: open ? 7_000 : false,
   });
+  const workPulsePolicyQuery = useQuery({
+    queryKey: ["assistant-mesh-panel", owner, "work-pulse-policy"],
+    queryFn: meshApi.workPulsePolicy,
+    enabled: open && authorized && (tab === "assets" || tab === "inbox"),
+    retry: false,
+    staleTime: 60_000,
+  });
+  const workPulsePolicy = workPulsePolicyQuery.isSuccess ? workPulsePolicyQuery.data : undefined;
+  const workPulseMaxHours = workPulsePolicy ? workPulsePolicy.maxLifetimeDays * 24 : WORK_PULSE_MAX_HOURS_FALLBACK;
+  const workPulseLifetimeValid = (value: number | null) =>
+    value === null ||
+    (Number.isInteger(value) && value >= 1 && value <= workPulseMaxHours);
+  const workPulseHint = workPulsePolicy
+    ? `留空使用服务端默认 ${workPulsePolicy.defaultLifetimeHours} 小时。可填 1–${workPulseMaxHours} 小时的整数。`
+    : workPulsePolicyQuery.isError
+      ? "暂未读取到配置。留空使用服务端默认，填写的时长由服务端校验。"
+      : "正在读取有效期配置。留空使用服务端默认。";
   const inbox = inboxQuery.isSuccess
     ? inboxQuery.data.filter((item) => item.ownerId === userId && item.status === "pending")
     : [];
@@ -207,6 +228,8 @@ export function AssistantMeshPanel({
     setReplyFor("");
     setReplyText("");
     setShare(false);
+    setSharePulseLifetime(null);
+    setAssetPulseLifetime(null);
     setSearch("");
     setTerm("");
     setQuestion("");
@@ -229,11 +252,12 @@ export function AssistantMeshPanel({
     setReplyFor("");
     setAsset(undefined);
     setAssetNotice("");
+    setSharePulseLifetime(null);
+    setAssetPulseLifetime(null);
     if (initial.workspaceSummary) {
       setAssetKind("work_pulse");
       setAssetTitle("工作区进展");
       setAssetBody(initial.workspaceSummary);
-      setAssetLifetime(24);
     }
   }, [open, initial]);
 
@@ -248,6 +272,8 @@ export function AssistantMeshPanel({
     setReplyText("");
     setAsset(undefined);
     setAssetNotice("");
+    setSharePulseLifetime(null);
+    setAssetPulseLifetime(null);
   }, [profileQuery.isError]);
 
   const previewMutation = useMutation({
@@ -346,7 +372,7 @@ export function AssistantMeshPanel({
         expectedDigest: asset.draftDigest,
         audience: assetAudience(),
         ...(asset.kind === "work_pulse"
-          ? { lifetimeHours: assetLifetime }
+          ? { lifetimeHours: assetPulseLifetime ?? undefined }
           : asset.kind === "experience_card"
             ? { lifetimeDays: assetLifetime }
             : {}),
@@ -395,6 +421,7 @@ export function AssistantMeshPanel({
   function loadAsset(next: MeshAsset) {
     setAsset(next);
     setAssetKind(next.kind === "mcp" ? "skill" : next.kind);
+    setAssetPulseLifetime(null);
     const input = next.draft ?? next.published?.input;
     setAssetTitle(input?.title ?? "");
     setAssetBody(input?.body ?? "");
@@ -431,6 +458,7 @@ export function AssistantMeshPanel({
     setReplyFor(inquiry.id);
     setReplyText("");
     setShare(false);
+    setSharePulseLifetime(null);
     setShareTitle("");
     setShareSummary("");
   }
@@ -439,7 +467,7 @@ export function AssistantMeshPanel({
     const answer = replyText.trim();
     if (!answer || !shareTitle.trim() || !shareSummary.trim()) return;
     if (!audienceValid(shareVisibility, shareTeams, shareProjects)) return;
-    if (!lifetimeValid(shareKind, shareLifetime)) return;
+    if (shareKind === "work_pulse" ? !workPulseLifetimeValid(sharePulseLifetime) : !experienceLifetimeValid(shareLifetime)) return;
     shareMutation.mutate({
       id: inquiry.id,
       value: {
@@ -452,7 +480,9 @@ export function AssistantMeshPanel({
           teams: shareVisibility === "teams" ? shareTeams : undefined,
           projects: shareVisibility === "projects" ? shareProjects : undefined,
         },
-        ...(shareKind === "work_pulse" ? { lifetimeHours: shareLifetime, workStatus: shareStatus } : { lifetimeDays: shareLifetime }),
+        ...(shareKind === "work_pulse"
+          ? { lifetimeHours: sharePulseLifetime ?? undefined, workStatus: shareStatus }
+          : { lifetimeDays: shareLifetime }),
       },
     });
   }
@@ -461,9 +491,11 @@ export function AssistantMeshPanel({
   const hasSource = Boolean(sessionId && source && (source.runId || source.messageIds?.length));
   const busyAsset =
     createMutation.isPending || extractMutation.isPending || saveMutation.isPending || trialMutation.isPending || publishMutation.isPending;
-  const assetLifetimeValid = asset?.kind === "work_pulse" || asset?.kind === "experience_card"
-    ? lifetimeValid(asset.kind, assetLifetime)
-    : true;
+  const assetLifetimeValid = asset?.kind === "work_pulse"
+    ? workPulseLifetimeValid(assetPulseLifetime)
+    : asset?.kind === "experience_card"
+      ? experienceLifetimeValid(assetLifetime)
+      : true;
 
   const findPane = (
     <Space orientation="vertical" size={14} style={{ width: "100%" }}>
@@ -550,10 +582,10 @@ export function AssistantMeshPanel({
                     <Button onClick={() => { setReplyFor(""); setReplyText(""); }}>取消</Button>
                   </Space>
                 ) : null}
-                <Checkbox checked={share} onChange={(event) => setShare(event.target.checked)}>另外发布为共享</Checkbox>
+                <Checkbox checked={share} onChange={(event) => { setShare(event.target.checked); if (event.target.checked) setSharePulseLifetime(null); }}>另外发布为共享</Checkbox>
                 {share ? (
                   <Space orientation="vertical" size={8} style={{ width: "100%" }}>
-                    <Select value={shareKind} onChange={(value) => { setShareKind(value); setShareLifetime(value === "work_pulse" ? 24 : 90); }} options={[{ value: "experience_card", label: "经验卡" }, { value: "work_pulse", label: "工作进度" }]} />
+                    <Select value={shareKind} onChange={(value) => { setShareKind(value); setShareLifetime(90); setSharePulseLifetime(null); }} options={[{ value: "experience_card", label: "经验卡" }, { value: "work_pulse", label: "工作进度" }]} />
                     <Input aria-label="共享标题" value={shareTitle} maxLength={120} placeholder="对外公开标题" onChange={(event) => setShareTitle(event.target.value)} />
                     <Input.TextArea aria-label="对外公开摘要" value={shareSummary} autoSize={{ minRows: 2, maxRows: 5 }} maxLength={1000} placeholder="可与回复原文不同的公开摘要" onChange={(event) => setShareSummary(event.target.value)} />
                     {shareKind === "work_pulse" ? <Select aria-label="工作状态" value={shareStatus} onChange={setShareStatus} options={WORK_STATUS} /> : null}
@@ -561,8 +593,15 @@ export function AssistantMeshPanel({
                     {shareVisibility === "teams" ? <Select mode="multiple" aria-label="选择团队" value={shareTeams} onChange={setShareTeams} options={teams.map((value) => ({ value, label: value }))} /> : null}
                     {shareVisibility === "projects" ? <Select mode="multiple" aria-label="选择项目" value={shareProjects} onChange={setShareProjects} options={projects.map((value) => ({ value, label: value }))} /> : null}
                     {shareVisibility === "organization" ? <Alert type="info" showIcon title="全组织发布需审批；通过前不会对他人可见。" /> : null}
-                    <InputNumber aria-label={shareKind === "work_pulse" ? "有效期小时" : "有效期天"} min={1} max={shareKind === "work_pulse" ? 336 : 3650} value={shareLifetime} onChange={(value) => setShareLifetime(value ?? (shareKind === "work_pulse" ? 24 : 90))} addonAfter={shareKind === "work_pulse" ? "小时" : "天"} />
-                    <Button type="primary" loading={shareMutation.isPending} disabled={!replyText.trim() || !shareTitle.trim() || !shareSummary.trim() || !audienceValid(shareVisibility, shareTeams, shareProjects) || !lifetimeValid(shareKind, shareLifetime)} onClick={() => confirmShare(inquiry)}>回复并发布共享</Button>
+                    {shareKind === "work_pulse" ? (
+                      <>
+                        <InputNumber aria-label="有效期小时" aria-describedby="share-work-pulse-lifetime-help" min={1} max={workPulseMaxHours} precision={0} inputMode="numeric" placeholder={workPulsePolicy ? String(workPulsePolicy.defaultLifetimeHours) : "服务端默认"} value={sharePulseLifetime} onChange={setSharePulseLifetime} addonAfter="小时" />
+                        <Typography.Text id="share-work-pulse-lifetime-help" type="secondary">{workPulseHint}</Typography.Text>
+                      </>
+                    ) : (
+                      <InputNumber aria-label="有效期天" min={1} max={3650} value={shareLifetime} onChange={(value) => setShareLifetime(value ?? 90)} addonAfter="天" />
+                    )}
+                    <Button type="primary" loading={shareMutation.isPending} disabled={!replyText.trim() || !shareTitle.trim() || !shareSummary.trim() || !audienceValid(shareVisibility, shareTeams, shareProjects) || (shareKind === "work_pulse" ? !workPulseLifetimeValid(sharePulseLifetime) : !experienceLifetimeValid(shareLifetime))} onClick={() => confirmShare(inquiry)}>回复并发布共享</Button>
                   </Space>
                 ) : null}
                 {replyMutation.isError ? <Alert type="error" showIcon title="私聊回复失败" description={errorText(replyMutation.error)} /> : null}
@@ -608,7 +647,7 @@ export function AssistantMeshPanel({
     <Space orientation="vertical" size={12} style={{ width: "100%" }}>
       {hasSource ? <Alert type="info" showIcon title="从当前选中来源提炼" description={source?.runId ? `已完成 Run ${source.runId}` : `消息 ${source?.messageIds?.join("、") ?? ""}`} /> : <Typography.Text type="secondary">可直接新建，或从 Heya 消息与已完成 Run 打开本页提炼。</Typography.Text>}
       <Space wrap>
-        <Select aria-label="资产类型" value={assetKind} onChange={(value) => { setAssetKind(value); setAssetLifetime(value === "work_pulse" ? 24 : 90); }} options={[{ value: "skill", label: KIND_LABEL.skill }, { value: "experience_card", label: KIND_LABEL.experience_card }, { value: "work_pulse", label: KIND_LABEL.work_pulse }]} />
+        <Select aria-label="资产类型" value={assetKind} onChange={(value) => { setAssetKind(value); setAssetLifetime(90); setAssetPulseLifetime(null); }} options={[{ value: "skill", label: KIND_LABEL.skill }, { value: "experience_card", label: KIND_LABEL.experience_card }, { value: "work_pulse", label: KIND_LABEL.work_pulse }]} />
         {hasSource ? <Button loading={extractMutation.isPending} disabled={!assetTitle.trim() || assetKind === "work_pulse"} onClick={() => extractMutation.mutate()}>从选中来源提炼</Button> : null}
         <Button loading={createMutation.isPending} disabled={!assetTitle.trim() || !assetBody.trim()} onClick={() => createMutation.mutate(assetInput())}>新建草稿</Button>
         {asset ? <Button loading={refreshMutation.isPending} onClick={() => refreshMutation.mutate()}>刷新资产</Button> : null}
@@ -631,7 +670,14 @@ export function AssistantMeshPanel({
           {assetVisibility === "teams" ? <Select mode="multiple" aria-label="发布团队" value={assetTeams} onChange={setAssetTeams} options={teams.map((value) => ({ value, label: value }))} /> : null}
           {assetVisibility === "projects" ? <Select mode="multiple" aria-label="发布项目" value={assetProjects} onChange={setAssetProjects} options={projects.map((value) => ({ value, label: value }))} /> : null}
           {assetVisibility === "organization" ? <Alert type="info" showIcon title="全组织发布需审批；通过前不会对他人可见。" /> : null}
-          {asset.kind === "work_pulse" || asset.kind === "experience_card" ? <InputNumber aria-label={asset.kind === "work_pulse" ? "Work Pulse 有效期小时" : "经验卡有效期天"} min={1} max={asset.kind === "work_pulse" ? 336 : 3650} value={assetLifetime} onChange={(value) => setAssetLifetime(value ?? (asset.kind === "work_pulse" ? 24 : 90))} addonAfter={asset.kind === "work_pulse" ? "小时" : "天"} /> : null}
+          {asset.kind === "work_pulse" ? (
+            <>
+              <InputNumber aria-label="Work Pulse 有效期小时" aria-describedby="asset-work-pulse-lifetime-help" min={1} max={workPulseMaxHours} precision={0} inputMode="numeric" placeholder={workPulsePolicy ? String(workPulsePolicy.defaultLifetimeHours) : "服务端默认"} value={assetPulseLifetime} onChange={setAssetPulseLifetime} addonAfter="小时" />
+              <Typography.Text id="asset-work-pulse-lifetime-help" type="secondary">{workPulseHint}</Typography.Text>
+            </>
+          ) : asset.kind === "experience_card" ? (
+            <InputNumber aria-label="经验卡有效期天" min={1} max={3650} value={assetLifetime} onChange={(value) => setAssetLifetime(value ?? 90)} addonAfter="天" />
+          ) : null}
           <Button type="primary" loading={publishMutation.isPending} disabled={busyAsset || !asset.draftDigest || !assetLifetimeValid || !audienceValid(assetVisibility, assetTeams, assetProjects)} onClick={() => publishMutation.mutate()}>提交发布</Button>
           {assetNotice ? <Alert type={assetNotice.includes("审批中") || assetNotice.includes("未确认") ? "warning" : "info"} showIcon title={assetNotice} /> : null}
         </Space>

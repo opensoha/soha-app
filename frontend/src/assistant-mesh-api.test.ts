@@ -32,6 +32,69 @@ afterEach(() => {
 });
 
 describe("assistant mesh transport", () => {
+  it("reads Work Pulse publishing defaults from the own asset page", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        json({
+          items: [],
+          publishingDefaults: {
+            visibility: "private",
+            lifetimeDays: 30,
+            allowPermanentExperienceCards: false,
+            workPulseDefaultLifetimeHours: 48,
+            workPulseMaxLifetimeDays: 7,
+          },
+        }),
+      )
+      .mockResolvedValueOnce(json({ items: [] }))
+      .mockResolvedValueOnce(
+        json({
+          items: [],
+          publishingDefaults: {
+            visibility: "private",
+            lifetimeDays: 30,
+            allowPermanentExperienceCards: false,
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        json({
+          items: [],
+          publishingDefaults: { workPulseDefaultLifetimeHours: 0 },
+        }),
+      )
+      .mockResolvedValueOnce(json({ items: [], publishingDefaults: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(meshApi.workPulsePolicy()).resolves.toEqual({
+      defaultLifetimeHours: 48,
+      maxLifetimeDays: 7,
+    });
+    await expect(meshApi.workPulsePolicy()).resolves.toEqual({
+      defaultLifetimeHours: 24,
+      maxLifetimeDays: 14,
+    });
+    await expect(meshApi.workPulsePolicy()).resolves.toEqual({
+      defaultLifetimeHours: 24,
+      maxLifetimeDays: 14,
+    });
+    await expect(meshApi.workPulsePolicy()).rejects.toMatchObject({
+      code: "response_contract_mismatch",
+    });
+    await expect(meshApi.workPulsePolicy()).rejects.toMatchObject({
+      code: "response_contract_mismatch",
+    });
+    expect(
+      fetchMock.mock.calls.every(
+        ([url]) =>
+          url ===
+          "/api/v1/copilot/assistant-mesh/assets?view=mine&kind=work_pulse",
+      ),
+    ).toBe(true);
+    expect(fetchMock.mock.calls[0][1].method).toBeUndefined();
+    expect(fetchMock.mock.calls[0][1].credentials).toBe("include");
+  });
+
   it("reads and saves the profile on the exact route", async () => {
     const profile = { open: true, away: false, intro: "在", retentionDays: 7 };
     const fetchMock = vi

@@ -19,6 +19,7 @@ vi.mock("@/assistant-mesh-api", () => ({
     draft: vi.fn(),
     create: vi.fn(),
     getAsset: vi.fn(),
+    workPulsePolicy: vi.fn(),
     updateAsset: vi.fn(),
     assetAction: vi.fn(),
   },
@@ -46,6 +47,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.stubGlobal("ResizeObserver", class { observe = vi.fn(); unobserve = vi.fn(); disconnect = vi.fn(); });
   vi.mocked(meshApi.profile).mockResolvedValue(profile);
+  vi.mocked(meshApi.workPulsePolicy).mockResolvedValue({ defaultLifetimeHours: 48, maxLifetimeDays: 20 });
   node = document.createElement("div");
   document.body.append(node);
   root = createRoot(node);
@@ -79,7 +81,7 @@ function input(value: string) {
   element.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
-async function render(initial: { key: number; tab: "find" | "inbox"; query?: string; question?: string }) {
+async function render(initial: { key: number; tab: "find" | "inbox" | "assets"; query?: string; question?: string; workspaceSummary?: string }) {
   await act(async () => {
     root.render(
       <ConfigProvider>
@@ -137,4 +139,37 @@ it("sends only the confirmed preview text with a stable request id", async () =>
   await settle();
   expect(meshApi.ask).toHaveBeenCalledWith({ ownerId: "owner-1", requestId: "request-1", question: "已确认的安全问题" });
   expect(meshApi.ask).not.toHaveBeenCalledWith(expect.objectContaining({ question: "原始私人问题" }));
+});
+
+it("leaves the Work Pulse lifetime to Core unless the employee enters a duration", async () => {
+  const asset = {
+    id: "pulse-1",
+    kind: "work_pulse" as const,
+    draftDigest: "digest-1",
+    draft: { kind: "work_pulse" as const, title: "工作区进展", body: "证书轮换中" },
+  };
+  vi.mocked(meshApi.inquiries).mockResolvedValue([]);
+  vi.mocked(meshApi.create).mockResolvedValue(asset);
+  vi.mocked(meshApi.assetAction).mockResolvedValue({ asset });
+  await render({ key: 3, tab: "assets", workspaceSummary: "证书轮换中" });
+  await act(async () => button("新建草稿").click());
+  await settle();
+
+  const lifetime = document.querySelector<HTMLInputElement>('[aria-label="Work Pulse 有效期小时"]')!;
+  expect(lifetime.value).toBe("");
+  expect(lifetime.placeholder).toBe("48");
+  expect(document.getElementById(lifetime.getAttribute("aria-describedby")!)?.textContent).toContain("480");
+  await act(async () => button("提交发布").click());
+  await settle();
+  const publishInput = { expectedDigest: "digest-1", audience: { visibility: "private" } };
+  expect(meshApi.assetAction).toHaveBeenLastCalledWith("pulse-1", "publish", publishInput);
+  expect(JSON.parse(JSON.stringify(vi.mocked(meshApi.assetAction).mock.lastCall?.[2]))).not.toHaveProperty("lifetimeHours");
+
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(lifetime, "480");
+    lifetime.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await act(async () => button("提交发布").click());
+  await settle();
+  expect(meshApi.assetAction).toHaveBeenLastCalledWith("pulse-1", "publish", { ...publishInput, lifetimeHours: 480 });
 });

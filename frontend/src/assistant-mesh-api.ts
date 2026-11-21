@@ -148,6 +148,11 @@ export interface MeshAssetActionResult {
   runId?: string;
 }
 
+export interface MeshWorkPulsePolicy {
+  defaultLifetimeHours: number;
+  maxLifetimeDays: number;
+}
+
 type MeshAssetAction = "trial" | "publish" | "revoke";
 
 const inquiryStatuses = new Set<MeshInquiryStatus>([
@@ -346,6 +351,35 @@ function decodeActionResult(value: unknown): MeshAssetActionResult {
   return value as unknown as MeshAssetActionResult;
 }
 
+function decodeWorkPulsePolicy(payload: unknown): MeshWorkPulsePolicy {
+  if (!isRecord(payload)) return mismatch("工作进度发布设置回执不完整");
+  const defaults = payload.publishingDefaults;
+  if (defaults === undefined)
+    return { defaultLifetimeHours: 24, maxLifetimeDays: 14 };
+  if (!isRecord(defaults)) return mismatch("工作进度发布设置回执不完整");
+  const defaultLifetimeHours =
+    defaults.workPulseDefaultLifetimeHours === undefined
+      ? 24
+      : defaults.workPulseDefaultLifetimeHours;
+  const maxLifetimeDays =
+    defaults.workPulseMaxLifetimeDays === undefined
+      ? 14
+      : defaults.workPulseMaxLifetimeDays;
+  if (
+    typeof defaultLifetimeHours !== "number" ||
+    !Number.isSafeInteger(defaultLifetimeHours) ||
+    defaultLifetimeHours < 1 ||
+    defaultLifetimeHours > 168 ||
+    typeof maxLifetimeDays !== "number" ||
+    !Number.isSafeInteger(maxLifetimeDays) ||
+    maxLifetimeDays < 1 ||
+    maxLifetimeDays > 90 ||
+    defaultLifetimeHours > maxLifetimeDays * 24
+  )
+    return mismatch("工作进度发布设置回执不完整");
+  return { defaultLifetimeHours, maxLifetimeDays };
+}
+
 async function meshList(
   path: string,
   init: RequestInit = {},
@@ -362,6 +396,14 @@ async function meshList(
 }
 
 export const meshApi = {
+  workPulsePolicy: async () =>
+    decodeWorkPulsePolicy(
+      await (
+        await requestResponse(
+          "/copilot/assistant-mesh/assets?view=mine&kind=work_pulse",
+        )
+      ).json(),
+    ),
   profile: async () =>
     decodeProfile(
       await assistantRequest("/copilot/assistant-mesh/profile"),
