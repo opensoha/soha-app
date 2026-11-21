@@ -153,6 +153,7 @@ func nmEAPSettingsHash(settings nmEAPSettings) string {
 type nmEAPOps interface {
 	Capability(context.Context) (nmEAPCapability, error)
 	Add(context.Context, nmEAPSettings, uint32) (string, error)
+	AddAndActivate(context.Context, nmEAPSettings, nmEAPReceipt) (string, error)
 	Inspect(context.Context, nmEAPReceipt) (nmEAPReceipt, error)
 	Activate(context.Context, nmEAPReceipt) error
 	WaitActivated(context.Context, nmEAPReceipt) error
@@ -252,10 +253,18 @@ func connectNMEAP(ctx context.Context, ops nmEAPOps, input nmEAPInput, check nmE
 	if err := ctx.Err(); err != nil {
 		return receipt, err
 	}
-	// IN_MEMORY | BLOCK_AUTOCONNECT: never write the user's password to a keyfile.
-	receipt.ConnectionPath, err = ops.Add(ctx, settings, 0x2|0x20)
-	if err != nil {
-		return receipt, errors.New("NetworkManager connection installation failed")
+	ttls := input.Material.Method == "ttls"
+	if ttls {
+		receipt.ConnectionPath, err = ops.AddAndActivate(ctx, settings, receipt)
+		if err != nil {
+			return receipt, errors.New("NetworkManager activation failed")
+		}
+	} else {
+		// The certificate profile is staged first so it can be inspected before activation.
+		receipt.ConnectionPath, err = ops.Add(ctx, settings, 0x2|0x20)
+		if err != nil {
+			return receipt, errors.New("NetworkManager connection installation failed")
+		}
 	}
 	if err := persist(receipt); err != nil {
 		return receipt, err
@@ -270,8 +279,10 @@ func connectNMEAP(ctx context.Context, ops nmEAPOps, input nmEAPInput, check nmE
 	if err := ctx.Err(); err != nil {
 		return receipt, err
 	}
-	if err := ops.Activate(ctx, receipt); err != nil {
-		return receipt, errors.New("NetworkManager activation failed")
+	if !ttls {
+		if err := ops.Activate(ctx, receipt); err != nil {
+			return receipt, errors.New("NetworkManager activation failed")
+		}
 	}
 	if err := ops.WaitActivated(ctx, receipt); err != nil {
 		return receipt, err

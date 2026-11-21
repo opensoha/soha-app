@@ -745,15 +745,15 @@ func (h *appHost) modifyProxyResponse(response *http.Response) error {
 		if err != nil {
 			return err
 		}
-		userID, err := redactAuthRefreshTokenAndUser(response)
+		scope, err := redactAuthRefreshTokenAndScope(response, authRequestGeneration(request))
 		if err != nil {
 			return err
 		}
 		if isRefresh {
-			if !h.markRefreshed(requestTarget, requestRefreshToken(request), refreshToken, authResponseScope{authRequestGeneration(request), userID}) {
+			if !h.markRefreshed(requestTarget, requestRefreshToken(request), refreshToken, scope) {
 				return errContractMismatch
 			}
-		} else if !h.markAuthenticated(requestTarget, refreshToken, userID, authRequestGeneration(request)) {
+		} else if !h.markAuthenticated(requestTarget, refreshToken, scope) {
 			return errContractMismatch
 		}
 	}
@@ -780,15 +780,15 @@ func proxyRejectionEvent(request *http.Request, statusCode int) string {
 	return "api_authorization_rejected"
 }
 
-func (h *appHost) markAuthenticated(requestTarget *url.URL, refreshToken, userID string, generation uint64) bool {
+func (h *appHost) markAuthenticated(requestTarget *url.URL, refreshToken string, scope authResponseScope) bool {
 	h.sessionMu.Lock()
-	if requestTarget == nil || requestTarget != h.target.Load() || generation != h.nativeScope.Generation {
+	if requestTarget == nil || requestTarget != h.target.Load() || scope.generation != h.nativeScope.Generation {
 		h.sessionMu.Unlock()
 		return false
 	}
 	h.persistAuthenticatedLocked(requestTarget, refreshToken)
 	h.nativeScope.Generation++
-	h.setAuthenticatedNativeUIScopeLocked(requestTarget, userID)
+	h.setAuthenticatedNativeUIScopeLocked(requestTarget, scope)
 	h.sessionMu.Unlock()
 	h.publishNativeUIScope()
 	return true

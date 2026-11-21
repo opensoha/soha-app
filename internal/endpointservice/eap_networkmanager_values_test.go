@@ -101,21 +101,32 @@ func TestNMEAPRejectsUnsupportedOrUnsafeInput(t *testing.T) {
 }
 
 type nmMockOps struct {
-	capability              nmEAPCapability
-	current                 nmEAPReceipt
-	added                   nmEAPSettings
-	flags                   uint32
-	activateErr, cleanupErr error
-	inspectErr              error
-	removed, activated      bool
-	cancel                  context.CancelFunc
-	mutate                  func(*nmEAPReceipt)
+	capability                    nmEAPCapability
+	current                       nmEAPReceipt
+	added                         nmEAPSettings
+	flags                         uint32
+	activateErr, cleanupErr       error
+	inspectErr                    error
+	removed, activated            bool
+	addedProfile, addAndActivated bool
+	cancel                        context.CancelFunc
+	mutate                        func(*nmEAPReceipt)
 }
 
 func (m *nmMockOps) Capability(context.Context) (nmEAPCapability, error) { return m.capability, nil }
 func (m *nmMockOps) Add(_ context.Context, s nmEAPSettings, f uint32) (string, error) {
+	m.addedProfile = true
 	m.added = s
 	m.flags = f
+	return "/org/freedesktop/NetworkManager/Settings/8", nil
+}
+func (m *nmMockOps) AddAndActivate(_ context.Context, s nmEAPSettings, r nmEAPReceipt) (string, error) {
+	m.addAndActivated = true
+	m.added = s
+	m.current = r
+	if m.activateErr != nil {
+		return "", m.activateErr
+	}
 	return "/org/freedesktop/NetworkManager/Settings/8", nil
 }
 func (m *nmMockOps) Inspect(_ context.Context, r nmEAPReceipt) (nmEAPReceipt, error) {
@@ -248,16 +259,16 @@ func TestNMEAPLifecycleSuccessRefusalAndCancellation(t *testing.T) {
 			case "settings changed":
 				ops.mutate = func(r *nmEAPReceipt) { r.SettingsHash = "changed" }
 			}
-			writes := 0
+			var writes []nmEAPReceipt
 			receipt, err := connectNMEAP(ctx, ops, input, nmAllowFile, time.Now(), func(r nmEAPReceipt) error {
-				writes++
-				if mode == "persist failed" && writes == 2 {
+				writes = append(writes, r)
+				if mode == "persist failed" && len(writes) == 2 {
 					return errors.New("disk full")
 				}
 				return nil
 			})
 			if mode == "success" {
-				if err != nil || ops.removed || !ops.activated {
+				if err != nil || ops.removed || !ops.addAndActivated || ops.addedProfile || ops.activated {
 					t.Fatalf("success: %v", err)
 				}
 			} else if err == nil || !ops.removed {
@@ -269,11 +280,30 @@ func TestNMEAPLifecycleSuccessRefusalAndCancellation(t *testing.T) {
 			if mode == "cleanup failed" && !strings.Contains(err.Error(), "cleanup pending") {
 				t.Fatal("cleanup retry lost")
 			}
-			if receipt.UUID == "" || receipt.Incarnation != "attempt-1" || writes != 2 || ops.flags != 0x22 {
+			wantWrites := 2
+			if mode == "refused" || mode == "cleanup failed" {
+				wantWrites = 1
+			}
+			wantPath := "/org/freedesktop/NetworkManager/Settings/8"
+			if mode == "refused" || mode == "cleanup failed" {
+				wantPath = ""
+			}
+			if receipt.UUID == "" || receipt.Incarnation != "attempt-1" || len(writes) != wantWrites || ops.flags != 0 || receipt.ConnectionPath != wantPath {
 				t.Fatal("operation identity not retained")
 			}
 			if _, exists := ops.added["802-1x"]["password"]; exists {
 				t.Fatal("password retained after operation")
+			}
+			if writes[0].ConnectionPath != "" || writes[0].Owner != capability.Owner || !reflect.DeepEqual(writes[0].Device, input.Device) {
+				t.Fatal("pre-call receipt lost its ownership identity")
+			}
+			for _, r := range writes {
+				if _, exists := r.Settings["802-1x"]["password"]; exists {
+					t.Fatal("password retained in receipt")
+				}
+			}
+			if len(writes) == 2 && writes[1].ConnectionPath != receipt.ConnectionPath {
+				t.Fatal("returned settings path was not persisted")
 			}
 		})
 	}

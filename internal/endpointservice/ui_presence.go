@@ -12,10 +12,12 @@ const uiPresenceTTL = 30 * time.Second
 
 // Only the privileged service creates this observer from administrator provisioning.
 type UIProcessPresence struct {
-	verify       func(net.Conn) error
-	authenticate func(context.Context, net.Conn) (NativePeer, error)
-	mu           sync.Mutex
-	lastObserved time.Time
+	verify          func(net.Conn) error
+	verifyAdmission func(net.Conn) error
+	authenticate    func(context.Context, net.Conn) (NativePeer, error)
+	mu              sync.Mutex
+	lastObserved    time.Time
+	strict          *uiAdmissionPresence
 }
 
 func (presence *UIProcessPresence) Observe(connection net.Conn, now time.Time) error {
@@ -85,6 +87,9 @@ func RunNativeUIPresenceWithScope(ctx context.Context, current func() NativeUISc
 		cancel()
 		if current != nil {
 			scope := current()
+			callCtx, cancel = context.WithTimeout(ctx, 2*time.Second)
+			_ = CallAdmissionUIScopeIPC(callCtx, scope)
+			cancel()
 			callCtx, cancel = context.WithTimeout(ctx, 5*time.Second)
 			_, _ = CallInterceptionUIScopeIPC(callCtx, scope)
 			cancel()
@@ -93,4 +98,15 @@ func RunNativeUIPresenceWithScope(ctx context.Context, current func() NativeUISc
 			return
 		}
 	}
+}
+
+func ReleaseAdmissionUIScope(scope NativeUIScope) {
+	if scope.Generation == ^uint64(0) {
+		return
+	}
+	scope.Authenticated = false
+	scope.Generation++
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = CallAdmissionUIScopeIPC(ctx, scope)
 }

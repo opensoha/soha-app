@@ -159,7 +159,7 @@ func (h *appHost) handleDesktopAuth(writer http.ResponseWriter, request *http.Re
 			writeError(writer, http.StatusBadGateway, "desktop_auth_contract_mismatch", "Invalid Soha Server desktop login response")
 			return
 		}
-		if !h.markAuthenticated(target, refreshToken, verifiedAuthUserID(exchange.Body), generation) {
+		if !h.markAuthenticated(target, refreshToken, verifiedAuthScope(exchange.Body, generation)) {
 			writeError(writer, http.StatusConflict, "desktop_auth_server_changed", "Soha Server changed during desktop login")
 			return
 		}

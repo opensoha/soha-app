@@ -138,7 +138,7 @@ func TestNativeUIScopeLateSameTargetAuthCannotRestoreCredentials(t *testing.T) {
 				t.Fatal(err)
 			}
 			target := host.target.Load()
-			if !host.markAuthenticated(target, "first-refresh", "old-account", host.nativeUIScopeSnapshot().Generation) {
+			if !host.markAuthenticated(target, "first-refresh", authResponseScope{userID: "old-account", generation: host.nativeUIScopeSnapshot().Generation}) {
 				t.Fatal("initial auth")
 			}
 			done := make(chan *httptest.ResponseRecorder, 1)
@@ -149,7 +149,7 @@ func TestNativeUIScopeLateSameTargetAuthCannotRestoreCredentials(t *testing.T) {
 			}()
 			<-started
 			host.blockSession(target, "")
-			if !host.markAuthenticated(target, "new-refresh", "new-account", host.nativeUIScopeSnapshot().Generation) {
+			if !host.markAuthenticated(target, "new-refresh", authResponseScope{userID: "new-account", generation: host.nativeUIScopeSnapshot().Generation}) {
 				t.Fatal("new auth")
 			}
 			releaseHandler()
@@ -191,7 +191,7 @@ func TestNativeUIScopeSwitchPrepareAndSaveFailure(t *testing.T) {
 			}
 			oldTarget := host.target.Load()
 			oldGeneration := host.nativeUIScopeSnapshot().Generation
-			if !host.markAuthenticated(oldTarget, "initial", "account-A", oldGeneration) {
+			if !host.markAuthenticated(oldTarget, "initial", authResponseScope{userID: "account-A", generation: oldGeneration}) {
 				t.Fatal("auth")
 			}
 			oldGeneration = host.nativeUIScopeSnapshot().Generation
@@ -203,7 +203,7 @@ func TestNativeUIScopeSwitchPrepareAndSaveFailure(t *testing.T) {
 			if s := host.nativeUIScopeSnapshot(); s.Authenticated || s.Generation <= oldGeneration {
 				t.Fatalf("prepare did not invalidate: %+v", s)
 			}
-			if host.markAuthenticated(oldTarget, "late", "account-A", oldGeneration) {
+			if host.markAuthenticated(oldTarget, "late", authResponseScope{userID: "account-A", generation: oldGeneration}) {
 				t.Fatal("late prepare response accepted")
 			}
 			var response struct {
@@ -223,7 +223,7 @@ func TestNativeUIScopeSwitchPrepareAndSaveFailure(t *testing.T) {
 
 func TestVerifiedAuthUserIDRejectsInvalidIdentity(t *testing.T) {
 	for _, body := range []string{`{}`, `{"data":{"user":null}}`, `{"data":{"user":{"userId":12}}}`, `{"data":{"user":{"userId":" "}}}`, `{"data":{"user":{"userId":"a\nb"}}}`} {
-		if verifiedAuthUserID([]byte(body)) != "" {
+		if verifiedAuthScope([]byte(body), 1).userID != "" {
 			t.Fatal("accepted invalid user", body)
 		}
 	}
