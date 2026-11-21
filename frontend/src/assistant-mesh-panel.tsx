@@ -633,7 +633,7 @@ export function AssistantMeshPanel({
 
   const profilePane = (
     <Space orientation="vertical" size={14} style={{ width: "100%" }}>
-      <Alert type="info" showIcon title="关闭公开不会影响你发起问询或配置名片。" description="关闭后同事看不到问询入口；已有问询仍可在收件箱处理。" />
+      <Alert type="info" showIcon title="关闭公开不会影响你发起问询或配置名片。" description="关闭后，同事将看不到问询入口，未决问询会失效。" />
       <Space style={{ width: "100%", justifyContent: "space-between" }}><Typography.Text strong>开放同事问询</Typography.Text><Checkbox aria-label="开放同事问询" checked={profileOpen} onChange={(event) => setProfileOpen(event.target.checked)} /></Space>
       <Space style={{ width: "100%", justifyContent: "space-between" }}><Typography.Text strong>暂离，可能延迟回复</Typography.Text><Checkbox aria-label="暂离" checked={profileAway} onChange={(event) => setProfileAway(event.target.checked)} /></Space>
       <Input.TextArea aria-label="助手简介" value={profileIntro} autoSize={{ minRows: 3, maxRows: 6 }} maxLength={280} placeholder="介绍你可以被同事问询的范围" onChange={(event) => setProfileIntro(event.target.value)} />
