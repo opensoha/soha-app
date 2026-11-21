@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"errors"
 	"os"
@@ -142,6 +143,31 @@ func main() {
 		return app.Browser.OpenFile(logDirectory)
 	})
 	host.setOpenBrowserURL(app.Browser.OpenURL)
+	host.meshWorkspaceDialog = func() (string, error) {
+		return app.Dialog.OpenFile().CanChooseFiles(false).CanChooseDirectories(true).PromptForSingleSelection()
+	}
+	if runtime.GOOS == "darwin" {
+		host.meshConfirmManaged = func(ctx context.Context, title, message string) bool {
+			if window == nil || ctx.Err() != nil {
+				return false
+			}
+			confirmed := make(chan bool, 1)
+			dialog := app.Dialog.Question().SetTitle(title).SetMessage(message).AttachToWindow(window)
+			dialog.AddButton("取消").SetAsDefault().SetAsCancel().OnClick(func() { confirmed <- false })
+			dialog.AddButton("确认").OnClick(func() { confirmed <- true })
+			dialog.Show()
+			timer := time.NewTimer(2 * time.Minute)
+			defer timer.Stop()
+			select {
+			case ok := <-confirmed:
+				return ok && ctx.Err() == nil
+			case <-ctx.Done():
+				return false
+			case <-timer.C:
+				return false
+			}
+		}
+	}
 	if supportsNativePersonalExport(runtime.GOOS) {
 		host.personalArchiveDialog = func() (string, error) {
 			return app.Dialog.SaveFile().SetFilename("personal-data.tar").AddFilter("TAR archive", "*.tar").PromptForSingleSelection()
@@ -164,6 +190,10 @@ func main() {
 		BackgroundColour: application.NewRGB(247, 248, 250),
 		URL:              "/",
 	})
+	host.meshOpenInbox = func() {
+		activateMainWindow(window)
+		window.ExecJS("window.dispatchEvent(new Event('soha-mesh-open-inbox'))")
+	}
 	window.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
 		window.Hide()
 		event.Cancel()

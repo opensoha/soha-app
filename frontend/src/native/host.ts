@@ -337,3 +337,28 @@ export function getLocalProxyInterception(): Promise<import('@/types').LocalProx
 export function setLocalProxyInterception(input: import('@/types').LocalProxyInterceptionIntent): Promise<import('@/types').LocalProxyInterceptionStatus> {
   return hostRequest('/app/v1/network/proxy/interception', jsonRequest(input), false);
 }
+
+export function previewMeshWorkspace(): Promise<
+  { status: "canceled" } | { status: "preview"; files: number; directories: number; truncated: boolean }
+> {
+  return hostRequest("/app/v1/assistant-mesh/workspace-summary", jsonRequest({}));
+}
+
+export function openMeshInboxWindow(): Promise<{ status: "opened" }> {
+  return hostRequest("/app/v1/assistant-mesh/open-inbox", jsonRequest({}));
+}
+
+export type MeshNativeAction = "device" | "execute" | "preview" | "deliver";
+export type MeshNativeInput = { id?: string; mode?: "preview" | "direct" };
+export type MeshNativeReceipt = {
+  state: "registered" | "canceled" | "completed" | "awaiting_confirmation" | "failed" | "unavailable";
+  preview?: string;
+};
+
+export function requestMeshNativeAction(
+  action: MeshNativeAction,
+  input: MeshNativeInput,
+  token: string,
+): Promise<MeshNativeReceipt> {
+  return hostRequest(`/app/v1/assistant-mesh/delegation-${action}`, bearerRequest(token, jsonRequest(input)));
+}
