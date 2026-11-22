@@ -106,8 +106,11 @@ type nmMockOps struct {
 	added                         nmEAPSettings
 	flags                         uint32
 	activateErr, cleanupErr       error
+	volatileErr                   error
 	inspectErr                    error
 	removed, activated            bool
+	volatile, volatileReceived    bool
+	removedPath                   string
 	addedProfile, addAndActivated bool
 	cancel                        context.CancelFunc
 	mutate                        func(*nmEAPReceipt)
@@ -225,12 +228,100 @@ func (m *nmMockOps) WaitActivated(ctx context.Context, _ nmEAPReceipt) error {
 	}
 	return ctx.Err()
 }
-func (m *nmMockOps) RemoveOwned(ctx context.Context, _ nmEAPReceipt) error {
+func (m *nmMockOps) MakeVolatile(_ context.Context, r nmEAPReceipt) error {
+	m.volatileReceived = true
+	if m.volatileErr != nil {
+		return m.volatileErr
+	}
+	m.volatile = true
+	m.current = r
+	return nil
+}
+func (m *nmMockOps) RemoveOwned(ctx context.Context, r nmEAPReceipt) error {
 	if ctx.Err() != nil {
 		return errors.New("cleanup inherited cancellation")
 	}
-	m.removed = true
+	m.removed, m.removedPath = true, r.ConnectionPath
 	return m.cleanupErr
+}
+
+func nmEAPTLSFixture(t *testing.T) nmEAPInput {
+	input, _ := nmEAPFixture(t)
+	input.Profile.EAPMethod, input.Profile.InnerMethod, input.Profile.CredentialSource = "tls", "", ""
+	directory := filepath.Dir(input.Material.CAFile)
+	input.Material = nmEAPMaterial{Method: "tls", CAFile: input.Material.CAFile, ClientCertificateFile: filepath.Join(directory, "cert.pem"), PrivateKeyFile: filepath.Join(directory, "key.pem")}
+	return input
+}
+
+func TestNMEAPTLSMakesActiveConnectionVolatile(t *testing.T) {
+	input := nmEAPTLSFixture(t)
+	_, capability := nmEAPFixture(t)
+	ops := &nmMockOps{capability: capability}
+	receipt, err := connectNMEAP(context.Background(), ops, input, nmAllowFile, time.Now(), func(nmEAPReceipt) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ops.activated || !ops.volatile || !ops.volatileReceived || ops.removed || ops.addAndActivated || ops.flags != 0x2|0x20 {
+		t.Fatalf("TLS volatile lifecycle: %+v", ops)
+	}
+	if receipt.ConnectionPath != "/org/freedesktop/NetworkManager/Settings/8" {
+		t.Fatal("volatile connection path changed")
+	}
+}
+
+func TestNMEAPTLSVolatileRefusalCleansExactProfile(t *testing.T) {
+	input := nmEAPTLSFixture(t)
+	_, capability := nmEAPFixture(t)
+	ops := &nmMockOps{capability: capability, volatileErr: errors.New("volatile refused")}
+	receipt, err := connectNMEAP(context.Background(), ops, input, nmAllowFile, time.Now(), func(nmEAPReceipt) error { return nil })
+	if err == nil || !ops.removed || receipt.ConnectionPath == "" || ops.removedPath != receipt.ConnectionPath {
+		t.Fatalf("volatile refusal did not clean exact profile: %+v, %v", ops, err)
+	}
+}
+
+func nmStagedTLSReceipt() nmEAPReceipt {
+	return nmEAPReceipt{Owner: ":1.7", UUID: "staged-uuid", ConnectionPath: "/org/freedesktop/NetworkManager/Settings/8", Incarnation: "attempt-1", SettingsHash: "staged-hash"}
+}
+
+func TestNMEAPActivateStagedTLSSuccess(t *testing.T) {
+	receipt := nmStagedTLSReceipt()
+	ops := &nmMockOps{}
+	if err := activateStagedNMEAPTLS(context.Background(), ops, receipt); err != nil {
+		t.Fatal(err)
+	}
+	if !ops.activated || !ops.volatileReceived || !ops.volatile || ops.removed {
+		t.Fatalf("unexpected staged activation lifecycle: %+v", ops)
+	}
+}
+
+func TestNMEAPActivateStagedTLSVolatileRefusalRemovesExactProfile(t *testing.T) {
+	receipt := nmStagedTLSReceipt()
+	ops := &nmMockOps{volatileErr: errors.New("volatile refused")}
+	if err := activateStagedNMEAPTLS(context.Background(), ops, receipt); err == nil {
+		t.Fatal("volatile refusal succeeded")
+	}
+	if !ops.removed || ops.removedPath != receipt.ConnectionPath {
+		t.Fatalf("volatile refusal did not remove exact profile: %+v", ops)
+	}
+}
+
+func TestNMEAPActivateStagedTLSRejectsUnknownOrMismatchedOwnershipBeforeMutation(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		ops  *nmMockOps
+	}{
+		{name: "unknown profile", ops: &nmMockOps{inspectErr: errors.New("unknown object")}},
+		{name: "owner mismatch", ops: &nmMockOps{mutate: func(r *nmEAPReceipt) { r.Owner = ":1.9" }}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := activateStagedNMEAPTLS(context.Background(), test.ops, nmStagedTLSReceipt()); err == nil {
+				t.Fatal("unverified profile was activated")
+			}
+			if test.ops.activated || test.ops.volatileReceived || test.ops.removed {
+				t.Fatalf("unverified profile was mutated or deleted: %+v", test.ops)
+			}
+		})
+	}
 }
 
 func TestNMEAPLifecycleSuccessRefusalAndCancellation(t *testing.T) {

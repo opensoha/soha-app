@@ -37,6 +37,7 @@ type NetworkLinkStatus struct {
 	Known         bool     `json:"known,omitempty"`
 	Connected     bool     `json:"connected"`
 	Medium        string   `json:"medium,omitempty"`
+	OpenWiFiSSID  string   `json:"openWifiSsid,omitempty"`
 	InterfaceName string   `json:"interfaceName,omitempty"`
 	IPAddress     string   `json:"ipAddress,omitempty"`
 	Gateway       string   `json:"gateway,omitempty"`

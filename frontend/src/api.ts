@@ -769,7 +769,10 @@ function isNetworkConnectionOption(
         (value.recommendationPriority as number) < 1 ||
         (value.recommendationPriority as number) > 10_000)) ||
     (value.autoConnect !== undefined && typeof value.autoConnect !== "boolean") ||
-    (value.nasSession !== undefined && !isNasSessionObservation(value.nasSession))
+    (value.nasSession !== undefined && !isNasSessionObservation(value.nasSession)) ||
+    (value.strictOnline !== undefined && (!isRecord(value.strictOnline) ||
+      (value.strictOnline.leaseUntil !== undefined &&
+        (typeof value.strictOnline.leaseUntil !== "string" || !Number.isFinite(Date.parse(value.strictOnline.leaseUntil))))))
   )
     return false;
   return value.accessMedium === "wired"

@@ -42,6 +42,7 @@ type Config struct {
 	UIExecutable               string  `json:"uiExecutable,omitempty"`
 	UICodeIdentity             string  `json:"uiCodeIdentity,omitempty"`
 	StrictAdmissionUILease     bool    `json:"strictAdmissionUiLease,omitempty"`
+	RequireWindowsEAPTPM       bool    `json:"requireWindowsEapTpm,omitempty"`
 	ControlURL                 string  `json:"controlUrl"`
 	ControlCAFile              string  `json:"controlCaFile"`
 	ControlCertFile            string  `json:"controlCertFile"`

@@ -249,6 +249,7 @@ export interface NetworkConnectionOption {
   recommendationPriority?: number
   autoConnect?: boolean
   nasSession?: NasSessionObservation
+  strictOnline?: { leaseUntil?: string }
 }
 
 export interface NetworkBootstrapOption {
@@ -308,6 +309,7 @@ export interface NetworkLinkStatus {
   known?: boolean
   connected: boolean
   medium?: NetworkAccessMedium
+  openWifiSsid?: string
   interfaceName?: string
   ipAddress?: string
   gateway?: string

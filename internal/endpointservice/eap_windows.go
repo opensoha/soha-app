@@ -17,9 +17,17 @@ import (
 )
 
 type WindowsEAPSystem struct {
-	directory string
-	deviceID  string
-	userSID   string
+	directory  string
+	deviceID   string
+	userSID    string
+	requireTPM bool
+}
+
+func (system *WindowsEAPSystem) EAPIdentityRequestID(id string) string {
+	if system.requireTPM {
+		return eapTPMRequestPrefix + id
+	}
+	return id
 }
 
 type eapWindowsBinding struct {

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -28,7 +29,11 @@ var (
 	eapNCryptDelete       = eapNCrypt.NewProc("NCryptDeleteKey")
 )
 
-const eapCNGProvider = "Microsoft Software Key Storage Provider"
+const (
+	eapCNGProvider      = "Microsoft Software Key Storage Provider"
+	eapTPMProvider      = "Microsoft Platform Crypto Provider"
+	eapTPMRequestPrefix = "eap-tpm-"
+)
 
 type eapCNGStatus uint32
 
@@ -37,10 +42,11 @@ func (status eapCNGStatus) Error() string {
 }
 
 type eapCNGKey struct {
-	provider uintptr
-	key      uintptr
-	name     string
-	public   *ecdsa.PublicKey
+	provider     uintptr
+	key          uintptr
+	name         string
+	providerName string
+	public       *ecdsa.PublicKey
 }
 
 func callEAPCNG(procedure *windows.LazyProc, arguments ...uintptr) error {
@@ -54,12 +60,20 @@ func callEAPCNG(procedure *windows.LazyProc, arguments ...uintptr) error {
 	return nil
 }
 
+func eapCNGProviderForRequest(requestID string) string {
+	// The persisted request ID keeps retry, certificate binding and cleanup on the same provider.
+	if strings.HasPrefix(requestID, eapTPMRequestPrefix) {
+		return eapTPMProvider
+	}
+	return eapCNGProvider
+}
+
 func openEAPCNGKey(deviceID, requestID string, create bool) (*eapCNGKey, error) {
 	if !identifierPattern.MatchString(deviceID) || !identifierPattern.MatchString(requestID) {
 		return nil, errors.New("CNG EAP identity reference is invalid")
 	}
-	key := &eapCNGKey{name: "OpenSoha.EAP." + eapPayloadUUID(deviceID+"/"+requestID)}
-	if err := callEAPCNG(eapNCryptOpenProvider, uintptr(unsafe.Pointer(&key.provider)), uintptr(unsafe.Pointer(windows.StringToUTF16Ptr(eapCNGProvider))), 0); err != nil {
+	key := &eapCNGKey{name: "OpenSoha.EAP." + eapPayloadUUID(deviceID+"/"+requestID), providerName: eapCNGProviderForRequest(requestID)}
+	if err := callEAPCNG(eapNCryptOpenProvider, uintptr(unsafe.Pointer(&key.provider)), uintptr(unsafe.Pointer(windows.StringToUTF16Ptr(key.providerName))), 0); err != nil {
 		return nil, err
 	}
 	err := callEAPCNG(eapNCryptOpenKey, key.provider, uintptr(unsafe.Pointer(&key.key)), uintptr(unsafe.Pointer(windows.StringToUTF16Ptr(key.name))), 0, 0x40)

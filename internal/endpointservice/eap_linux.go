@@ -23,6 +23,7 @@ type LinuxEAPSystem struct{ directory, deviceID string }
 type linuxEAPRecord struct {
 	RequestID, ProfileHash string
 	Receipt                nmEAPReceipt
+	RestageVolatileTLS     bool `json:"restageVolatileTLS,omitempty"`
 }
 
 func newLinuxEAPSystem(directory, deviceID string) (*LinuxEAPSystem, error) {
@@ -214,8 +215,10 @@ func (s *LinuxEAPSystem) stage(ctx context.Context, id string, p AdmissionProfil
 		return EAPStagedProfile{}, err
 	}
 	defer o.Close()
+	restageVolatileTLS := false
 	if old, err := s.load(p, a); err == nil {
-		actual, reused, err := reconcileNMEAPStage(ctx, o, old.Receipt, old.RequestID == id)
+		sameRequest := old.RequestID == id
+		actual, reused, err := reconcileNMEAPStage(ctx, o, old.Receipt, sameRequest)
 		if err != nil {
 			return EAPStagedProfile{}, err
 		}
@@ -223,6 +226,9 @@ func (s *LinuxEAPSystem) stage(ctx context.Context, id string, p AdmissionProfil
 			old.Receipt = actual
 			return EAPStagedProfile{}, s.save(p, old)
 		}
+		// Keep retry eligibility through the durable write before Add. A
+		// same-request profile can reach here only after exact UUID absence.
+		restageVolatileTLS = sameRequest && old.RestageVolatileTLS
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return EAPStagedProfile{}, err
 	}
@@ -243,7 +249,10 @@ func (s *LinuxEAPSystem) stage(ctx context.Context, id string, p AdmissionProfil
 		return EAPStagedProfile{}, err
 	}
 	delete(settings["802-1x"], "password")
-	r := linuxEAPRecord{RequestID: id, ProfileHash: eapProfileHash(p), Receipt: nmEAPReceipt{Settings: settings, Owner: o.owner, UUID: settings["connection"]["uuid"].(string), Incarnation: id, Device: input.Device, SettingsHash: nmEAPSettingsHash(settings)}}
+	r := linuxEAPRecord{
+		RequestID: id, ProfileHash: eapProfileHash(p), RestageVolatileTLS: restageVolatileTLS,
+		Receipt: nmEAPReceipt{Settings: settings, Owner: o.owner, UUID: settings["connection"]["uuid"].(string), Incarnation: id, Device: input.Device, SettingsHash: nmEAPSettingsHash(settings)},
+	}
 	if err := s.save(p, r); err != nil {
 		return EAPStagedProfile{}, err
 	}
@@ -278,6 +287,16 @@ func (s *LinuxEAPSystem) ReadbackPassword(ctx context.Context, id string, p Admi
 	}
 	defer o.Close()
 	actual, inspectErr := o.Inspect(ctx, r.Receipt)
+	if errors.Is(inspectErr, errNMEAPConnectionAbsent) && r.RestageVolatileTLS && admissionMethod(p) == "tls" {
+		device, deviceErr := o.device(ctx, dbusPath(a.ID))
+		if deviceErr != nil || device != r.Receipt.Device {
+			return errors.New("Linux EAP adapter changed")
+		}
+		if err := linuxEAPProtected(s.keyPath(id), true); err != nil {
+			return err
+		}
+		return errEAPVolatileProfileAbsent
+	}
 	if inspectErr != nil {
 		return inspectErr
 	}
@@ -295,7 +314,14 @@ func (s *LinuxEAPSystem) Readback(ctx context.Context, id string, p AdmissionPro
 	return s.ReadbackPassword(ctx, id, p, a)
 }
 func (s *LinuxEAPSystem) Connect(ctx context.Context, id string, p AdmissionProfile, c EAPCertificateResult, a EAPAdapter) error {
-	if err := s.Readback(ctx, id, p, c, a); err != nil {
+	err := s.Readback(ctx, id, p, c, a)
+	if errors.Is(err, errEAPVolatileProfileAbsent) {
+		if _, err := s.stage(ctx, id, p, c, a); err != nil {
+			return err
+		}
+		err = s.Readback(ctx, id, p, c, a)
+	}
+	if err != nil {
 		return err
 	}
 	r, err := s.load(p, a)
@@ -307,15 +333,14 @@ func (s *LinuxEAPSystem) Connect(ctx context.Context, id string, p AdmissionProf
 		return err
 	}
 	defer o.Close()
-	if err := o.Activate(ctx, r.Receipt); err != nil {
-		return err
+	if !r.RestageVolatileTLS {
+		// Persist the restage intent before activation can remove the profile.
+		r.RestageVolatileTLS = true
+		if err := s.save(p, r); err != nil {
+			return err
+		}
 	}
-	if err := o.WaitActivated(ctx, r.Receipt); err != nil {
-		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-		defer cancel()
-		return errors.Join(err, o.RemoveOwned(cleanup, r.Receipt))
-	}
-	return nil
+	return activateStagedNMEAPTLS(ctx, o, r.Receipt)
 }
 func (s *LinuxEAPSystem) ConnectPassword(ctx context.Context, id string, p AdmissionProfile, a EAPAdapter, password []byte) error {
 	r, err := s.load(p, a)

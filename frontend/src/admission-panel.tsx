@@ -121,7 +121,7 @@ export function AdmissionPanel({ medium, linkState, link, options, bootstrapNetw
       actionScope.current = {
         available: new Set(current.map(({ profile }) => profile.id)),
         automatic: new Set(current.filter(({ key, option, profile }) =>
-          option.autoConnect === true && preferences.autoConnect.includes(key) && automaticAdmissionReady(profile, adapters),
+          (!option.strictOnline || option.accessMedium !== "wifi") && option.autoConnect === true && preferences.autoConnect.includes(key) && automaticAdmissionReady(profile, adapters),
         ).map(({ profile }) => profile.id)),
       };
     }
@@ -200,6 +200,7 @@ export function AdmissionPanel({ medium, linkState, link, options, bootstrapNetw
     };
   });
   const mutation = useMutation({
+    mutationKey: ["network-admission-operation", scope],
     mutationFn: async ({ action, input, usePassword, automatic }: { action: AdmissionAction; input?: AdmissionInput; usePassword: boolean; automatic?: boolean }) => {
       if (automatic) {
         const current = await getNetworkLinkStatus();
@@ -269,7 +270,7 @@ export function AdmissionPanel({ medium, linkState, link, options, bootstrapNetw
     if (!enabled || !scope || mutation.isPending || !optionsReady || !linkKnownDisconnected || !query.isSuccess || !query.data.supported ||
         autoConnectionAttempts.has(scope) || (medium === "wired" && !wiredConnectSupported)) return undefined;
     return choices.find(({ key, option, profile }) => {
-      if (option.autoConnect !== true || !preferences.autoConnect.includes(key)) return false;
+      if (option.strictOnline && option.accessMedium === "wifi" || option.autoConnect !== true || !preferences.autoConnect.includes(key)) return false;
       return automaticAdmissionReady(profile, adapters);
     });
   })();

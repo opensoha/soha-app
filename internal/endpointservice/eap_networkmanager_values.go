@@ -157,6 +157,7 @@ type nmEAPOps interface {
 	Inspect(context.Context, nmEAPReceipt) (nmEAPReceipt, error)
 	Activate(context.Context, nmEAPReceipt) error
 	WaitActivated(context.Context, nmEAPReceipt) error
+	MakeVolatile(context.Context, nmEAPReceipt) error
 	RemoveOwned(context.Context, nmEAPReceipt) error
 }
 
@@ -212,6 +213,49 @@ func matchNMEAPReceipt(expected, actual nmEAPReceipt) error {
 		return errors.New("managed NetworkManager connection identity changed")
 	}
 	return nil
+}
+
+// activateStagedNMEAPTLS activates an already-staged certificate profile. Ownership is
+// verified before the first mutation, so an unknown or foreign profile is never activated
+// or removed. Once activation is attempted, every failure removes only the exact receipt.
+func activateStagedNMEAPTLS(ctx context.Context, ops nmEAPOps, receipt nmEAPReceipt) (result error) {
+	if ops == nil {
+		return errors.New("NetworkManager lifecycle dependencies are unavailable")
+	}
+	actual, err := ops.Inspect(ctx, receipt)
+	if err != nil {
+		return err
+	}
+	if err := matchNMEAPReceipt(receipt, actual); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	defer func() {
+		if result != nil {
+			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			defer cancel()
+			result = errors.Join(result, ops.RemoveOwned(cleanup, receipt))
+		}
+	}()
+	if err := ops.Activate(ctx, receipt); err != nil {
+		return errors.New("NetworkManager activation failed")
+	}
+	if err := ops.WaitActivated(ctx, receipt); err != nil {
+		return err
+	}
+	if err := ops.MakeVolatile(ctx, receipt); err != nil {
+		return err
+	}
+	actual, err = ops.Inspect(ctx, receipt)
+	if err != nil {
+		return err
+	}
+	if err := matchNMEAPReceipt(receipt, actual); err != nil {
+		return err
+	}
+	return ctx.Err()
 }
 
 // Cleanup gets an independent deadline after cancellation. A retained receipt is the
@@ -286,6 +330,11 @@ func connectNMEAP(ctx context.Context, ops nmEAPOps, input nmEAPInput, check nmE
 	}
 	if err := ops.WaitActivated(ctx, receipt); err != nil {
 		return receipt, err
+	}
+	if !ttls {
+		if err := ops.MakeVolatile(ctx, receipt); err != nil {
+			return receipt, err
+		}
 	}
 	actual, err = ops.Inspect(ctx, receipt)
 	if err != nil {
