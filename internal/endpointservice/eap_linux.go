@@ -293,7 +293,7 @@ func (s *LinuxEAPSystem) ReadbackPassword(ctx context.Context, id string, p Admi
 	if errors.Is(inspectErr, errNMEAPConnectionAbsent) && r.RestageVolatileTLS && admissionMethod(p) == "tls" {
 		device, deviceErr := o.device(ctx, dbusPath(a.ID))
 		if deviceErr != nil || device != r.Receipt.Device {
-			return errors.New("Linux EAP adapter changed")
+			return errors.New("the Linux EAP adapter changed")
 		}
 		if err := linuxEAPProtected(s.keyPath(id), true); err != nil {
 			return err

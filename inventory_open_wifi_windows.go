@@ -53,7 +53,8 @@ type winRTObject struct {
 }
 
 func (object *winRTObject) release() {
-	syscall.SyscallN(object.vtable[winRTRelease], uintptr(unsafe.Pointer(object)))
+	// IUnknown::Release returns the remaining reference count.
+	_, _, _ = syscall.SyscallN(object.vtable[winRTRelease], uintptr(unsafe.Pointer(object)))
 }
 
 func winRTRead[T any](object *winRTObject, method int) (T, bool) {
@@ -73,7 +74,10 @@ func observeCurrentOpenWiFiSSID() string {
 	defer runtime.UnlockOSThread()
 	status, _, _ := winRTRoInitialize.Call(winRTInitMultithreaded)
 	if int32(status) >= 0 {
-		defer winRTRoUninitialize.Call()
+		defer func() {
+			// RoUninitialize has no return value.
+			_, _, _ = winRTRoUninitialize.Call()
+		}()
 	} else if uint32(status) != winRTChangedMode {
 		return ""
 	}
@@ -117,7 +121,7 @@ func observeCurrentOpenWiFiSSID() string {
 	if !ok || ssid == 0 {
 		return ""
 	}
-	defer winRTWindowsDeleteString.Call(ssid)
+	defer winRTDeleteString(ssid)
 	return winRTSSIDText(ssid)
 }
 
@@ -132,7 +136,7 @@ func winRTNetworkInformationFactory() *winRTObject {
 	if int32(status) < 0 {
 		return nil
 	}
-	defer winRTWindowsDeleteString.Call(name)
+	defer winRTDeleteString(name)
 
 	var factory *winRTObject
 	status, _, _ = winRTRoGetActivationFactory.Call(
@@ -144,6 +148,11 @@ func winRTNetworkInformationFactory() *winRTObject {
 		return nil
 	}
 	return factory
+}
+
+func winRTDeleteString(value uintptr) {
+	// WindowsDeleteString always returns S_OK.
+	_, _, _ = winRTWindowsDeleteString.Call(value)
 }
 
 func winRTProfileIsOpen(profile *winRTObject) bool {
