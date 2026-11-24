@@ -121,7 +121,7 @@ func TestAppHandlerStreamsSSEWithoutBuffering(t *testing.T) {
 	responseChannel := make(chan *http.Response, 1)
 	errorChannel := make(chan error, 1)
 	go func() {
-		response, err := http.Get(appServer.URL + "/api/v1/copilot/sessions/session-1/messages/stream") //nolint:gosec -- local test server
+		response, err := http.Get(appServer.URL + "/api/v1/copilot/sessions/session-1/messages/stream")
 		if err != nil {
 			errorChannel <- err
 			return

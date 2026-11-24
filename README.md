@@ -68,8 +68,12 @@ npm --prefix frontend test
 npm --prefix frontend run build
 GOWORK=off go test ./...
 GOWORK=off go vet ./...
+GOWORK=off golangci-lint run ./...
 wails3 build
 ```
+
+The Desktop PR jobs run the configured Go lint checks against the merge candidate's
+PR diff on Linux, Windows and macOS. Build the frontend before running Go lint locally.
 
 ## CI Artifacts
 

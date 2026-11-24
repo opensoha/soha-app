@@ -16,3 +16,6 @@ task_plan.md
 findings.md
 progress.md
 graphify-out/
+.tmp/
+.tmp*
+frontend/.tmp/

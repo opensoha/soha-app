@@ -791,6 +791,7 @@ export function SoftwarePage() {
 }
 
 export function ProfilePage() {
+  const queryClient = useQueryClient();
   const { message } = App.useApp();
   const text = useText();
   const [profileForm] = Form.useForm<ProfileUpdate>();
@@ -810,7 +811,7 @@ export function ProfilePage() {
     mutationFn: updateProfile,
     onSuccess: (updated) => {
       updateSummary(updated);
-      profileQuery.refetch();
+      queryClient.setQueryData(["auth", "profile"], updated);
       message.success(text.profileSaved);
     },
     onError: (error) => message.error(readableError(error, text)),
@@ -1113,7 +1114,11 @@ function NetworkAdmissionView({ medium }: { medium: NetworkConnectionMedium }) {
         linkState={linkState}
         link={activeLink}
         options={options}
-        enabled={host?.app.platform === "windows" || host?.app.platform === "darwin"}
+        enabled={
+          host?.app.platform === "windows" ||
+          host?.app.platform === "darwin" ||
+          host?.app.platform === "linux"
+        }
       />
     </section>
   );

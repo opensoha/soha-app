@@ -1134,16 +1134,21 @@ function AssistantWorkspace({ ordinary }: { ordinary: boolean }) {
                           />
                         ))}
                       <div>{item.content}</div>
-                      {item.role === "user" &&
-                        messageReaction(messages.data || [], item) && (
+                      {(() => {
+                        const reaction =
+                          item.role === "user"
+                            ? messageReaction(messages.data || [], item)
+                            : undefined;
+                        return reaction ? (
                           <span
                             className="app-assistant-message-reaction"
                             role="img"
-                            aria-label={`助手回应 ${messageReaction(messages.data || [], item)}`}
+                            aria-label={`助手回应 ${reaction}`}
                           >
-                            {messageReaction(messages.data || [], item)}
+                            {reaction}
                           </span>
-                        )}
+                        ) : null;
+                      })()}
                     </div>
                     <MessageBackground item={item} />
                     {renderRuntimeSummary(item)}
@@ -1952,7 +1957,10 @@ function AssistantWorkspace({ ordinary }: { ordinary: boolean }) {
         ) : null}
       </div>
       <nav className="app-assistant-bottom" aria-label="个人助手导航">
-        {sections.map((item) => (
+        {(ordinary
+          ? sections.filter((item) => ["chat", "tasks"].includes(item.value))
+          : sections
+        ).map((item) => (
           <Button
             type="text"
             key={item.value}
@@ -2147,7 +2155,10 @@ function AssistantApproval({
     queryKey: ["assistant-approval", owner, id],
     queryFn: () => assistantApi.approvals(id),
     enabled: canView,
-    refetchInterval: 4000,
+    refetchInterval: (current) =>
+      !current.state.data || current.state.data.status === "pending"
+        ? 4000
+        : false,
   });
   const decide = useMutation({
     mutationFn: (action: "approve" | "reject" | "cancel") =>

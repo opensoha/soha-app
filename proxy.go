@@ -201,11 +201,14 @@ func (h *appHost) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			writeError(writer, http.StatusForbidden, "untrusted_origin", "Request origin is not allowed")
 			return
 		}
-		if h.runtimeAPI == nil {
+		h.nativeMu.RLock()
+		runtimeAPI := h.runtimeAPI
+		h.nativeMu.RUnlock()
+		if runtimeAPI == nil {
 			writeError(writer, http.StatusNotFound, "runtime_not_found", "Desktop runtime endpoint is unavailable")
 			return
 		}
-		h.runtimeAPI.ServeHTTP(writer, request)
+		runtimeAPI.ServeHTTP(writer, request)
 	case request.URL.Path == apiPrefix || strings.HasPrefix(request.URL.Path, apiPrefix+"/"):
 		h.handleAPI(writer, request)
 	default:
@@ -257,11 +260,18 @@ func (h *appHost) currentState() hostState {
 	h.stateMu.RLock()
 	source := h.source
 	h.stateMu.RUnlock()
+	h.nativeMu.RLock()
+	runtimeAPI := h.runtimeAPI
+	h.nativeMu.RUnlock()
+	info := h.appInfo
+	if runtimeHandler, ok := runtimeAPI.(*appRuntime); ok && runtimeHandler.updater != nil {
+		info.UpdateState = string(runtimeHandler.updater.State())
+	}
 	return hostState{
 		ServerURL:            h.target.Load().String(),
 		ConfigurationSource:  source,
 		ManagedByEnvironment: h.locked,
-		App:                  h.appInfo,
+		App:                  info,
 	}
 }
 
@@ -1013,15 +1023,4 @@ func constantTimeEqual(left string, right string) bool {
 		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(left), []byte(right)) == 1
-}
-
-func parseServerURL(rawServerURL string) (*url.URL, error) {
-	target, err := url.Parse(rawServerURL)
-	if err != nil || target.Host == "" || (target.Scheme != "http" && target.Scheme != "https") {
-		return nil, fmt.Errorf("invalid SOHA_SERVER_URL %q", rawServerURL)
-	}
-	if target.User != nil || target.RawQuery != "" || target.Fragment != "" {
-		return nil, fmt.Errorf("SOHA_SERVER_URL must not contain credentials, query, or fragment")
-	}
-	return target, nil
 }
