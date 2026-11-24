@@ -369,7 +369,7 @@ func (call meshCoreCall) do(method, path string, input any, result any) error {
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		return meshCoreStatus(response.StatusCode)
 	}
@@ -378,7 +378,7 @@ func (call meshCoreCall) do(method, path string, input any, result any) error {
 	}{Data: result}
 	decoder := json.NewDecoder(io.LimitReader(response.Body, 65537))
 	if err := decoder.Decode(&envelope); err != nil || envelope.Data == nil || !call.current() {
-		return errors.New("Core response could not be verified")
+		return errors.New("could not verify Core response")
 	}
 	return ensureJSONEOF(decoder)
 }

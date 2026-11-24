@@ -25,12 +25,12 @@ func summarizeMeshWorkspace(path string) (meshWorkspaceSummary, error) {
 	if err != nil {
 		return meshWorkspaceSummary{}, err
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 	dir, err := root.Open(".")
 	if err != nil {
 		return meshWorkspaceSummary{}, err
 	}
-	defer dir.Close()
+	defer func() { _ = dir.Close() }()
 	entries, err := dir.ReadDir(maxWorkspaceEntries + 1)
 	if err != nil && !errors.Is(err, io.EOF) {
 		return meshWorkspaceSummary{}, err
