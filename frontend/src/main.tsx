@@ -75,7 +75,7 @@ function Providers() {
     >
       <AntApp>
         <QueryClientProvider client={queryClient}>
-          <DesktopApp />
+          <DesktopApp initialEntries={window.location.pathname === '/companion' ? ['/companion'] : undefined} />
         </QueryClientProvider>
       </AntApp>
     </ConfigProvider>

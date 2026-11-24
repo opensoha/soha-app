@@ -98,6 +98,11 @@ type appHost struct {
 	openLogDirectory      func() error
 	openBrowserURL        func(string) error
 	personalArchiveDialog func() (string, error)
+	meshWorkspaceDialog   func() (string, error)
+	meshOpenInbox         func()
+	meshConfirmManaged    func(context.Context, string, string) bool
+	meshDelegationMu      sync.Mutex
+	meshDevice            meshLocalDevice
 	runtimeAPI            http.Handler
 }
 
@@ -183,6 +188,12 @@ func (h *appHost) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		h.handleOpenBrowser(writer, request)
 	case request.URL.Path == hostPrefix+"/personal-data/export":
 		h.handlePersonalDataExport(writer, request)
+	case request.URL.Path == hostPrefix+"/assistant-mesh/workspace-summary":
+		h.handleMeshWorkspaceSummary(writer, request)
+	case strings.HasPrefix(request.URL.Path, hostPrefix+"/assistant-mesh/delegation-"):
+		h.handleMeshDelegation(writer, request, strings.TrimPrefix(request.URL.Path, hostPrefix+"/assistant-mesh/delegation-"))
+	case request.URL.Path == hostPrefix+"/assistant-mesh/open-inbox":
+		h.handleMeshOpenInbox(writer, request)
 	case request.URL.Path == hostPrefix+"/auth/desktop/start":
 		h.handleDesktopAuth(writer, request)
 	case request.URL.Path == hostPrefix || strings.HasPrefix(request.URL.Path, hostPrefix+"/"):

@@ -34,6 +34,7 @@ import {
 import { applyBranding } from '@/branding'
 import { useText } from '@/i18n'
 import { AssistantPage } from '@/assistant'
+import { MeshCompanion } from '@/mesh-companion'
 import {
   checkServer,
   clearHostSession,
@@ -66,7 +67,9 @@ export function DesktopApp({ initialEntries }: { initialEntries?: string[] } = {
     >
       <MemoryRouter initialEntries={initialEntries}>
         <SessionBridge />
+        <MeshInboxNavigation />
         <Routes>
+          <Route path="/companion" element={<MeshCompanion />} />
           <Route path="/" element={<StartupPage />} />
           <Route path="/connect" element={<ConnectionPage />} />
           <Route path="/login" element={<LoginPage />} />
@@ -90,6 +93,22 @@ export function DesktopApp({ initialEntries }: { initialEntries?: string[] } = {
       </MemoryRouter>
     </ErrorBoundary>
   )
+}
+
+function MeshInboxNavigation() {
+  const navigate = useNavigate()
+  const location = useLocation()
+  useEffect(() => {
+    if (location.pathname === '/companion') return
+    const openInbox = () => {
+      const params = new URLSearchParams(location.pathname === '/assistant' ? location.search : '')
+      params.set('mesh', 'inbox')
+      navigate(`/assistant?${params}`)
+    }
+    window.addEventListener('soha-mesh-open-inbox', openInbox)
+    return () => window.removeEventListener('soha-mesh-open-inbox', openInbox)
+  }, [navigate, location.pathname, location.search])
+  return null
 }
 
 function StartupPage() {
