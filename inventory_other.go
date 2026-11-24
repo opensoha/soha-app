@@ -9,5 +9,12 @@ func collectPlatformFacts() (string, EndpointDeviceReportedFacts) {
 }
 
 func collectNetworkLinkStatus() NetworkLinkStatus {
-	return NetworkLinkStatus{DNSServers: []string{}}
+	status := observedNetworkAddress()
+	if status.Connected {
+		if ssid := observeCurrentOpenWiFiSSID(); ssid != "" {
+			status.Medium = "wifi"
+			status.OpenWiFiSSID = ssid
+		}
+	}
+	return status
 }

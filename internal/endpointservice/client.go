@@ -63,12 +63,14 @@ func validEndpointCapabilities(capabilities []string) bool {
 	}
 	seen := map[string]bool{}
 	for _, capability := range capabilities {
-		if seen[capability] || capability != "windows-channel-controls-v1" && capability != "mihomo" && capability != "mihomo-policy-v1" && capability != "mihomo-dns-pin-v1" && capability != "eap-profile-v1" && capability != "radius-eap-tls-v1" && capability != "endpoint-ui-presence-v1" && capability != "radius-eap-ttls-pap-v1" && capability != "eap-certificate-lifecycle-v1" {
+		if seen[capability] || capability != "windows-channel-controls-v1" && capability != "mihomo" && capability != "mihomo-policy-v1" && capability != "mihomo-dns-pin-v1" && capability != "eap-profile-v1" && capability != "radius-eap-tls-v1" && capability != "endpoint-ui-presence-v1" && capability != "endpoint-ui-lease-v1" && capability != "radius-eap-ttls-pap-v1" && capability != "eap-certificate-lifecycle-v1" {
 			return false
 		}
 		seen[capability] = true
 	}
-	return seen["eap-profile-v1"] == (seen["radius-eap-tls-v1"] || seen["radius-eap-ttls-pap-v1"]) && (!seen["eap-certificate-lifecycle-v1"] || seen["eap-profile-v1"])
+	return seen["eap-profile-v1"] == (seen["radius-eap-tls-v1"] || seen["radius-eap-ttls-pap-v1"]) &&
+		(!seen["eap-certificate-lifecycle-v1"] || seen["eap-profile-v1"]) &&
+		(!seen["endpoint-ui-lease-v1"] || seen["endpoint-ui-presence-v1"])
 }
 
 func (client *ControlClient) Enroll(ctx context.Context, input EnrollmentInput) (EnrollmentResult, error) {

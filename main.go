@@ -93,14 +93,15 @@ func main() {
 		catalog = activeServerSoftwareCatalog{host: host}
 	}
 	runtimeAPI := &appRuntime{
-		networkDisabled:      instance.networkDisabled,
-		version:              appVersion,
-		software:             newSoftwareLibrary(catalog),
-		networkCall:          endpointservice.CallIPC,
-		networkMihomoCall:    endpointservice.CallMihomoIPC,
-		networkAdmissionCall: endpointservice.CallAdmissionIPC,
-		openAdmissionProfile: openNativeAdmissionProfile,
-		networkLinkStatus:    collectNetworkLinkStatus,
+		networkDisabled:           instance.networkDisabled,
+		version:                   appVersion,
+		software:                  newSoftwareLibrary(catalog),
+		networkCall:               endpointservice.CallIPC,
+		networkMihomoCall:         endpointservice.CallMihomoIPC,
+		networkAdmissionCall:      endpointservice.CallAdmissionIPC,
+		networkAdmissionScopeCall: endpointservice.CallAdmissionUIScopeIPC,
+		openAdmissionProfile:      openNativeAdmissionProfile,
+		networkLinkStatus:         collectNetworkLinkStatus,
 	}
 	runtimeAPI.software.downloadDir = instance.downloadDir
 	host.setRuntimeAPI(wrapTask112Demo(runtimeAPI))
@@ -208,6 +209,7 @@ func main() {
 	companionWindow := newCompanionWindow(app, positions)
 	configureSystemTray(app, window, companionWindow, trayIcon)
 	if !instance.networkDisabled {
+		app.OnShutdown(func() { endpointservice.ReleaseAdmissionUIScope(host.nativeUIScopeSnapshot()) })
 		go endpointservice.RunNativeUIPresenceWithScope(app.Context(), host.nativeUIScopeSnapshot)
 	}
 

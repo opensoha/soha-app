@@ -16,6 +16,7 @@ import (
 type NativeUIScope struct {
 	ServerURL     string `json:"serverUrl"`
 	UserID        string `json:"userId"`
+	SessionID     string `json:"sessionId,omitempty"`
 	Epoch         string `json:"epoch"`
 	Generation    uint64 `json:"generation"`
 	Authenticated bool   `json:"authenticated"`
@@ -29,7 +30,7 @@ func normalizeNativeUIScope(s NativeUIScope) (NativeUIScope, error) {
 		return s, errors.New("invalid native UI server")
 	}
 	s.ServerURL = strings.TrimRight(u.String(), "/")
-	if !identifierPattern.MatchString(s.Epoch) || len(s.Epoch) < 16 || len(s.Epoch) > 128 || s.Generation == 0 || len(s.UserID) > 128 || strings.TrimSpace(s.UserID) != s.UserID || strings.IndexFunc(s.UserID, func(r rune) bool { return r < 32 || r == 127 }) >= 0 || s.Authenticated && s.UserID == "" {
+	if !identifierPattern.MatchString(s.Epoch) || len(s.Epoch) < 16 || len(s.Epoch) > 128 || s.Generation == 0 || len(s.UserID) > 128 || strings.TrimSpace(s.UserID) != s.UserID || strings.IndexFunc(s.UserID, func(r rune) bool { return r < 32 || r == 127 }) >= 0 || s.Authenticated && s.UserID == "" || s.SessionID != "" && !identifierPattern.MatchString(s.SessionID) {
 		return s, errors.New("invalid native UI scope")
 	}
 	return s, nil

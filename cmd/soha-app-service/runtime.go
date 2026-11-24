@@ -34,6 +34,9 @@ func newEndpointRuntime(configPath, version string, logger *slog.Logger) (*endpo
 	if err != nil {
 		return nil, err
 	}
+	if err := uiPresence.ConfigureAdmissionLease(config); err != nil {
+		return nil, err
+	}
 	privateKey, err := endpointservice.LoadOrCreatePrivateKey(config.PrivateKeyPath())
 	if err != nil {
 		return nil, err
@@ -80,6 +83,9 @@ func newEndpointRuntime(configPath, version string, logger *slog.Logger) (*endpo
 	}
 	if uiPresence != nil {
 		capabilities = append(capabilities, "endpoint-ui-presence-v1")
+	}
+	if config.StrictAdmissionUILease {
+		capabilities = append(capabilities, "endpoint-ui-lease-v1")
 	}
 	control, err := endpointservice.NewControlClient(config.ControlURL, config.RuntimeID, controlHTTP, 5*time.Minute, capabilities...)
 	if err != nil {

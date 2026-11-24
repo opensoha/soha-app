@@ -54,12 +54,13 @@ type updateEngine interface {
 }
 
 type appRuntime struct {
-	nativeScopeMu           sync.Mutex
-	nativeScope             endpointservice.NativeUIScope
-	nativeScopeKnown        bool
-	nativeRetiredScopes     map[string]bool
-	nativeKnownInterception bool
-	networkUIScopeCall      func(context.Context, endpointservice.NativeUIScope) (endpointservice.InterceptionStatus, error)
+	nativeScopeMu             sync.Mutex
+	nativeScope               endpointservice.NativeUIScope
+	nativeScopeKnown          bool
+	nativeRetiredScopes       map[string]bool
+	nativeKnownInterception   bool
+	networkUIScopeCall        func(context.Context, endpointservice.NativeUIScope) (endpointservice.InterceptionStatus, error)
+	networkAdmissionScopeCall func(context.Context, endpointservice.NativeUIScope) error
 
 	networkInterceptionCall func(context.Context, *endpointservice.InterceptionIntent) (endpointservice.InterceptionStatus, error)
 	networkProxyCall        func(context.Context, string, *endpointservice.ProxyAction, *api.NetworkProxyRulesInput) (endpointservice.ProxyWorkbench, error)
@@ -606,6 +607,11 @@ func (runtimeAPI *appRuntime) setNativeUIScope(ctx context.Context, scope endpoi
 	runtimeAPI.nativeScopeMu.Unlock()
 	if runtimeAPI.networkDisabled {
 		return nil
+	}
+	if call := runtimeAPI.networkAdmissionScopeCall; call != nil {
+		admissionCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		_ = call(admissionCtx, scope)
+		cancel()
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()

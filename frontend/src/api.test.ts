@@ -4,6 +4,7 @@ import {
   changePassword,
   createNetworkAccessGrant,
   getBootstrap,
+  getNetworkAdmissionChoices,
   getNetworkConnectionOptions,
   getPortalApplication,
   getPortalBootstrap,
@@ -216,6 +217,47 @@ describe('API transport', () => {
     const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit]
     expect(path).toBe('/api/v1/network-access/connection-options?deviceId=endpoint-mac-1')
     expect(new Headers(init.headers).get('Authorization')).toBe('Bearer device-access')
+  })
+
+  it('opts into bootstrap metadata and scoped NAS session readback', async () => {
+    const payload = {
+      items: [{
+        siteId: 'site-1',
+        siteName: 'Shanghai HQ',
+        accessMedium: 'wifi',
+        ssid: 'Soha-Staff',
+        authentication: 'radius_802_1x', // gitleaks:allow -- public protocol enum
+        accessProfile: 'full',
+        policyVersion: 8,
+        accessNetworkId: 'access-1',
+        networkName: 'Staff Wi-Fi',
+        recommendationPriority: 3,
+        autoConnect: true,
+        nasSession: { state: 'observed', lastReceivedAt: '2026-11-22T00:00:00Z' },
+      }],
+      bootstrapNetworks: [{
+        accessNetworkId: 'guest-1',
+        siteId: 'site-1',
+        name: 'Visitor',
+        ssid: 'Soha-Guest',
+        priority: 1,
+        autoConnect: false,
+      }],
+    }
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse(payload))
+      .mockResolvedValueOnce(jsonResponse({
+        ...payload,
+        items: [{ ...payload.items[0], nasSession: { state: 'forged-state' } }],
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+    setAccessToken('device-access')
+
+    const result = await getNetworkAdmissionChoices('endpoint-mac-1')
+    expect(result.items[0].accessNetworkId).toBe('access-1')
+    expect(result.items[0].nasSession).toEqual(payload.items[0].nasSession)
+    expect(result.bootstrapNetworks).toHaveLength(1)
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/network-access/connection-options?deviceId=endpoint-mac-1&includeBootstrap=true&includeNasSession=true')
+    await expect(getNetworkAdmissionChoices('endpoint-mac-1')).rejects.toBeInstanceOf(ApiError)
   })
 
   it('keeps password login JSON in the standard HTTP request body', async () => {

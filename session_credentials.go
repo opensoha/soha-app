@@ -189,52 +189,52 @@ func (h *appHost) markRefreshed(requestTarget *url.URL, previousToken, nextToken
 	}
 	h.persistAuthenticatedLocked(requestTarget, nextToken)
 	if len(scopes) > 0 {
-		if h.nativeScope.UserID != scopes[0].userID || h.nativeScope.Authenticated != (scopes[0].userID != "") {
+		if h.nativeScope.UserID != scopes[0].userID || h.nativeScope.SessionID != scopes[0].sessionID || h.nativeScope.Authenticated != (scopes[0].userID != "") {
 			h.nativeScope.Generation++
 		}
-		h.setAuthenticatedNativeUIScopeLocked(requestTarget, scopes[0].userID)
+		h.setAuthenticatedNativeUIScopeLocked(requestTarget, scopes[0])
 	}
 	return true
 }
 
-func redactAuthRefreshTokenAndUser(response *http.Response) (string, error) {
+func redactAuthRefreshTokenAndScope(response *http.Response, generation uint64) (authResponseScope, error) {
 	if response.Header.Get("Content-Encoding") != "" && response.Header.Get("Content-Encoding") != "identity" {
-		return "", errContractMismatch
+		return authResponseScope{}, errContractMismatch
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, desktopAuthMaxResponseBytes+1))
 	_ = response.Body.Close()
 	if err != nil || len(body) == 0 || len(body) > desktopAuthMaxResponseBytes {
-		return "", errContractMismatch
+		return authResponseScope{}, errContractMismatch
 	}
 
 	var envelope map[string]json.RawMessage
 	if json.Unmarshal(body, &envelope) != nil {
-		return "", errContractMismatch
+		return authResponseScope{}, errContractMismatch
 	}
 	dataValue, ok := envelope["data"]
 	if ok {
 		var data map[string]json.RawMessage
 		if json.Unmarshal(dataValue, &data) != nil {
-			return "", errContractMismatch
+			return authResponseScope{}, errContractMismatch
 		}
 		if tokensValue, hasTokens := data["tokens"]; hasTokens {
 			var tokens map[string]json.RawMessage
 			if json.Unmarshal(tokensValue, &tokens) != nil {
-				return "", errContractMismatch
+				return authResponseScope{}, errContractMismatch
 			}
 			if _, hasRefreshToken := tokens["refreshToken"]; hasRefreshToken {
 				delete(tokens, "refreshToken")
 				data["tokens"], err = json.Marshal(tokens)
 				if err != nil {
-					return "", errContractMismatch
+					return authResponseScope{}, errContractMismatch
 				}
 				envelope["data"], err = json.Marshal(data)
 				if err != nil {
-					return "", errContractMismatch
+					return authResponseScope{}, errContractMismatch
 				}
 				body, err = json.Marshal(envelope)
 				if err != nil {
-					return "", errContractMismatch
+					return authResponseScope{}, errContractMismatch
 				}
 			}
 		}
@@ -244,5 +244,5 @@ func redactAuthRefreshTokenAndUser(response *http.Response) (string, error) {
 	response.ContentLength = int64(len(body))
 	response.Header.Set("Content-Length", strconv.Itoa(len(body)))
 	response.Header.Del("Content-Encoding")
-	return verifiedAuthUserID(body), nil
+	return verifiedAuthScope(body, generation), nil
 }

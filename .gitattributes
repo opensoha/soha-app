@@ -3,8 +3,6 @@ build/ios/LaunchScreen.storyboard -whitespace
 build/linux/appimage/build.sh -whitespace
 build/linux/desktop -whitespace
 build/windows/** -whitespace
+*.go text eol=lf
 go.mod text eol=lf
 go.sum text eol=lf
-
-# Keep Heya's Go sources formatted on Windows CI.
-/mesh_*.go text eol=lf
