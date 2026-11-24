@@ -31,7 +31,8 @@ const installed = {
 const choices = () => ({
   items: [{
     accessNetworkId: profileId, siteId: "site", siteName: "Office", accessMedium: "wifi" as const, ssid: "Office",
-    authentication: "radius_802_1x" as const, accessProfile: "full" as const, policyVersion: 1, autoConnect: true,
+    authentication: "radius_802_1x" as const, // gitleaks:allow -- public protocol enum
+    accessProfile: "full" as const, policyVersion: 1, autoConnect: true,
     strictOnline: { leaseUntil: new Date(Date.now() + 20_000).toISOString() },
   }],
   bootstrapNetworks: [{ accessNetworkId: "guest", siteId: "site", name: "Guest", ssid: "Guest", priority: 1, autoConnect: false }],

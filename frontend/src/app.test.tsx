@@ -1043,7 +1043,8 @@ describe("desktop app", () => {
     vi.mocked(getAdmissionStatus).mockResolvedValue(admission);
     const observedAt = "2026-11-22T08:30:00Z";
     const option = { accessNetworkId: approved.id, siteId: "site-1", siteName: "上海总部", accessMedium: "wifi" as const, ssid: approved.ssid,
-      authentication: "radius_802_1x" as const, accessProfile: "full" as const, policyVersion: 7,
+      authentication: "radius_802_1x" as const, // gitleaks:allow -- public protocol enum
+      accessProfile: "full" as const, policyVersion: 7,
       nasSession: { state: "observed" as const, lastReceivedAt: observedAt } };
     vi.mocked(getNetworkAdmissionChoices).mockResolvedValue({ items: [option], bootstrapNetworks: [] });
     vi.mocked(getNetworkLinkStatus).mockResolvedValue({ known: false, connected: false, dnsServers: [] });
