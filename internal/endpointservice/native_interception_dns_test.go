@@ -130,7 +130,7 @@ func TestNativeInterceptionDNSForwardRetriesTruncatedUDP(t *testing.T) {
 				}
 				left, right := net.Pipe()
 				go func() {
-					defer right.Close()
+					defer func() { _ = right.Close() }()
 					_ = right.SetDeadline(time.Now().Add(time.Second))
 					raw := make([]byte, len(query))
 					var length [2]byte
@@ -255,7 +255,11 @@ func TestNativeInterceptionDNSUDPTruncatesOversizedReplyAndServesFullTCP(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer udpConn.Close()
+	defer func() {
+		if err := udpConn.Close(); err != nil {
+			t.Errorf("close UDP connection: %v", err)
+		}
+	}()
 	_ = udpConn.SetDeadline(time.Now().Add(2 * time.Second))
 	if _, err := udpConn.Write(query); err != nil {
 		t.Fatal(err)
@@ -277,7 +281,11 @@ func TestNativeInterceptionDNSUDPTruncatesOversizedReplyAndServesFullTCP(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tcpConn.Close()
+	defer func() {
+		if err := tcpConn.Close(); err != nil {
+			t.Errorf("close TCP connection: %v", err)
+		}
+	}()
 	_ = tcpConn.SetDeadline(time.Now().Add(2 * time.Second))
 	var length [2]byte
 	binary.BigEndian.PutUint16(length[:], uint16(len(query)))
