@@ -139,6 +139,13 @@ func serveIPCConnection(parent context.Context, connection net.Conn, manager *Ma
 							}
 						}
 					}
+				} else if request.Action == "admission_ui_presence" {
+					if request.UIScope == nil || request.Interception != nil || request.Connect != nil || request.Mihomo != nil ||
+						request.Admission != nil || request.Proxy != nil || request.PersonalRules != nil || request.ExpiresAt != nil {
+						err = errors.New("invalid strict admission UI scope parameters")
+					} else {
+						err = manager.options.UIPresence.observeAdmissionScope(connection, *request.UIScope, manager.now().UTC())
+					}
 				} else if request.Interception != nil || request.UIScope != nil {
 					err = errors.New("native interception requires a dedicated action")
 				} else if request.Action == "ui_presence" {
@@ -253,6 +260,15 @@ func runIPCAction(ctx context.Context, manager *Manager, request IPCRequest) (St
 }
 
 func CallIPC(ctx context.Context, action string, input *ConnectInput) (Status, error) {
+	return callStatusIPC(ctx, IPCRequest{Action: action, Connect: input})
+}
+
+func CallAdmissionUIScopeIPC(ctx context.Context, scope NativeUIScope) error {
+	_, err := callStatusIPC(ctx, IPCRequest{Action: "admission_ui_presence", UIScope: &scope})
+	return err
+}
+
+func callStatusIPC(ctx context.Context, request IPCRequest) (Status, error) {
 	connection, err := dialIPC(ctx)
 	if err != nil {
 		return Status{}, err
@@ -261,8 +277,8 @@ func CallIPC(ctx context.Context, action string, input *ConnectInput) (Status, e
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = connection.SetDeadline(deadline)
 	}
-	requestID := randomID()
-	raw, err := json.Marshal(IPCRequest{Version: IPCVersion, RequestID: requestID, Action: action, Connect: input})
+	request.Version, request.RequestID = IPCVersion, randomID()
+	raw, err := json.Marshal(request)
 	if err != nil {
 		return Status{}, err
 	}
@@ -274,7 +290,7 @@ func CallIPC(ctx context.Context, action string, input *ConnectInput) (Status, e
 		return Status{}, fmt.Errorf("read endpoint IPC response: %w", err)
 	}
 	var response IPCResponse
-	if err := decodeStrict(raw, &response); err != nil || response.Version != IPCVersion || response.RequestID != requestID || !validIPCStatus(response.Status) || response.Mihomo != nil || response.Admission != nil {
+	if err := decodeStrict(raw, &response); err != nil || response.Version != IPCVersion || response.RequestID != request.RequestID || !validIPCStatus(response.Status) || response.Mihomo != nil || response.Admission != nil {
 		return Status{}, errors.New("endpoint IPC response is invalid")
 	}
 	if !response.OK {
@@ -511,6 +527,7 @@ func CallInterceptionIPC(ctx context.Context, input *InterceptionIntent) (Interc
 	return callInterceptionIPC(ctx, action, input, nil)
 }
 func CallInterceptionUIScopeIPC(ctx context.Context, scope NativeUIScope) (InterceptionStatus, error) {
+	scope.SessionID = ""
 	return callInterceptionIPC(ctx, "interception_ui_scope", nil, &scope)
 }
 func callInterceptionIPC(ctx context.Context, action string, input *InterceptionIntent, scope *NativeUIScope) (InterceptionStatus, error) {

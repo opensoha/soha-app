@@ -41,6 +41,8 @@ type Config struct {
 	AllowedUserUID             *uint32 `json:"allowedUserUid,omitempty"`
 	UIExecutable               string  `json:"uiExecutable,omitempty"`
 	UICodeIdentity             string  `json:"uiCodeIdentity,omitempty"`
+	StrictAdmissionUILease     bool    `json:"strictAdmissionUiLease,omitempty"`
+	RequireWindowsEAPTPM       bool    `json:"requireWindowsEapTpm,omitempty"`
 	ControlURL                 string  `json:"controlUrl"`
 	ControlCAFile              string  `json:"controlCaFile"`
 	ControlCertFile            string  `json:"controlCertFile"`
@@ -84,6 +86,11 @@ func (config Config) Validate() error {
 	}
 	if (config.UIExecutable == "") != (config.UICodeIdentity == "") || config.UIExecutable != "" && (!filepath.IsAbs(config.UIExecutable) || len(config.UIExecutable) > 4096 || len(config.UICodeIdentity) > 80) {
 		return errors.New("trusted UI executable and code identity must be configured together")
+	}
+	if config.StrictAdmissionUILease {
+		if _, _, err := config.nativeUIBinding(); err != nil || config.UIExecutable == "" {
+			return errors.New("strict admission requires a trusted UI executable and a bound server/account")
+		}
 	}
 	if _, err := runtimeOrigin(config.ControlURL); err != nil {
 		return err

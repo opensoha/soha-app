@@ -56,6 +56,18 @@ func TestTelemetryMeasurementUnavailableDoesNotFailAcceptedHeartbeat(t *testing.
 
 const testAccessGrantToken = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
+func TestControlClientRequiresUIPresenceForStrictAdmissionLease(t *testing.T) {
+	t.Parallel()
+	const origin = "https://network-control.example.test"
+	const runtimeID = "endpoint-1"
+	if _, err := NewControlClient(origin, runtimeID, &http.Client{}, time.Minute, "endpoint-ui-presence-v1", "endpoint-ui-lease-v1"); err != nil {
+		t.Fatalf("strict enrollment capabilities rejected: %v", err)
+	}
+	if _, err := NewControlClient(origin, runtimeID, &http.Client{}, time.Minute, "endpoint-ui-lease-v1"); err == nil {
+		t.Fatal("strict admission lease accepted without UI presence capability")
+	}
+}
+
 func TestControlClientConnectUsesEndpointRuntimeEnvelope(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC().Truncate(time.Second)

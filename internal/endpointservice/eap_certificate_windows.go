@@ -79,7 +79,7 @@ func addEAPUserCertificate(storeName string, certificate *x509.Certificate, key 
 		if !ok || !key.public.Equal(public) || storeName != "MY" {
 			return errors.New("EAP certificate does not match its CNG private key")
 		}
-		info := eapKeyProviderInfo{ContainerName: windows.StringToUTF16Ptr(key.name), ProviderName: windows.StringToUTF16Ptr(eapCNGProvider), KeySpec: windows.CERT_NCRYPT_KEY_SPEC}
+		info := eapKeyProviderInfo{ContainerName: windows.StringToUTF16Ptr(key.name), ProviderName: windows.StringToUTF16Ptr(key.providerName), KeySpec: windows.CERT_NCRYPT_KEY_SPEC}
 		if err := eapCertSetProperty.Find(); err != nil {
 			return err
 		}
