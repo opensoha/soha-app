@@ -10,7 +10,7 @@ import {
   TeamOutlined,
   UserOutlined,
 } from '@ant-design/icons'
-import { Alert, App, Avatar, Button, Descriptions, Empty, Input, Segmented, Skeleton, Tag, Typography } from 'antd'
+import { Alert, App, Avatar, Button, Descriptions, Empty, Input, Pagination, Segmented, Skeleton, Tag, Typography } from 'antd'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
@@ -39,6 +39,8 @@ import './portal-network.css'
 
 type PortalView = 'all' | 'favorites' | 'colleague_works'
 
+const colleaguePageSize = 24
+
 export function PortalPage() {
   const { message } = App.useApp()
   const text = useText()
@@ -46,34 +48,47 @@ export function PortalPage() {
   const [category, setCategory] = useState('')
   const [view, setView] = useState<PortalView>('all')
   const [colleagueKind, setColleagueKind] = useState<'' | HostedAppKind>('')
-  const [selectedAuthor, setSelectedAuthor] = useState<PortalHostedAppAuthorSummary | null>(null)
+  const [selectedAuthorId, setSelectedAuthorId] = useState('')
+  const [colleaguePage, setColleaguePage] = useState(1)
   const debouncedColleagueQuery = useDebouncedSearch(view === 'colleague_works' ? search : '')
   const compactCards = useAppStore((state) => state.portalCardSize === 'compact')
   const serverURL = useAppStore((state) => state.host?.serverUrl)
   const bootstrapPermissions = useAppStore((state) => state.bootstrap?.permissionSnapshot.permissionKeys)
   const portal = useQuery({ queryKey: ['portal', 'bootstrap'], queryFn: getPortalBootstrap })
   const colleagueSummary = useQuery({
-    queryKey: ['portal', 'colleague-apps', { query: '', kind: undefined, authorUserId: undefined }],
-    queryFn: () => getPortalColleagueApps({ limit: 24 }),
+    queryKey: ['portal', 'colleague-apps', { query: '', kind: undefined, authorUserId: undefined, offset: 0 }],
+    queryFn: () => getPortalColleagueApps({ limit: colleaguePageSize, offset: 0 }),
     staleTime: 30_000,
     retry: false,
   })
   const colleagueParams = useMemo(() => ({
     query: debouncedColleagueQuery || undefined,
     kind: colleagueKind || undefined,
-    authorUserId: selectedAuthor?.userId || undefined,
-    limit: 24,
-  }), [colleagueKind, debouncedColleagueQuery, selectedAuthor?.userId])
+    authorUserId: selectedAuthorId || undefined,
+    limit: colleaguePageSize,
+    offset: (colleaguePage - 1) * colleaguePageSize,
+  }), [colleagueKind, debouncedColleagueQuery, selectedAuthorId, colleaguePage])
   const colleagueCatalog = useQuery({
     queryKey: ['portal', 'colleague-apps', {
       query: colleagueParams.query || '',
       kind: colleagueParams.kind,
       authorUserId: colleagueParams.authorUserId,
+      offset: colleagueParams.offset,
     }],
     queryFn: () => getPortalColleagueApps(colleagueParams),
     enabled: view === 'colleague_works',
     retry: false,
   })
+  useEffect(() => {
+    if (colleagueCatalog.data) {
+      const lastPage = Math.max(1, Math.ceil(colleagueCatalog.data.total / colleaguePageSize))
+      setColleaguePage((page) => Math.min(page, lastPage))
+    }
+  }, [colleagueCatalog.data])
+  const changeColleagueKind = (kind: '' | HostedAppKind) => {
+    setColleagueKind(kind)
+    setColleaguePage(1)
+  }
   const actions = usePortalActions()
   const categories = useMemo(() => Array.from(new Set([
     ...(portal.data?.categories || []),
@@ -139,7 +154,10 @@ export function PortalPage() {
           <Input
             allowClear
             aria-label={searchLabel}
-            onChange={(event) => setSearch(event.target.value)}
+            onChange={(event) => {
+              setSearch(event.target.value)
+              setColleaguePage(1)
+            }}
             placeholder={searchLabel}
             prefix={<SearchOutlined />}
             value={search}
@@ -155,6 +173,7 @@ export function PortalPage() {
                       ? 'colleague_works'
                       : 'all'
                 setView(nextView)
+                setColleaguePage(1)
               }}
               options={[
                 { label: text.portalApplications, value: 'all' },
@@ -177,9 +196,9 @@ export function PortalPage() {
         </div>
         {view === 'colleague_works' ? (
           <div className="portal-categories" role="group" aria-label={text.portalColleagueType}>
-            <Button aria-pressed={!colleagueKind} onClick={() => setColleagueKind('')} size="small" type="default">{text.portalAll}</Button>
-            <Button aria-pressed={colleagueKind === 'static'} onClick={() => setColleagueKind('static')} size="small" type="default">{text.portalHostedKindStatic}</Button>
-            <Button aria-pressed={colleagueKind === 'dynamic'} onClick={() => setColleagueKind('dynamic')} size="small" type="default">{text.portalHostedKindDynamic}</Button>
+            <Button aria-pressed={!colleagueKind} onClick={() => changeColleagueKind('')} size="small" type="default">{text.portalAll}</Button>
+            <Button aria-pressed={colleagueKind === 'static'} onClick={() => changeColleagueKind('static')} size="small" type="default">{text.portalHostedKindStatic}</Button>
+            <Button aria-pressed={colleagueKind === 'dynamic'} onClick={() => changeColleagueKind('dynamic')} size="small" type="default">{text.portalHostedKindDynamic}</Button>
           </div>
         ) : (
           <div className="portal-categories" role="group" aria-label={text.portalCategory}>
@@ -200,13 +219,19 @@ export function PortalPage() {
             hasFilter={Boolean(debouncedColleagueQuery || colleagueKind)}
             isError={colleagueCatalog.isError}
             isLoading={colleagueCatalog.isLoading}
-            onClearAuthor={() => setSelectedAuthor(null)}
+            currentPage={colleaguePage}
+            onClearAuthor={() => {
+              setSelectedAuthorId('')
+              setColleaguePage(1)
+            }}
+            onChangePage={setColleaguePage}
             onRetry={() => void colleagueCatalog.refetch()}
             onSelectAuthor={(author) => {
-              setSelectedAuthor(author)
+              setSelectedAuthorId(author.userId)
+              setColleaguePage(1)
               setSearch('')
             }}
-            selectedAuthor={selectedAuthor}
+            selectedAuthorId={selectedAuthorId}
             serverURL={serverURL}
           />
         ) : applications.length ? (
@@ -451,26 +476,30 @@ function formatPortalTimestamp(value: string): string {
 function ColleagueWorksSection({
   catalog,
   compact,
+  currentPage,
   error,
   hasFilter,
   isError,
   isLoading,
   onClearAuthor,
+  onChangePage,
   onRetry,
   onSelectAuthor,
-  selectedAuthor,
+  selectedAuthorId,
   serverURL,
 }: {
   catalog: PortalHostedAppCatalog | undefined
   compact: boolean
+  currentPage: number
   error: unknown
   hasFilter: boolean
   isError: boolean
   isLoading: boolean
   onClearAuthor: () => void
+  onChangePage: (page: number) => void
   onRetry: () => void
   onSelectAuthor: (author: PortalHostedAppAuthorSummary) => void
-  selectedAuthor: PortalHostedAppAuthorSummary | null
+  selectedAuthorId: string
   serverURL: string | undefined
 }) {
   const { message } = App.useApp()
@@ -499,12 +528,12 @@ function ColleagueWorksSection({
     )
   }
 
-  const activeAuthor = selectedAuthor ? (catalog.selectedAuthor ?? selectedAuthor) : null
-  const showAuthors = !activeAuthor && catalog.authors.length > 0
+  const activeAuthor = catalog.selectedAuthor?.userId === selectedAuthorId ? catalog.selectedAuthor : null
+  const showAuthors = !selectedAuthorId && catalog.authors.length > 0
 
   return (
     <div className="portal-colleague-works">
-      {activeAuthor ? (
+      {selectedAuthorId ? (
         <div className="portal-author-banner">
           <Button
             icon={<ArrowLeftOutlined />}
@@ -514,26 +543,28 @@ function ColleagueWorksSection({
           >
             {text.portalBackToColleagueWorks}
           </Button>
-          <div className="portal-author-banner-profile">
-            <Avatar
-              alt={activeAuthor.displayName}
-              className="portal-card-icon"
-              icon={<UserOutlined />}
-              size={40}
-              src={applicationImageURL(activeAuthor.avatarUrl, serverURL)}
-            />
-            <div className="portal-author-banner-meta">
-              <div className="portal-author-name-row">
-                <strong>{activeAuthor.displayName}</strong>
-                {activeAuthor.teamNames.map((team) => (
-                  <Tag key={team}>{team}</Tag>
-                ))}
+          {activeAuthor ? (
+            <div className="portal-author-banner-profile">
+              <Avatar
+                alt={activeAuthor.displayName}
+                className="portal-card-icon"
+                icon={<UserOutlined />}
+                size={40}
+                src={applicationImageURL(activeAuthor.avatarUrl, serverURL)}
+              />
+              <div className="portal-author-banner-meta">
+                <div className="portal-author-name-row">
+                  <strong>{activeAuthor.displayName}</strong>
+                  {activeAuthor.teamNames.map((team) => (
+                    <Tag key={team}>{team}</Tag>
+                  ))}
+                </div>
+                <span className="portal-author-count">
+                  {activeAuthor.visibleAppCount} {text.portalVisibleWorksSuffix}
+                </span>
               </div>
-              <span className="portal-author-count">
-                {activeAuthor.visibleAppCount} {text.portalVisibleWorksSuffix}
-              </span>
             </div>
-          </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -620,7 +651,7 @@ function ColleagueWorksSection({
           })}
         </div>
       ) : !showAuthors ? (
-        hasFilter || Boolean(activeAuthor) ? (
+        hasFilter || Boolean(selectedAuthorId) ? (
           <Empty description={text.portalColleagueNoMatches} image={Empty.PRESENTED_IMAGE_SIMPLE} />
         ) : (
           <Empty description={text.portalColleagueEmpty} image={Empty.PRESENTED_IMAGE_SIMPLE}>
@@ -629,6 +660,16 @@ function ColleagueWorksSection({
             </Typography.Paragraph>
           </Empty>
         )
+      ) : null}
+      {catalog.total > colleaguePageSize ? (
+        <Pagination
+          align="center"
+          current={currentPage}
+          onChange={onChangePage}
+          pageSize={colleaguePageSize}
+          showSizeChanger={false}
+          total={catalog.total}
+        />
       ) : null}
     </div>
   )

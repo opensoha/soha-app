@@ -412,8 +412,18 @@ describe('desktop provider portal', () => {
       url: 'javascript:alert(1)',
     }
 
+    let authorRevoked = false
     vi.mocked(getPortalColleagueApps).mockImplementation(async (params) => {
+      if (params?.offset === 24) {
+        return {
+          items: [{ ...scheduleTool, id: 'hosted-next', name: '第二页作品' }],
+          authors: [],
+          myAppsCount: 0,
+          total: 25,
+        }
+      }
       if (params?.authorUserId === 'user-zhang-market') {
+        if (authorRevoked) return { items: [], authors: [], myAppsCount: 0, total: 0 }
         return {
           items: [scheduleTool],
           authors: [],
@@ -442,7 +452,7 @@ describe('desktop provider portal', () => {
         items: [scheduleTool],
         authors: [],
         myAppsCount: 0,
-        total: 1,
+        total: 25,
       }
     })
 
@@ -458,6 +468,12 @@ describe('desktop provider portal', () => {
     expect(container.textContent).toContain('静态页面')
     expect(container.textContent).toContain('市场部')
 
+    const pageTwo = container.querySelector<HTMLElement>('.ant-pagination-item-2')
+    expect(pageTwo).not.toBeNull()
+    await act(async () => pageTwo?.click())
+    await waitForText(container, '第二页作品')
+    expect(getPortalColleagueApps).toHaveBeenCalledWith(expect.objectContaining({ limit: 24, offset: 24 }))
+
     // Search author name to display disambiguated author cards
     const search = container.querySelector<HTMLInputElement>(
       'input[aria-label="搜索作品名称或发布者姓名"]',
@@ -468,6 +484,7 @@ describe('desktop provider portal', () => {
       search.dispatchEvent(new Event('input', { bubbles: true }))
     })
     await waitForText(container, '财务部')
+    expect(getPortalColleagueApps).toHaveBeenCalledWith(expect.objectContaining({ query: '张伟', offset: 0 }))
     expect(container.textContent).toContain('2 个可见作品')
     expect(container.textContent).toContain('1 个可见作品')
 
@@ -490,6 +507,16 @@ describe('desktop provider portal', () => {
     await vi.waitFor(() =>
       expect(openBrowserURL).toHaveBeenCalledWith('https://schedule-1a2b.apps.example.com/'),
     )
+
+    authorRevoked = true
+    await act(async () => {
+      if (!search) return
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(search, '已撤回')
+      search.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await waitForText(container, '没有匹配的同事作品')
+    expect(container.querySelector('.portal-author-banner-profile')).toBeNull()
+    expect(container.textContent).not.toContain('市场排班看板')
 
     // Exit author view and switch kind filter to dynamic (unsafe URL must be rejected!)
     vi.mocked(openBrowserURL).mockClear()
