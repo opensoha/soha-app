@@ -60,7 +60,7 @@ export function ProfessionalTask({
     retry: false,
   });
   const metrics = useQuery({
-    queryKey: ["assistant-metrics", bootstrap?.currentUser.userId, sourceId],
+    queryKey: ["assistant-metrics", owner, sourceId],
     queryFn: () => assistantApi.metrics(sourceId!),
     enabled:
       selected.includes("performance") &&
@@ -69,7 +69,7 @@ export function ProfessionalTask({
     retry: false,
   });
   const inspections = useQuery({
-    queryKey: ["assistant-inspections", bootstrap?.currentUser.userId],
+    queryKey: ["assistant-inspections", owner],
     queryFn: assistantApi.inspections,
     enabled:
       selected.includes("inspection_review") &&

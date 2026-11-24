@@ -6,6 +6,7 @@ import (
 	"errors"
 	"go.yaml.in/yaml/v3"
 	"golang.org/x/net/dns/dnsmessage"
+	"io"
 	"net"
 	"net/netip"
 	"strings"
@@ -103,6 +104,81 @@ func TestNativeInterceptionDNSRecordsAndExpiry(t *testing.T) {
 		t.Fatal("expired DNS answered")
 	}
 }
+
+func TestNativeInterceptionDNSForwardRetriesTruncatedUDP(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		truncated   bool
+		tcpFails    bool
+		wantNetwork string
+	}{
+		{name: "complete UDP", wantNetwork: "udp"},
+		{name: "truncated UDP", truncated: true, wantNetwork: "udp,tcp"},
+		{name: "TCP unavailable", truncated: true, tcpFails: true, wantNetwork: "udp,tcp"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			query := nativeTestDNSQuery(t, "large.test", dnsmessage.TypeA)
+			var networks []string
+			p := &nativeDNSProxy{forward: true, until: time.Now().Add(time.Minute)}
+			p.dial = func(_ context.Context, network string, remote netip.AddrPort) (net.Conn, error) {
+				networks = append(networks, network)
+				if remote != netip.MustParseAddrPort("127.0.0.1:53") {
+					t.Fatalf("forwarding target changed: %s", remote)
+				}
+				if network == "tcp" && test.tcpFails {
+					return nil, errors.New("TCP unavailable")
+				}
+				left, right := net.Pipe()
+				go func() {
+					defer right.Close()
+					_ = right.SetDeadline(time.Now().Add(time.Second))
+					raw := make([]byte, len(query))
+					var length [2]byte
+					if network == "tcp" {
+						if _, err := io.ReadFull(right, length[:]); err != nil {
+							return
+						}
+						raw = make([]byte, binary.BigEndian.Uint16(length[:]))
+					}
+					if _, err := io.ReadFull(right, raw); err != nil {
+						return
+					}
+					var reply dnsmessage.Message
+					if reply.Unpack(raw) != nil {
+						return
+					}
+					reply.Response = true
+					reply.Truncated = network == "udp" && test.truncated
+					if !reply.Truncated {
+						reply.Answers = []dnsmessage.Resource{{Header: dnsmessage.ResourceHeader{Name: reply.Questions[0].Name, Class: dnsmessage.ClassINET, Type: dnsmessage.TypeA}, Body: &dnsmessage.AResource{A: [4]byte{192, 0, 2, 1}}}}
+					}
+					raw, _ = reply.Pack()
+					if network == "tcp" {
+						binary.BigEndian.PutUint16(length[:], uint16(len(raw)))
+						raw = append(length[:], raw...)
+					}
+					_, _ = right.Write(raw)
+				}()
+				return nativeQuiesceDNSConn{left}, nil
+			}
+			raw, err := p.exchange(context.Background(), query)
+			if strings.Join(networks, ",") != test.wantNetwork {
+				t.Fatalf("networks = %v, want %s", networks, test.wantNetwork)
+			}
+			if test.tcpFails {
+				if err == nil {
+					t.Fatal("truncated answer returned after TCP failure")
+				}
+				return
+			}
+			var reply dnsmessage.Message
+			if err != nil || reply.Unpack(raw) != nil || reply.Truncated || len(reply.Answers) != 1 || reply.ID != 234 {
+				t.Fatalf("forwarded answer incomplete: %v, %+v", err, reply)
+			}
+		})
+	}
+}
+
 func TestNativeInterceptionGeneratedTUNConfigurationAndLegacyIsolation(t *testing.T) {
 	c := managedMihomoConfiguration(9090)
 	c.SourceType = "manual_node"
@@ -156,4 +232,67 @@ func TestNativeInterceptionGeneratedTUNConfigurationAndLegacyIsolation(t *testin
 		t.Fatal("owned health probe is not a guarded DOMAIN rule")
 	}
 
+}
+
+func TestNativeInterceptionDNSUDPTruncatesOversizedReplyAndServesFullTCP(t *testing.T) {
+	addresses := make([]string, 0, 40)
+	for index := 1; index <= 40; index++ {
+		addresses = append(addresses, netip.AddrFrom4([4]byte{10, 0, 1, byte(index)}).String())
+	}
+	proxy, err := startNativeDNS(
+		nil,
+		[]DNSRecord{{Hostname: "large.internal.test", Addresses: addresses, ExpiresAt: time.Now().Add(time.Minute)}},
+		time.Now().Add(time.Minute),
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxy.close()
+
+	query := nativeTestDNSQuery(t, "large.internal.test", dnsmessage.TypeA)
+	udpConn, err := net.DialUDP("udp4", nil, net.UDPAddrFromAddrPort(proxy.endpoint()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer udpConn.Close()
+	_ = udpConn.SetDeadline(time.Now().Add(2 * time.Second))
+	if _, err := udpConn.Write(query); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 1024)
+	n, err := udpConn.Read(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n > 512 {
+		t.Fatalf("UDP reply size = %d, want <= 512", n)
+	}
+	var udpMsg dnsmessage.Message
+	if err := udpMsg.Unpack(buf[:n]); err != nil || !udpMsg.Truncated || len(udpMsg.Answers) != 0 {
+		t.Fatalf("expected truncated UDP header+question, got err=%v msg=%+v", err, udpMsg)
+	}
+
+	tcpConn, err := net.DialTimeout("tcp4", proxy.endpoint().String(), 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tcpConn.Close()
+	_ = tcpConn.SetDeadline(time.Now().Add(2 * time.Second))
+	var length [2]byte
+	binary.BigEndian.PutUint16(length[:], uint16(len(query)))
+	if _, err := tcpConn.Write(append(length[:], query...)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadFull(tcpConn, length[:]); err != nil {
+		t.Fatal(err)
+	}
+	tcpRaw := make([]byte, binary.BigEndian.Uint16(length[:]))
+	if _, err := io.ReadFull(tcpConn, tcpRaw); err != nil {
+		t.Fatal(err)
+	}
+	var tcpMsg dnsmessage.Message
+	if err := tcpMsg.Unpack(tcpRaw); err != nil || tcpMsg.Truncated || len(tcpMsg.Answers) != len(addresses) {
+		t.Fatalf("TCP reply incomplete: err=%v truncated=%v answers=%d", err, tcpMsg.Truncated, len(tcpMsg.Answers))
+	}
 }

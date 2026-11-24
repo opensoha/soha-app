@@ -127,11 +127,14 @@ tasks:
     summary: Builds the privileged macOS network service
     platforms: [darwin]
     cmds:
-      - '{{.LOCAL_VERIFY}} go build -trimpath -buildvcs=false -ldflags="-w -s {{.SERVICE_LDFLAGS}}" -o "{{.BIN_DIR}}/soha-app-service" ./cmd/soha-app-service'
+      - '{{.LOCAL_VERIFY}} go build -trimpath -buildvcs=false -ldflags="-w -s{{if .SERVICE_LDFLAGS}} {{.SERVICE_LDFLAGS}}{{end}}" -o "{{.BIN_DIR}}/soha-app-service" ./cmd/soha-app-service'
     env:
       CGO_ENABLED: 1
       GOOS: darwin
       GOARCH: '{{.ARCH | default ARCH}}'
+      CGO_CFLAGS: "-mmacosx-version-min=13.0"
+      CGO_LDFLAGS: "-mmacosx-version-min=13.0"
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
 
   package:universal:
     summary: Packages darwin universal binary (arm64 + amd64)

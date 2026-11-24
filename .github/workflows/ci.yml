@@ -118,7 +118,7 @@ jobs:
     env:
       GOWORK: 'off'
       GIT_COMMITTER_NAME: OpenSoha
-      GIT_COMMITTER_EMAIL: maintainers@opensoha.dev
+      GIT_COMMITTER_EMAIL: maintainers@opensoha.com
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -168,6 +168,27 @@ jobs:
           git merge-base --is-ancestor "$LINT_BASE_SHA" HEAD
           git diff --no-ext-diff --no-textconv --no-color --binary "$LINT_BASE_SHA" HEAD > "${RUNNER_TEMP}/soha-app-pr-lint.patch"
           test -s "${RUNNER_TEMP}/soha-app-pr-lint.patch"
+          # Check formatting once on Linux to use LF checkout bytes.
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            git diff --no-ext-diff --no-textconv --relative --name-only -z --diff-filter=ACMRT "$LINT_BASE_SHA" HEAD -- '*.go' | (
+              files=(--)
+              while IFS= read -r -d '' file; do
+                [[ -f "./$file" && ! -L "./$file" ]] || continue
+                # Generated files are validated by their existing generation checks.
+                if awk '/^package[[:space:]]/ {exit} /^\/\/ Code generated .* DO NOT EDIT\.$/ {found=1} END {exit !found}' "./$file"; then
+                  continue
+                fi
+                files+=("./$file")
+              done
+              if ((${#files[@]} > 1)); then
+                unformatted=$(gofmt -l "${files[@]}")
+                if [[ -n "$unformatted" ]]; then
+                  printf 'Run gofmt on:\n%s\n' "$unformatted" >&2
+                  exit 1
+                fi
+              fi
+            )
+          fi
       - name: Golangci-lint
         if: github.event_name == 'pull_request'
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0

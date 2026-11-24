@@ -51,7 +51,11 @@ export function readPendingRequests(owner?: string, session?: string) {
   return [...ids].sort().filter(id => {
     const state = pendingRequestState(owner, session, id);
     // Retain old keys for mixed clients; canonical receipts make import idempotent.
-    localStorage.setItem(requestKey(owner, session, id), JSON.stringify(state));
+    const key = requestKey(owner, session, id);
+    const encoded = JSON.stringify(state);
+    if (localStorage.getItem(key) !== encoded) {
+      localStorage.setItem(key, encoded);
+    }
     return !state.acknowledged;
   });
 }
