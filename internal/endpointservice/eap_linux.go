@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -133,7 +134,9 @@ func (s *LinuxEAPSystem) Adapters(ctx context.Context) ([]EAPAdapter, error) {
 	}
 	result := []EAPAdapter{}
 	for _, d := range devices {
-		result = append(result, EAPAdapter{ID: d.Path, Name: d.Interface, Medium: d.Medium, MACAddress: d.MAC, Enabled: d.Managed, LinkUp: d.Managed})
+		iface, ifaceErr := net.InterfaceByName(d.Interface)
+		linkUp := d.Managed && ifaceErr == nil && iface.Flags&net.FlagUp != 0
+		result = append(result, EAPAdapter{ID: d.Path, Name: d.Interface, Medium: d.Medium, MACAddress: d.MAC, Enabled: d.Managed, LinkUp: linkUp})
 	}
 	return result, nil
 }

@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
-	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -303,9 +302,6 @@ func nativeDial(c MihomoConfiguration, ctx context.Context, network, address str
 		return c.Egress.DialContext(ctx, network, address)
 	}
 	return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, network, address)
-}
-func nativeSnapshotEqual(a, b nativeSnapshot) bool {
-	return reflect.DeepEqual(a.Interfaces, b.Interfaces) && reflect.DeepEqual(a.Routes, b.Routes)
 }
 
 func nativeEgressReady(ctx context.Context, c MihomoConfiguration) error {

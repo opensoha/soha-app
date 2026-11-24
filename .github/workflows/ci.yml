@@ -118,9 +118,11 @@ jobs:
     env:
       GOWORK: 'off'
       GIT_COMMITTER_NAME: OpenSoha
-      GIT_COMMITTER_EMAIL: maintainers@opensoha.dev
+      GIT_COMMITTER_EMAIL: maintainers@opensoha.com
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: '1.27.4'
@@ -154,6 +156,46 @@ jobs:
       - name: Build frontend for host checks
         working-directory: frontend
         run: npm run build
+      - name: Prepare PR lint patch
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          LINT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$LINT_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git cat-file -e "${LINT_BASE_SHA}^{commit}"
+          git merge-base --is-ancestor "$LINT_BASE_SHA" HEAD
+          git diff --no-ext-diff --no-textconv --no-color --binary "$LINT_BASE_SHA" HEAD > "${RUNNER_TEMP}/soha-app-pr-lint.patch"
+          test -s "${RUNNER_TEMP}/soha-app-pr-lint.patch"
+          # Check formatting once on Linux to use LF checkout bytes.
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            git diff --no-ext-diff --no-textconv --relative --name-only -z --diff-filter=ACMRT "$LINT_BASE_SHA" HEAD -- '*.go' | (
+              files=(--)
+              while IFS= read -r -d '' file; do
+                [[ -f "./$file" && ! -L "./$file" ]] || continue
+                # Generated files are validated by their existing generation checks.
+                if awk '/^package[[:space:]]/ {exit} /^\/\/ Code generated .* DO NOT EDIT\.$/ {found=1} END {exit !found}' "./$file"; then
+                  continue
+                fi
+                files+=("./$file")
+              done
+              if ((${#files[@]} > 1)); then
+                unformatted=$(gofmt -l "${files[@]}")
+                if [[ -n "$unformatted" ]]; then
+                  printf 'Run gofmt on:\n%s\n' "$unformatted" >&2
+                  exit 1
+                fi
+              fi
+            )
+          fi
+      - name: Golangci-lint
+        if: github.event_name == 'pull_request'
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.14.0
+          # Use the local PR patch without GitHub API diff-size limits or extra permissions.
+          args: --timeout=5m --new-from-patch=${{ runner.temp }}/soha-app-pr-lint.patch
       - name: Audit Go dependencies
         if: runner.os == 'Linux'
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...

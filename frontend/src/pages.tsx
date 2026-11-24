@@ -792,6 +792,7 @@ export function SoftwarePage() {
 }
 
 export function ProfilePage() {
+  const queryClient = useQueryClient();
   const { message } = App.useApp();
   const text = useText();
   const [profileForm] = Form.useForm<ProfileUpdate>();
@@ -811,7 +812,7 @@ export function ProfilePage() {
     mutationFn: updateProfile,
     onSuccess: (updated) => {
       updateSummary(updated);
-      profileQuery.refetch();
+      queryClient.setQueryData(["auth", "profile"], updated);
       message.success(text.profileSaved);
     },
     onError: (error) => message.error(readableError(error, text)),

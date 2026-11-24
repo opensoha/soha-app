@@ -80,7 +80,7 @@ func uplinkFingerprint() (string, error) {
 	values := []string{}
 	for _, adapter := range interfaces {
 		name := strings.ToLower(adapter.Name)
-		if adapter.Flags&net.FlagUp == 0 || adapter.Flags&net.FlagLoopback != 0 || name == strings.ToLower(endpointInterfaceName) || strings.HasPrefix(name, "utun") {
+		if adapter.Flags&net.FlagUp == 0 || adapter.Flags&net.FlagLoopback != 0 || name == strings.ToLower(endpointInterfaceName) || name == "sohamihomo" || strings.HasPrefix(name, "utun") {
 			continue
 		}
 		addresses, err := adapter.Addrs()

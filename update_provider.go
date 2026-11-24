@@ -520,7 +520,10 @@ func newUpdateHTTPClient() *http.Client {
 	return &http.Client{
 		Transport: transport,
 		Timeout:   2 * time.Minute,
-		CheckRedirect: func(request *http.Request, _ []*http.Request) error {
+		CheckRedirect: func(request *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return errors.New("stopped after 10 redirects")
+			}
 			if request.URL.Scheme != "https" || !trustedUpdateHost(request.URL.Hostname()) {
 				return errors.New("update redirect is not trusted")
 			}

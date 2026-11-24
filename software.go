@@ -120,7 +120,11 @@ type serverSoftwarePackage struct {
 }
 
 func newServerSoftwareCatalog(rawServerURL string) (*serverSoftwareCatalog, error) {
-	baseURL, err := parseServerURL(rawServerURL)
+	normalized, err := normalizeServerURL(rawServerURL)
+	if err != nil {
+		return nil, err
+	}
+	baseURL, err := url.Parse(normalized)
 	if err != nil {
 		return nil, err
 	}
@@ -233,8 +237,6 @@ type softwareLibrary struct {
 	tasks       map[string]softwareInstallTask
 }
 
-var errSoftwareInstallBusy = errors.New("another software install is already running")
-
 func newSoftwareLibrary(catalog softwareCatalog) *softwareLibrary {
 	cacheDir, err := os.UserCacheDir()
 	if err != nil {
@@ -255,21 +257,21 @@ func (library *softwareLibrary) ServeHTTP(writer http.ResponseWriter, request *h
 	switch {
 	case request.URL.Path == "/app/v1/software":
 		if request.Method != http.MethodGet {
-			writeSoftwareError(writer, http.StatusMethodNotAllowed, "method_not_allowed", "请求方法不受支持")
+			writeError(writer, http.StatusMethodNotAllowed, "method_not_allowed", "请求方法不受支持")
 			return true
 		}
 		library.list(writer, request)
 		return true
 	case strings.HasPrefix(request.URL.Path, "/app/v1/software/tasks/"):
 		if request.Method != http.MethodGet {
-			writeSoftwareError(writer, http.StatusMethodNotAllowed, "method_not_allowed", "请求方法不受支持")
+			writeError(writer, http.StatusMethodNotAllowed, "method_not_allowed", "请求方法不受支持")
 			return true
 		}
 		library.getTask(writer, strings.TrimPrefix(request.URL.Path, "/app/v1/software/tasks/"))
 		return true
 	case strings.HasPrefix(request.URL.Path, "/app/v1/software/") && strings.HasSuffix(request.URL.Path, "/install"):
 		if request.Method != http.MethodPost {
-			writeSoftwareError(writer, http.StatusMethodNotAllowed, "method_not_allowed", "请求方法不受支持")
+			writeError(writer, http.StatusMethodNotAllowed, "method_not_allowed", "请求方法不受支持")
 			return true
 		}
 		id := strings.TrimSuffix(strings.TrimPrefix(request.URL.Path, "/app/v1/software/"), "/install")
@@ -284,7 +286,7 @@ func (library *softwareLibrary) list(writer http.ResponseWriter, request *http.R
 	items, err := library.loadCatalog(request.Context(), request.Header.Get("Authorization"))
 	if err != nil {
 		appLog.Error("software catalog is unavailable", "request_id", request.Header.Get("X-Request-Id"), "component", "software", "event", "app.software.catalog_unavailable", "error_type", logErrorType(err))
-		writeSoftwareError(writer, http.StatusServiceUnavailable, "catalog_unavailable", "软件目录暂不可用")
+		writeError(writer, http.StatusServiceUnavailable, "catalog_unavailable", "软件目录暂不可用")
 		return
 	}
 	packages := make([]softwarePackage, 0, len(items))
@@ -310,16 +312,16 @@ func (library *softwareLibrary) install(writer http.ResponseWriter, request *htt
 	items, err := library.loadCatalog(request.Context(), request.Header.Get("Authorization"))
 	if err != nil {
 		appLog.Error("software catalog is unavailable", "request_id", request.Header.Get("X-Request-Id"), "component", "software", "event", "app.software.catalog_unavailable", "error_type", logErrorType(err))
-		writeSoftwareError(writer, http.StatusServiceUnavailable, "catalog_unavailable", "软件目录暂不可用")
+		writeError(writer, http.StatusServiceUnavailable, "catalog_unavailable", "软件目录暂不可用")
 		return
 	}
 	item, artifact, ok := findSoftware(items, id, runtime.GOOS, runtime.GOARCH)
 	if !ok {
-		writeSoftwareError(writer, http.StatusNotFound, "software_not_found", "未找到适用于当前设备的软件")
+		writeError(writer, http.StatusNotFound, "software_not_found", "未找到适用于当前设备的软件")
 		return
 	}
 	if !library.installMu.TryLock() {
-		writeSoftwareError(writer, http.StatusConflict, "install_busy", "已有软件正在下载，请稍后再试")
+		writeError(writer, http.StatusConflict, "install_busy", "已有软件正在下载，请稍后再试")
 		return
 	}
 	task := softwareInstallTask{
@@ -353,7 +355,7 @@ func (library *softwareLibrary) getTask(writer http.ResponseWriter, id string) {
 	task, ok := library.tasks[id]
 	library.tasksMu.RUnlock()
 	if !ok {
-		writeSoftwareError(writer, http.StatusNotFound, "task_not_found", "安装任务不存在")
+		writeError(writer, http.StatusNotFound, "task_not_found", "安装任务不存在")
 		return
 	}
 	writeJSON(writer, http.StatusOK, softwareTaskResponse{Task: task})
@@ -581,10 +583,4 @@ func newTaskID() string {
 		return fmt.Sprintf("task-%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(value)
-}
-
-func writeSoftwareError(writer http.ResponseWriter, status int, code, message string) {
-	writeJSON(writer, status, map[string]any{
-		"error": map[string]string{"code": code, "message": message},
-	})
 }

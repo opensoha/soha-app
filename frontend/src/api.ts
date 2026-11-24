@@ -230,27 +230,7 @@ export async function getProfile(): Promise<UserProfile> {
   ) {
     throw contractError();
   }
-  return {
-    userId: data.userId as string,
-    username: data.username as string,
-    displayName: data.displayName as string,
-    email: data.email as string,
-    phone: optionalString(data.phone),
-    avatarUrl: optionalString(data.avatarUrl),
-    avatarFit: optionalString(data.avatarFit),
-    status: data.status as string,
-    roles: stringArray(data.roles),
-    teams: stringArray(data.teams),
-    projects: stringArray(data.projects),
-    tags: stringArray(data.tags),
-    identities: Array.isArray(data.identities)
-      ? data.identities
-          .filter(isRecord)
-          .map(normalizeIdentity)
-          .filter((item): item is LinkedIdentity => item !== null)
-      : [],
-    lastLoginAt: optionalString(data.lastLoginAt),
-  };
+  return getProfileFromData(data);
 }
 
 export async function updateProfile(

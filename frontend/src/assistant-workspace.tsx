@@ -12,6 +12,8 @@ export function AssistantWorkspace({ owner, environment, onRefresh }: { owner: s
   const [path, setPath] = useState("notes/example.txt");
   const [content, setContent] = useState("");
   const [sha, setSHA] = useState("");
+  const [unreadableFiles, setUnreadableFiles] = useState<ReadonlySet<string>>(() => new Set());
+  const fileReadBlocked = unreadableFiles.has(path);
   const [url, setURL] = useState("https://example.com/");
   const [selector, setSelector] = useState("");
   const [text, setText] = useState("");
@@ -30,7 +32,32 @@ export function AssistantWorkspace({ owner, environment, onRefresh }: { owner: s
   const controlled = ready && control?.owner === "user" && Date.parse(control.expiresAt) > Date.now();
   const canPoint = controlled && !!frame && frame.controlId === control.controlId && frame.generation === control.generation && frame.instanceId === control.instanceId;
   useEffect(() => { if (latest?.browser) setFrame(latest.browser); }, [latest]);
-  useEffect(() => { if (latest?.file && latest.file.path === path && latest.status === "succeeded" && loadedFile.current !== latest.id) { loadedFile.current = latest.id; setSHA(latest.file.sha256); if (latest.kind === "file_read") setContent(new TextDecoder("utf-8", {fatal: true}).decode(Uint8Array.from(atob(latest.file.contentBase64 ?? ""), c => c.charCodeAt(0)))); } }, [latest, path]);
+  useEffect(() => {
+    if (latest?.file && latest.file.path === path && latest.status === "succeeded" && loadedFile.current !== latest.id) {
+      loadedFile.current = latest.id;
+      if (latest.kind === "file_read") {
+        try {
+          const binary = atob(latest.file.contentBase64 ?? "");
+          const bytes = new Uint8Array(binary.length);
+          for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+          setContent(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+          setUnreadableFiles(files => {
+            if (!files.has(path)) return files;
+            const next = new Set(files);
+            next.delete(path);
+            return next;
+          });
+        } catch {
+          setContent("");
+          setSHA("");
+          setUnreadableFiles(files => new Set(files).add(path));
+          void message.error("文件内容不是有效 UTF-8 文本，无法在文本编辑器中打开。");
+          return;
+        }
+      }
+      setSHA(latest.file.sha256);
+    }
+  }, [latest, message, path]);
   const submit = (input: Omit<PersonalGuestRuntimeInput, "environmentVersion" | "idempotencyKey">) => run.mutate({ ...input, environmentVersion: environment.version, idempotencyKey: crypto.randomUUID() });
   const browser = (action: NonNullable<PersonalGuestRuntimeInput["browser"]>["action"], fields: Partial<NonNullable<PersonalGuestRuntimeInput["browser"]>> = {}) => submit({ kind: "browser", browser: { action, ...(control ? {controlId: control.controlId, generation: control.generation} : {}), ...fields } });
   const execute = () => { try { const values: unknown = JSON.parse(argv); if (!Array.isArray(values) || values.some(v => typeof v !== "string")) throw new Error(); submit({kind: tab === "docker" ? "docker" : "execute", argv: values as string[]}); } catch { void message.error("请输入由字符串组成的命令参数数组。"); } };
@@ -45,7 +72,17 @@ export function AssistantWorkspace({ owner, environment, onRefresh }: { owner: s
         {!ready && <Alert type="info" title="环境尚未通过当前就绪检查" description="先接通执行能力，再核对环境。聊天仍可继续。" />}
         <Tabs activeKey={tab} onChange={setTab} items={[
           ...["execute", "docker"].map(kind => ({key: kind, label: kind === "docker" ? "Docker" : "命令", children: <Space orientation="vertical" style={{width: "100%"}}><Typography.Text>{kind === "docker" ? "在固定镜像中执行，共用持久数据和硬配额。" : "在 VM 的隔离工作区执行。"}</Typography.Text><Input.TextArea aria-label="命令参数数组" value={argv} maxLength={8192} rows={3} onChange={e => setArgv(e.target.value)} /><Button disabled={!ready || busy} onClick={execute}>执行{kind === "docker" ? " Docker 命令" : "命令"}</Button></Space>})),
-          {key: "file", label: "文件", children: <Space orientation="vertical" style={{width: "100%"}}><Input aria-label="工作区文件路径" value={path} maxLength={1024} onChange={e => {setPath(e.target.value); setSHA("");}} /><Input.TextArea aria-label="工作区文件内容" value={content} rows={8} onChange={e => setContent(e.target.value)} /><Space wrap><Button disabled={!ready || busy} onClick={() => submit({kind: "file_read", file: {path}})}>读取文件</Button><Button disabled={!ready || busy} onClick={() => {const data = new TextEncoder().encode(content); if (data.length > 45056) {void message.error("文件最多 44 KiB"); return;} submit({kind: "file_write", file: {path, contentBase64: btoa(String.fromCharCode(...data)), ...(sha ? {expectedSHA256: sha} : {})}});}}>{sha ? "保存已核对的文件" : "创建新文件"}</Button></Space><Typography.Text type="secondary">更新前先读取；内容变化时服务端拒绝覆盖。</Typography.Text></Space>},
+          {key: "file", label: "文件", children: <Space orientation="vertical" style={{width: "100%"}}>
+            <Input aria-label="工作区文件路径" value={path} maxLength={1024} onChange={e => {setPath(e.target.value); setSHA("");}} />
+            <Input.TextArea aria-label="工作区文件内容" value={content} rows={8} disabled={fileReadBlocked} onChange={e => setContent(e.target.value)} />
+            <Space wrap>
+              <Button disabled={!ready || busy} onClick={() => submit({kind: "file_read", file: {path}})}>读取文件</Button>
+              <Button disabled={!ready || busy || fileReadBlocked} onClick={() => {const data = new TextEncoder().encode(content); if (data.length > 45056) {void message.error("文件最多 44 KiB"); return;} let binary = ""; for (let offset = 0; offset < data.length; offset += 8192) { binary += String.fromCharCode(...data.subarray(offset, offset + 8192)); } submit({kind: "file_write", file: {path, contentBase64: btoa(binary), ...(sha ? {expectedSHA256: sha} : {})}});}}>
+                {fileReadBlocked ? "无法保存此文件" : sha ? "保存已核对的文件" : "创建新文件"}
+              </Button>
+            </Space>
+            <Typography.Text type="secondary">更新前先读取；内容变化时服务端拒绝覆盖。</Typography.Text>
+          </Space>},
           {key: "browser", label: "浏览器", children: <Space orientation="vertical" style={{width: "100%"}}>
             <Typography.Text role="status">浏览器控权：{control?.owner === "user" ? "用户" : control?.owner === "agent" ? "Agent" : "未持有"}{control ? ` · 代次 ${control.generation}` : ""}</Typography.Text>
             <Space wrap><Button disabled={!ready || busy} onClick={() => browser(control?.owner === "agent" ? "takeover" : "acquire")}>接管浏览器</Button><Button disabled={!controlled || busy} onClick={() => browser("snapshot")}>刷新画面</Button><Button disabled={!controlled || busy} onClick={() => browser("release")}>释放控权</Button></Space>
