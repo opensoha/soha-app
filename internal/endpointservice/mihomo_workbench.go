@@ -193,7 +193,10 @@ func (e *CoordinatedExecutor) Proxy(ctx context.Context, action *ProxyAction, in
 		}
 		switch action.Kind {
 		case "start", "stop", "restart":
-			if action.Kind == "restart" {
+			if (action.Kind == "stop" || action.Kind == "restart") && e.native != nil && e.native.session != nil {
+				operationErr = e.restoreNativeLocked(ctx, false)
+			}
+			if operationErr == nil && action.Kind == "restart" {
 				operationErr = controller.setProcessRunning(ctx, false)
 			}
 			if operationErr == nil {

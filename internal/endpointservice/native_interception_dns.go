@@ -87,9 +87,13 @@ func (p *nativeDNSProxy) serveUDP(ctx context.Context) {
 			defer cancel()
 			reply, err := p.exchange(qctx, raw)
 			if err == nil {
+				udpReply, ok := nativeDNSUDPReply(raw, reply)
+				if !ok {
+					return
+				}
 				_ = p.emitReply(qctx, func() error {
 					_ = p.udp.SetWriteDeadline(time.Now().Add(5 * time.Second))
-					_, err := p.udp.WriteToUDPAddrPort(reply, remote)
+					_, err := p.udp.WriteToUDPAddrPort(udpReply, remote)
 					return err
 				})
 			}
@@ -142,6 +146,42 @@ func (p *nativeDNSProxy) serveTCP(ctx context.Context) {
 		}()
 	}
 }
+func nativeDNSUDPReply(rawQuery, reply []byte) ([]byte, bool) {
+	query, err := nativeDNSQuestion(rawQuery)
+	if err != nil {
+		return nil, false
+	}
+	limit := 512
+	if len(query.Additionals) == 1 && query.Additionals[0].Header.Type == dnsmessage.TypeOPT {
+		limit = min(max(int(query.Additionals[0].Header.Class), 512), 4096)
+	}
+	if len(reply) <= limit {
+		return reply, true
+	}
+	var parser dnsmessage.Parser
+	header, err := parser.Start(reply)
+	if err != nil {
+		return nil, false
+	}
+	truncated, err := (&dnsmessage.Message{
+		Header: dnsmessage.Header{
+			ID:                 header.ID,
+			Response:           true,
+			OpCode:             header.OpCode,
+			Authoritative:      header.Authoritative,
+			Truncated:          true,
+			RecursionDesired:   header.RecursionDesired,
+			RecursionAvailable: header.RecursionAvailable,
+			RCode:              header.RCode,
+		},
+		Questions: query.Questions,
+	}).Pack()
+	if err != nil {
+		return nil, false
+	}
+	return truncated, true
+}
+
 func nativeDNSQuestion(raw []byte) (dnsmessage.Message, error) {
 	var m dnsmessage.Message
 	if len(raw) < 12 || len(raw) > 4096 || m.Unpack(raw) != nil || m.Response || m.OpCode != 0 || m.RCode != 0 || m.Truncated || len(m.Questions) != 1 || len(m.Answers) > 0 || len(m.Authorities) > 0 || len(m.Additionals) > 1 {
@@ -288,13 +328,6 @@ func (p *nativeDNSProxy) exchange(ctx context.Context, raw []byte) ([]byte, erro
 		}
 		reply, err := p.query(ctx, "udp", netip.AddrPortFrom(ip, 53), query, m)
 		if err == nil {
-			var result dnsmessage.Message
-			_ = result.Unpack(reply)
-			if result.Truncated {
-				reply, err = p.query(ctx, "tcp", netip.AddrPortFrom(ip, 53), query, m)
-			}
-		}
-		if err == nil {
 			binary.BigEndian.PutUint16(reply[:2], original)
 			return reply, nil
 		}
@@ -352,6 +385,9 @@ func (p *nativeDNSProxy) query(ctx context.Context, network string, server netip
 	var reply dnsmessage.Message
 	if len(raw) < 12 || reply.Unpack(raw) != nil || !reply.Response || reply.OpCode != 0 || reply.ID != want.ID || len(reply.Questions) != 1 || reply.Questions[0].Type != want.Questions[0].Type || reply.Questions[0].Class != want.Questions[0].Class || !strings.EqualFold(reply.Questions[0].Name.String(), want.Questions[0].Name.String()) {
 		return nil, errors.New("untrusted DNS response")
+	}
+	if network == "udp" && reply.Truncated {
+		return p.query(ctx, "tcp", server, query, want)
 	}
 	return raw, nil
 }
