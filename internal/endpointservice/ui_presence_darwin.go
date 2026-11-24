@@ -55,6 +55,12 @@ func NewUIProcessPresence(config Config) (*UIProcessPresence, error) {
 			return errors.New("UI process has no authenticated peer PID")
 		}
 		return verifyDarwinUICode(pid, "", requirement)
+	}, verifyAdmission: func(connection net.Conn) error {
+		token, err := darwinNativePeer(connection)
+		if err != nil || token[0] != *config.AllowedUserUID || token[6] == 0 {
+			return errors.New("UI process has no authenticated desktop session")
+		}
+		return darwinNativeConsole(*config.AllowedUserUID, token[6])
 	}}, nil
 }
 

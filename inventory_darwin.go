@@ -36,12 +36,14 @@ func collectNetworkLinkStatus() NetworkLinkStatus {
 		}
 	}
 	if interfaceName == "" || status.IPAddress == "" {
-		return status
+		return observedNetworkAddress()
 	}
+	status.Known = true
 	status.Connected = true
 	status.Medium = "wired"
 	if strings.Contains(systemValue("/usr/sbin/ipconfig", "getsummary", interfaceName), "InterfaceType : WiFi") {
 		status.Medium = "wifi"
+		status.OpenWiFiSSID = observeOpenWiFiSSID(interfaceName)
 	}
 	return status
 }

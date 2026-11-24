@@ -22,6 +22,7 @@ type authGenerationContextKey struct{}
 type authResponseScope struct {
 	generation uint64
 	userID     string
+	sessionID  string
 }
 
 var nativeEpochOnce sync.Once
@@ -38,35 +39,46 @@ func authRequestGeneration(request *http.Request) uint64 {
 	return generation
 }
 
-func verifiedAuthUserID(body []byte) string {
+func verifiedAuthScope(body []byte, generation uint64) authResponseScope {
+	result := authResponseScope{generation: generation}
 	var envelope struct {
 		Data struct {
 			User struct {
 				UserID string `json:"userId"`
 			} `json:"user"`
+			Tokens struct {
+				SessionID string `json:"sessionId"`
+			} `json:"tokens"`
 		} `json:"data"`
 	}
 	if json.Unmarshal(body, &envelope) != nil {
-		return ""
+		return result
 	}
 	id := envelope.Data.User.UserID
 	if id == "" || len(id) > 128 || !utf8.ValidString(id) || strings.TrimSpace(id) != id || strings.IndexFunc(id, unicode.IsControl) >= 0 {
-		return ""
+		return result
 	}
-	return id
+	result.userID = id
+	sid := envelope.Data.Tokens.SessionID
+	if len(sid) <= 128 && strings.TrimSpace(sid) == sid && strings.IndexFunc(sid, unicode.IsControl) < 0 {
+		result.sessionID = sid
+	}
+	return result
 }
 
 // sessionMu owns scope and the credential generation as one authentication state.
 func (h *appHost) invalidateNativeUIScopeLocked() {
 	h.nativeScope.Generation++
 	h.nativeScope.UserID = ""
+	h.nativeScope.SessionID = ""
 	h.nativeScope.Authenticated = false
 }
 
-func (h *appHost) setAuthenticatedNativeUIScopeLocked(target *url.URL, userID string) {
+func (h *appHost) setAuthenticatedNativeUIScopeLocked(target *url.URL, scope authResponseScope) {
 	h.nativeScope.ServerURL = target.String()
-	h.nativeScope.UserID = userID
-	h.nativeScope.Authenticated = userID != ""
+	h.nativeScope.UserID = scope.userID
+	h.nativeScope.SessionID = scope.sessionID
+	h.nativeScope.Authenticated = scope.userID != ""
 }
 
 func (h *appHost) nativeUIScopeSnapshot() nativeUIScope {

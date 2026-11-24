@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/sha256"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -32,11 +33,14 @@ func (system *DarwinEAPSystem) Cleanup(ctx context.Context, job EAPCleanup) erro
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if key != nil && job.Certificate != nil {
-		certificate, err := parseEAPCertificate(job.Certificate.CertificatePEM)
+	var certificate *x509.Certificate
+	if job.Certificate != nil {
+		certificate, err = parseEAPCertificate(job.Certificate.CertificatePEM)
 		if err != nil {
 			return err
 		}
+	}
+	if key != nil && certificate != nil {
 		public, ok := certificate.PublicKey.(*ecdsa.PublicKey)
 		if !ok || !key.PublicKey.Equal(public) {
 			return errors.New("obsolete EAP certificate does not match its protected key")
@@ -46,6 +50,9 @@ func (system *DarwinEAPSystem) Cleanup(ctx context.Context, job EAPCleanup) erro
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
+	}
+	if certificate != nil {
+		return darwinEAPIdentityRetired(ctx, certificate.Raw)
 	}
 	return nil
 }

@@ -153,9 +153,11 @@ func nmEAPSettingsHash(settings nmEAPSettings) string {
 type nmEAPOps interface {
 	Capability(context.Context) (nmEAPCapability, error)
 	Add(context.Context, nmEAPSettings, uint32) (string, error)
+	AddAndActivate(context.Context, nmEAPSettings, nmEAPReceipt) (string, error)
 	Inspect(context.Context, nmEAPReceipt) (nmEAPReceipt, error)
 	Activate(context.Context, nmEAPReceipt) error
 	WaitActivated(context.Context, nmEAPReceipt) error
+	MakeVolatile(context.Context, nmEAPReceipt) error
 	RemoveOwned(context.Context, nmEAPReceipt) error
 }
 
@@ -213,6 +215,49 @@ func matchNMEAPReceipt(expected, actual nmEAPReceipt) error {
 	return nil
 }
 
+// activateStagedNMEAPTLS activates an already-staged certificate profile. Ownership is
+// verified before the first mutation, so an unknown or foreign profile is never activated
+// or removed. Once activation is attempted, every failure removes only the exact receipt.
+func activateStagedNMEAPTLS(ctx context.Context, ops nmEAPOps, receipt nmEAPReceipt) (result error) {
+	if ops == nil {
+		return errors.New("NetworkManager lifecycle dependencies are unavailable")
+	}
+	actual, err := ops.Inspect(ctx, receipt)
+	if err != nil {
+		return err
+	}
+	if err := matchNMEAPReceipt(receipt, actual); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	defer func() {
+		if result != nil {
+			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			defer cancel()
+			result = errors.Join(result, ops.RemoveOwned(cleanup, receipt))
+		}
+	}()
+	if err := ops.Activate(ctx, receipt); err != nil {
+		return errors.New("NetworkManager activation failed")
+	}
+	if err := ops.WaitActivated(ctx, receipt); err != nil {
+		return err
+	}
+	if err := ops.MakeVolatile(ctx, receipt); err != nil {
+		return err
+	}
+	actual, err = ops.Inspect(ctx, receipt)
+	if err != nil {
+		return err
+	}
+	if err := matchNMEAPReceipt(receipt, actual); err != nil {
+		return err
+	}
+	return ctx.Err()
+}
+
 // Cleanup gets an independent deadline after cancellation. A retained receipt is the
 // retry identity when cleanup fails; callers must durably retain it before any add.
 func connectNMEAP(ctx context.Context, ops nmEAPOps, input nmEAPInput, check nmEAPFileCheck, now time.Time, persist func(nmEAPReceipt) error) (receipt nmEAPReceipt, result error) {
@@ -252,10 +297,18 @@ func connectNMEAP(ctx context.Context, ops nmEAPOps, input nmEAPInput, check nmE
 	if err := ctx.Err(); err != nil {
 		return receipt, err
 	}
-	// IN_MEMORY | BLOCK_AUTOCONNECT: never write the user's password to a keyfile.
-	receipt.ConnectionPath, err = ops.Add(ctx, settings, 0x2|0x20)
-	if err != nil {
-		return receipt, errors.New("NetworkManager connection installation failed")
+	ttls := input.Material.Method == "ttls"
+	if ttls {
+		receipt.ConnectionPath, err = ops.AddAndActivate(ctx, settings, receipt)
+		if err != nil {
+			return receipt, errors.New("NetworkManager activation failed")
+		}
+	} else {
+		// The certificate profile is staged first so it can be inspected before activation.
+		receipt.ConnectionPath, err = ops.Add(ctx, settings, 0x2|0x20)
+		if err != nil {
+			return receipt, errors.New("NetworkManager connection installation failed")
+		}
 	}
 	if err := persist(receipt); err != nil {
 		return receipt, err
@@ -270,11 +323,18 @@ func connectNMEAP(ctx context.Context, ops nmEAPOps, input nmEAPInput, check nmE
 	if err := ctx.Err(); err != nil {
 		return receipt, err
 	}
-	if err := ops.Activate(ctx, receipt); err != nil {
-		return receipt, errors.New("NetworkManager activation failed")
+	if !ttls {
+		if err := ops.Activate(ctx, receipt); err != nil {
+			return receipt, errors.New("NetworkManager activation failed")
+		}
 	}
 	if err := ops.WaitActivated(ctx, receipt); err != nil {
 		return receipt, err
+	}
+	if !ttls {
+		if err := ops.MakeVolatile(ctx, receipt); err != nil {
+			return receipt, err
+		}
 	}
 	actual, err = ops.Inspect(ctx, receipt)
 	if err != nil {

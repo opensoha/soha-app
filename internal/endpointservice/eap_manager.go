@@ -18,6 +18,11 @@ type EAPControl interface {
 	ActivateEAPCertificate(context.Context, EAPCertificateActivateRequest) (EAPCertificateActivateResult, error)
 }
 
+// A platform may report this only after proving the managed volatile profile
+// is absent and its locally prepared material can be restaged. Initial
+// certificate activation still requires successful OS profile readback.
+var errEAPVolatileProfileAbsent = errors.New("managed volatile EAP profile can be restaged")
+
 type EAPSystem interface {
 	Adapters(context.Context) ([]EAPAdapter, error)
 	CreateCSR(context.Context, string) (string, error)
@@ -223,7 +228,9 @@ func (manager *AdmissionManager) Status(ctx context.Context) (AdmissionStatus, e
 				break
 			}
 			if certificate := manager.targetCertificate(); certificate != nil && selection.Fingerprint == certificate.Fingerprint {
-				if readErr := manager.system.Readback(ctx, selection.RequestID, selection.Profile, *certificate, selection.Adapter); readErr == nil {
+				readErr := manager.system.Readback(ctx, selection.RequestID, selection.Profile, *certificate, selection.Adapter)
+				if readErr == nil ||
+					(errors.Is(readErr, errEAPVolatileProfileAbsent) && manager.state.Pending == nil && manager.activeCurrent()) {
 					item.State = "installed"
 					if manager.state.Pending != nil {
 						item.State = "activation_pending"
@@ -314,7 +321,11 @@ func (manager *AdmissionManager) ensureIdentity(ctx context.Context, subjectID s
 		if len(manager.state.Cleanup) >= 16 {
 			return errors.New("EAP cleanup must complete before another identity is created")
 		}
-		manager.state.Pending = &eapIdentity{RequestID: randomID()}
+		requestID := randomID()
+		if system, ok := manager.system.(interface{ EAPIdentityRequestID(string) string }); ok {
+			requestID = system.EAPIdentityRequestID(requestID)
+		}
+		manager.state.Pending = &eapIdentity{RequestID: requestID}
 		if err := manager.save(); err != nil {
 			return err
 		}
@@ -619,7 +630,7 @@ func (manager *AdmissionManager) ConnectInput(ctx context.Context, input Admissi
 			return errors.New("EAP identity must be installed and activated before connecting")
 		}
 		if selection.Profile.ID == profileID && eapProfileHash(selection.Profile) == eapProfileHash(profile) {
-			if err := manager.system.Readback(ctx, selection.RequestID, profile, *manager.state.Active.Certificate, selection.Adapter); err != nil {
+			if err := manager.system.Readback(ctx, selection.RequestID, profile, *manager.state.Active.Certificate, selection.Adapter); err != nil && !errors.Is(err, errEAPVolatileProfileAbsent) {
 				return err
 			}
 			return manager.system.Connect(ctx, selection.RequestID, profile, *manager.state.Active.Certificate, selection.Adapter)

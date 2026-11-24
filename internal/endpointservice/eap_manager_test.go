@@ -39,6 +39,7 @@ type fakeEAPSystem struct {
 	connects     int
 	cleanup      []EAPCleanup
 	cleanupError error
+	readbackErr  error
 }
 
 func (system *fakeEAPSystem) Adapters(context.Context) ([]EAPAdapter, error) {
@@ -52,6 +53,9 @@ func (system *fakeEAPSystem) Stage(_ context.Context, _ string, profile Admissio
 	return EAPStagedProfile{EAPArtifact: EAPArtifact{Path: "/Users/example/Soha-EAP.mobileconfig", SHA256: strings.Repeat("a", 64)}, IdentitySHA256: strings.Repeat("b", 64)}, nil
 }
 func (system *fakeEAPSystem) Readback(_ context.Context, _ string, profile AdmissionProfile, certificate EAPCertificateResult, _ EAPAdapter) error {
+	if system.readbackErr != nil {
+		return system.readbackErr
+	}
 	if system.installed[profile.ID] != certificate.Fingerprint {
 		return errors.New("not installed")
 	}
@@ -129,6 +133,38 @@ func TestAdmissionRequiresOSReadbackBeforeActivationAndConnection(t *testing.T) 
 	}
 	if err := resumed.Connect(ctx, profile.ID); err == nil {
 		t.Fatal("restart reused authorization without a new control configuration")
+	}
+}
+
+func TestAdmissionVolatileRestageRequiresActiveAuthorization(t *testing.T) {
+	ctx := context.Background()
+	manager, control, system, profile := admissionFixture(t)
+	if err := manager.Prepare(ctx, AdmissionInput{ProfileID: profile.ID, AdapterID: "wifi-1"}); err != nil {
+		t.Fatal(err)
+	}
+	system.readbackErr = errEAPVolatileProfileAbsent
+	if err := manager.Check(ctx); err != nil || control.activations != 0 {
+		t.Fatalf("missing OS profile activated an identity: %v", err)
+	}
+	if err := manager.Connect(ctx, profile.ID); err == nil {
+		t.Fatal("pending identity was allowed to restage")
+	}
+	system.readbackErr = nil
+	system.installed[profile.ID] = control.certificate.Fingerprint
+	if err := manager.Check(ctx); err != nil || control.activations != 1 {
+		t.Fatalf("installed identity did not activate: %v", err)
+	}
+	system.readbackErr = errEAPVolatileProfileAbsent
+	status, err := manager.Status(ctx)
+	if err != nil || status.Profiles[0].State != "installed" {
+		t.Fatalf("activated volatile profile is not ready: %+v, %v", status, err)
+	}
+	if err := manager.Connect(ctx, profile.ID); err != nil || system.connects != 1 {
+		t.Fatalf("activated identity was not allowed to restage: %v", err)
+	}
+	manager.now = func() time.Time { return time.Now().Add(10 * time.Minute) }
+	if err := manager.Connect(ctx, profile.ID); err == nil || system.connects != 1 {
+		t.Fatal("expired authorization was allowed to restage")
 	}
 }
 

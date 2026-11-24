@@ -26,7 +26,8 @@ static SecIdentityRef sohaEAPCopySystemIdentity(const unsigned char *der, unsign
   for(CFIndex index=0;index<CFArrayGetCount(identities);index++) {
    SecIdentityRef identity=(SecIdentityRef)CFArrayGetValueAtIndex(identities,index);
    SecCertificateRef certificate=NULL;
-   if(SecIdentityCopyCertificate(identity,&certificate)!=errSecSuccess)continue;
+   OSStatus certificateStatus=SecIdentityCopyCertificate(identity,&certificate);
+   if(certificateStatus!=errSecSuccess){if(*status==errSecSuccess)*status=errSecDecode;continue;}
    CFDataRef actual=SecCertificateCopyData(certificate);CFRelease(certificate);
    int equal=actual && CFEqual(actual,expected);if(actual)CFRelease(actual);
    if(!equal)continue;
@@ -41,6 +42,8 @@ static SecIdentityRef sohaEAPCopySystemIdentity(const unsigned char *der, unsign
     *status=errSecAuthFailed;
    }
   }
+ } else {
+  *status=errSecDecode;
  }
  CFRelease(expected);CFRelease(result);
  if(!found && *status==errSecSuccess)*status=errSecItemNotFound;

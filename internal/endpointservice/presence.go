@@ -12,15 +12,16 @@ const MessageEndpointPresenceRequest = "endpoint.presence.request"
 const MessageEndpointPresenceResult = "endpoint.presence.result"
 
 type EndpointPresenceRequest struct {
-	AdmissionPolicyVersion int        `json:"admissionPolicyVersion,omitempty"`
-	DeviceID               string     `json:"deviceId"`
-	BootID                 string     `json:"bootId"`
-	Sequence               int64      `json:"sequence"`
-	Status                 string     `json:"status"`
-	ConfigurationVersion   int        `json:"configurationVersion"`
-	PolicyVersion          int        `json:"policyVersion"`
-	UIState                string     `json:"uiState"`
-	UIObservedAt           *time.Time `json:"uiObservedAt,omitempty"`
+	AdmissionPolicyVersion int              `json:"admissionPolicyVersion,omitempty"`
+	DeviceID               string           `json:"deviceId"`
+	BootID                 string           `json:"bootId"`
+	Sequence               int64            `json:"sequence"`
+	Status                 string           `json:"status"`
+	ConfigurationVersion   int              `json:"configurationVersion"`
+	PolicyVersion          int              `json:"policyVersion"`
+	UIState                string           `json:"uiState"`
+	UIObservedAt           *time.Time       `json:"uiObservedAt,omitempty"`
+	UILogin                *endpointUILogin `json:"uiLogin,omitempty"`
 }
 
 type EndpointPresenceResult struct {
@@ -38,6 +39,9 @@ type EndpointPresenceControl interface {
 func (client *ControlClient) PublishPresence(ctx context.Context, payload EndpointPresenceRequest) (EndpointPresenceResult, error) {
 	if !identifierPattern.MatchString(payload.DeviceID) || !identifierPattern.MatchString(payload.BootID) || payload.Sequence < 1 || payload.Status != "healthy" && payload.Status != "unhealthy" || !validUIObservation(payload.UIState, payload.UIObservedAt, slices.Contains(client.capabilities, "endpoint-ui-presence-v1"), client.now()) || payload.ConfigurationVersion < 0 || payload.PolicyVersion < 0 || payload.AdmissionPolicyVersion < 0 {
 		return EndpointPresenceResult{}, errors.New("endpoint presence is invalid")
+	}
+	if payload.UILogin != nil && (!slices.Contains(client.capabilities, "endpoint-ui-lease-v1") || payload.UIState != "online") {
+		return EndpointPresenceResult{}, errors.New("scoped UI presence is unavailable")
 	}
 	raw, err := client.runtimeMessage(MessageEndpointPresenceRequest, payload)
 	if err != nil {
@@ -58,8 +62,12 @@ func (manager *Manager) runPresence(ctx context.Context, publisher EndpointPrese
 	delay, retry := time.Duration(0), time.Second
 	sequence := int64(0)
 	admissionVersion := 0
+	var strict *uiAdmissionPresence
+	if manager.options.UIPresence != nil {
+		strict = manager.options.UIPresence.strict
+	}
 	for {
-		if delay > 0 && !manager.heartbeatWait(ctx, manager.intervalJitter(delay)) {
+		if delay > 0 && !manager.waitPresence(ctx, delay, strict) {
 			return
 		}
 		if ctx.Err() != nil {
@@ -75,8 +83,17 @@ func (manager *Manager) runPresence(ctx context.Context, publisher EndpointPrese
 			health = "unhealthy"
 		}
 		callCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		uiState, observedAt := manager.options.UIPresence.Snapshot(manager.now().UTC())
-		result, err := publisher.PublishPresence(callCtx, EndpointPresenceRequest{DeviceID: manager.options.DeviceID, BootID: manager.presenceBootID, Sequence: sequence, Status: health, ConfigurationVersion: status.ConfigurationVersion, PolicyVersion: status.PolicyVersion, AdmissionPolicyVersion: admissionVersion, UIState: uiState, UIObservedAt: observedAt})
+		now := manager.now().UTC()
+		uiState, observedAt := manager.options.UIPresence.Snapshot(now)
+		var login *endpointUILogin
+		if strict != nil && health == "healthy" {
+			var scopedObservedAt *time.Time
+			login, scopedObservedAt = strict.snapshot(now)
+			if login != nil {
+				uiState, observedAt = "online", scopedObservedAt
+			}
+		}
+		result, err := publisher.PublishPresence(callCtx, EndpointPresenceRequest{DeviceID: manager.options.DeviceID, BootID: manager.presenceBootID, Sequence: sequence, Status: health, ConfigurationVersion: status.ConfigurationVersion, PolicyVersion: status.PolicyVersion, AdmissionPolicyVersion: admissionVersion, UIState: uiState, UIObservedAt: observedAt, UILogin: login})
 		cancel()
 		if err != nil {
 			if ctx.Err() != nil {
@@ -96,4 +113,19 @@ func (manager *Manager) runPresence(ctx context.Context, publisher EndpointPrese
 		})
 		delay, retry = time.Duration(result.NextHeartbeatSeconds)*time.Second, time.Second
 	}
+}
+
+func (manager *Manager) waitPresence(ctx context.Context, delay time.Duration, strict *uiAdmissionPresence) bool {
+	if strict == nil {
+		return manager.heartbeatWait(ctx, manager.intervalJitter(delay))
+	}
+	timer := time.NewTimer(min(delay, 10*time.Second))
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-strict.changed:
+	case <-timer.C:
+	}
+	return true
 }

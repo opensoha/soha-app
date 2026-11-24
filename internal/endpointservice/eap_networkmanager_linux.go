@@ -17,6 +17,7 @@ import (
 const nmName = "org.freedesktop.NetworkManager"
 const nmRoot = dbus.ObjectPath("/org/freedesktop/NetworkManager")
 const nmSettings = dbus.ObjectPath("/org/freedesktop/NetworkManager/Settings")
+const nmConnectionVolatile = 0x04
 
 type nmDBusOps struct {
 	conn  *dbus.Conn
@@ -153,6 +154,63 @@ func (o *nmDBusOps) Add(ctx context.Context, s nmEAPSettings, flags uint32) (str
 	var result map[string]dbus.Variant
 	err := o.conn.Object(o.owner, nmSettings).CallWithContext(ctx, nmName+".Settings.AddConnection2", 0, nmVariants(s), flags, map[string]dbus.Variant{}).Store(&path, &result)
 	return string(path), err
+}
+func (o *nmDBusOps) AddAndActivate(ctx context.Context, s nmEAPSettings, r nmEAPReceipt) (string, error) {
+	if err := o.ownerCurrent(ctx); err != nil {
+		return "", err
+	}
+	if r.Owner != o.owner || r.UUID == "" || r.ConnectionPath != "" || s["connection"]["uuid"] != r.UUID {
+		return "", errors.New("managed NetworkManager connection identity changed")
+	}
+	d, err := o.device(ctx, dbus.ObjectPath(r.Device.Path))
+	if err != nil || !reflect.DeepEqual(d, r.Device) {
+		return "", errors.New("NetworkManager device changed")
+	}
+	var connection, active dbus.ObjectPath
+	var result map[string]dbus.Variant
+	err = o.conn.Object(o.owner, nmRoot).CallWithContext(ctx, nmName+".AddAndActivateConnection2", 0,
+		nmVariants(s), dbus.ObjectPath(r.Device.Path), dbus.ObjectPath("/"), map[string]dbus.Variant{"persist": dbus.MakeVariant("volatile")}).Store(&connection, &active, &result)
+	if err != nil {
+		return "", err
+	}
+	if !connection.IsValid() || connection == "/" || !active.IsValid() || active == "/" {
+		return "", errors.New("NetworkManager returned no volatile connection")
+	}
+	flags, err := o.get(ctx, connection, nmName+".Settings.Connection", "Flags")
+	flagBits, ok := flags.(uint32)
+	if err != nil || !ok || flagBits&nmConnectionVolatile == 0 {
+		return string(connection), errors.New("NetworkManager did not confirm volatile persistence")
+	}
+	return string(connection), nil
+}
+func (o *nmDBusOps) MakeVolatile(ctx context.Context, r nmEAPReceipt) error {
+	if err := o.ownerCurrent(ctx); err != nil {
+		return err
+	}
+	if r.Owner != o.owner || r.UUID == "" || r.ConnectionPath == "" {
+		return errors.New("managed NetworkManager connection identity changed")
+	}
+	if _, err := o.Inspect(ctx, r); err != nil {
+		return err
+	}
+	if _, owned, err := o.active(ctx, r); err != nil {
+		return err
+	} else if !owned {
+		return errors.New("managed EAP connection is not active")
+	}
+	// Update2 with an empty settings map changes only flags. Volatile profiles are
+	// deleted on deactivation, so this must not run before the connection is active.
+	path := dbus.ObjectPath(r.ConnectionPath)
+	const flags = 0x8 | 0x10 | 0x40 // IN_MEMORY_ONLY | VOLATILE | NO_REAPPLY
+	if err := o.conn.Object(o.owner, path).CallWithContext(ctx, nmName+".Settings.Connection.Update2", 0, nmVariants(nmEAPSettings{}), uint32(flags), map[string]dbus.Variant{}).Err; err != nil {
+		return err
+	}
+	value, err := o.get(ctx, path, nmName+".Settings.Connection", "Flags")
+	flagBits, ok := value.(uint32)
+	if err != nil || !ok || flagBits&nmConnectionVolatile == 0 {
+		return errors.New("NetworkManager did not confirm volatile persistence")
+	}
+	return nil
 }
 func (o *nmDBusOps) resolve(ctx context.Context, r nmEAPReceipt) (dbus.ObjectPath, error) {
 	if err := o.ownerCurrent(ctx); err != nil {

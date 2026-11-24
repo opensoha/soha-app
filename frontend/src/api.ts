@@ -21,9 +21,12 @@ import type {
   IdentityApplication,
   LinkedIdentity,
   LoginOptions,
+  NasSessionObservation,
   NetworkAccessGrantInput,
   NetworkAccessGrantSecret,
+  NetworkBootstrapOption,
   NetworkConnectionOption,
+  NetworkConnectionOptions,
   PortalBootstrap,
   PortalHostedAppAuthorSummary,
   PortalHostedAppCatalog,
@@ -203,11 +206,17 @@ export function registerEndpointDevice(
   ).then(() => undefined);
 }
 
-export async function getNetworkConnectionOptions(
-  deviceId: string,
-): Promise<NetworkConnectionOption[]> {
+export async function getNetworkConnectionOptions(deviceId: string): Promise<NetworkConnectionOption[]> {
+  return (await readNetworkConnectionOptions(deviceId, false)).items;
+}
+
+export function getNetworkAdmissionChoices(deviceId: string): Promise<NetworkConnectionOptions> {
+  return readNetworkConnectionOptions(deviceId, true);
+}
+
+async function readNetworkConnectionOptions(deviceId: string, includeAdmissionDetails: boolean): Promise<NetworkConnectionOptions> {
   const payload = await request(
-    `/network-access/connection-options?deviceId=${encodeURIComponent(deviceId)}`,
+    `/network-access/connection-options?deviceId=${encodeURIComponent(deviceId)}${includeAdmissionDetails ? "&includeBootstrap=true&includeNasSession=true" : ""}`,
   );
   if (
     !isRecord(payload) ||
@@ -216,7 +225,12 @@ export async function getNetworkConnectionOptions(
   ) {
     throw contractError();
   }
-  return payload.items as NetworkConnectionOption[];
+  const items = payload.items as NetworkConnectionOption[];
+  const bootstrapNetworks = includeAdmissionDetails ? payload.bootstrapNetworks ?? [] : [];
+  if (!Array.isArray(bootstrapNetworks) || !bootstrapNetworks.every(isNetworkBootstrapOption)) {
+    throw contractError();
+  }
+  return { items, bootstrapNetworks: bootstrapNetworks as NetworkBootstrapOption[] };
 }
 
 export async function getProfile(): Promise<UserProfile> {
@@ -887,9 +901,50 @@ function isNetworkConnectionOption(
     )
   )
     return false;
+  if (
+    (value.accessNetworkId !== undefined &&
+      (typeof value.accessNetworkId !== "string" || value.accessNetworkId.length === 0)) ||
+    (value.networkName !== undefined &&
+      (typeof value.networkName !== "string" || value.networkName.length === 0)) ||
+    (value.recommendationPriority !== undefined &&
+      (!Number.isInteger(value.recommendationPriority) ||
+        (value.recommendationPriority as number) < 1 ||
+        (value.recommendationPriority as number) > 10_000)) ||
+    (value.autoConnect !== undefined && typeof value.autoConnect !== "boolean") ||
+    (value.nasSession !== undefined && !isNasSessionObservation(value.nasSession)) ||
+    (value.strictOnline !== undefined && (!isRecord(value.strictOnline) ||
+      (value.strictOnline.leaseUntil !== undefined &&
+        (typeof value.strictOnline.leaseUntil !== "string" || !Number.isFinite(Date.parse(value.strictOnline.leaseUntil))))))
+  )
+    return false;
   return value.accessMedium === "wired"
     ? value.ssid === undefined
     : typeof value.ssid === "string" && value.ssid.length > 0;
+}
+
+function isNasSessionObservation(value: unknown): value is NasSessionObservation {
+  if (
+    !isRecord(value) ||
+    !["pending", "observed", "ended", "unknown"].includes(value.state as string)
+  )
+    return false;
+  return (
+    value.lastReceivedAt === undefined ||
+    (typeof value.lastReceivedAt === "string" &&
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value.lastReceivedAt) &&
+      Number.isFinite(Date.parse(value.lastReceivedAt)))
+  );
+}
+
+function isNetworkBootstrapOption(value: unknown): value is NetworkBootstrapOption {
+  return (
+    isRecord(value) &&
+    hasStrings(value, ["accessNetworkId", "siteId", "name", "ssid"]) &&
+    Number.isInteger(value.priority) &&
+    (value.priority as number) >= 1 &&
+    (value.priority as number) <= 10_000 &&
+    typeof value.autoConnect === "boolean"
+  );
 }
 
 function isIdentityApplication(

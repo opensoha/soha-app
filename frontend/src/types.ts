@@ -231,6 +231,11 @@ export interface NetworkAccessGrantSecret {
 
 export type NetworkAccessMedium = 'wifi' | 'wired'
 
+export interface NasSessionObservation {
+  state: 'pending' | 'observed' | 'ended' | 'unknown'
+  lastReceivedAt?: string
+}
+
 export interface NetworkConnectionOption {
   siteId: string
   siteName: string
@@ -239,6 +244,26 @@ export interface NetworkConnectionOption {
   authentication: 'radius_802_1x' // gitleaks:allow -- public protocol enum
   accessProfile: 'onboarding' | 'full' | 'restricted' | 'quarantine' | 'deny'
   policyVersion: number
+  accessNetworkId?: string
+  networkName?: string
+  recommendationPriority?: number
+  autoConnect?: boolean
+  nasSession?: NasSessionObservation
+  strictOnline?: { leaseUntil?: string }
+}
+
+export interface NetworkBootstrapOption {
+  accessNetworkId: string
+  siteId: string
+  name: string
+  ssid: string
+  priority: number
+  autoConnect: boolean
+}
+
+export interface NetworkConnectionOptions {
+  items: NetworkConnectionOption[]
+  bootstrapNetworks: NetworkBootstrapOption[]
 }
 
 export interface AdmissionInput {
@@ -281,8 +306,10 @@ export interface AdmissionStatus {
 }
 
 export interface NetworkLinkStatus {
+  known?: boolean
   connected: boolean
   medium?: NetworkAccessMedium
+  openWifiSsid?: string
   interfaceName?: string
   ipAddress?: string
   gateway?: string
