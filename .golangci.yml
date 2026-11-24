@@ -1,0 +1,21 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: standard
+  enable:
+    - nolintlint
+  settings:
+    nolintlint:
+      require-specific: true
+      require-explanation: true
+
+formatters:
+  enable:
+    - gofmt
+  exclusions:
+    paths:
+      - ^frontend/node_modules/

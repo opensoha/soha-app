@@ -66,8 +66,21 @@ func (manager *Manager) connectManaged(ctx context.Context, input ConnectInput) 
 		return manager.Status(), err
 	}
 	if result.ProfileID != prepared.ProfileID || result.ProfileRevision != prepared.ProfileRevision || result.SelectionPolicyRevision != prepared.SelectionPolicyRevision {
+		var revokeErr error
+		if result.Decision == "allow" && identifierPattern.MatchString(result.SessionID) {
+			if ids := leaseIDs(result.NetworkLeases, result.ResourceLeases); len(ids) > 0 {
+				cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+				revokeErr = manager.control.Revoke(cleanupCtx, LeaseRevoke{
+					SessionID:   result.SessionID,
+					LeaseIDs:    ids,
+					ReasonCode:  "vpn_profile_changed",
+					EffectiveAt: manager.now().UTC(),
+				})
+				cancel()
+			}
+		}
 		manager.degrade("vpn_profile_changed")
-		return manager.Status(), errors.New("VPN profile changed during selection")
+		return manager.Status(), errors.Join(errors.New("VPN profile changed during selection"), revokeErr)
 	}
 	manager.update(func(status *Status) {
 		status.SiteID, status.NetworkSpaceID, status.Mode, status.ResourceIDs = result.SiteID, result.NetworkSpaceID, result.Mode, result.ResourceIDs

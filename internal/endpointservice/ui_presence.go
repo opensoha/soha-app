@@ -66,18 +66,7 @@ func validUIObservation(state string, observed *time.Time, capable bool, now tim
 	return state != "online" || observed != nil && now.Sub(*observed) < uiPresenceTTL
 }
 
-// RunNativeUIPresence is called by the native application host, never a renderer route.
-func RunNativeUIPresence(ctx context.Context) {
-	for ctx.Err() == nil {
-		callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		_, _ = CallIPC(callCtx, "ui_presence", nil)
-		cancel()
-		if !waitFor(ctx, 10*time.Second) {
-			return
-		}
-	}
-}
-
+// RunNativeUIPresenceWithScope is called by the native application host, never a renderer route.
 func RunNativeUIPresenceWithScope(ctx context.Context, current func() NativeUIScope) {
 	for ctx.Err() == nil {
 		callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)

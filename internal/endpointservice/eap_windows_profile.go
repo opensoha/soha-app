@@ -91,7 +91,7 @@ func parseEAPWindowsXML(raw []byte) (eapWindowsXMLNode, error) {
 				root = &node
 			} else {
 				parent := &stack[len(stack)-1]
-				if node.Name.Local != "TrustedRootCA" && slices.ContainsFunc(parent.Children, func(child eapWindowsXMLNode) bool { return child.Name == node.Name }) {
+				if node.Name.Local != "TrustedRootCA" && node.Name.Local != "TrustedRootCAHashes" && slices.ContainsFunc(parent.Children, func(child eapWindowsXMLNode) bool { return child.Name == node.Name }) {
 					return eapWindowsXMLNode{}, errors.New("Windows EAP XML repeats a profile field")
 				}
 				parent.Children = append(parent.Children, node)
@@ -108,7 +108,7 @@ func canonicalEAPWindowsXML(node eapWindowsXMLNode) string {
 }
 
 func normalizeEAPWindowsXML(node eapWindowsXMLNode) eapWindowsXMLNode {
-	if node.Name.Local == "hex" || node.Name.Local == "TrustedRootCA" || node.Name.Local == "UserCert" {
+	if node.Name.Local == "hex" || node.Name.Local == "TrustedRootCA" || node.Name.Local == "TrustedRootCAHashes" || node.Name.Local == "UserCert" {
 		node.Text = strings.ToLower(strings.Map(func(character rune) rune {
 			if unicode.IsSpace(character) {
 				return -1

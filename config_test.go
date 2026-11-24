@@ -1,12 +1,19 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestNormalizeServerURL(t *testing.T) {
@@ -89,6 +96,176 @@ func TestLoadOrCreateDeviceIDPersists(t *testing.T) {
 	}
 	if first == "" || first != second {
 		t.Fatalf("device ids = %q and %q", first, second)
+	}
+	if !strings.HasPrefix(first, "endpoint-") || !validDeviceID(first) {
+		t.Fatalf("invalid device id %q", first)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("device id permissions = %o, want 600", info.Mode().Perm())
+	}
+	assertNoDeviceIDTemps(t, path)
+}
+
+func TestLoadOrCreateDeviceIDPreservesExistingFiles(t *testing.T) {
+	for _, contents := range []string{"endpoint-existing\n", " endpoint-existing \n", "", "\n", "invalid/device-id\n"} {
+		t.Run(fmt.Sprintf("contents=%q", contents), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "device-id")
+			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			id, err := loadOrCreateDeviceID(path)
+			want := strings.TrimSpace(contents)
+			if validDeviceID(want) {
+				if err != nil || id != want {
+					t.Fatalf("existing id = %q, %v; want %q", id, err, want)
+				}
+			} else if err == nil || id != "" {
+				t.Fatalf("corrupt identity accepted: %q, %v", id, err)
+			}
+			after, statErr := os.Stat(path)
+			raw, readErr := os.ReadFile(path)
+			if statErr != nil || readErr != nil || !os.SameFile(before, after) || string(raw) != contents {
+				t.Fatalf("existing identity changed: %q, %v, %v", raw, statErr, readErr)
+			}
+			assertNoDeviceIDTemps(t, path)
+		})
+	}
+}
+
+func TestPublishFileDoesNotReplaceExisting(t *testing.T) {
+	directory := t.TempDir()
+	source, target := filepath.Join(directory, "candidate"), filepath.Join(directory, "device-id")
+	for path, contents := range map[string]string{source: "endpoint-candidate\n", target: "endpoint-winner\n"} {
+		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := publishFile(source, target); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("publish to existing target = %v, want ErrExist", err)
+	}
+	for path, want := range map[string]string{source: "endpoint-candidate\n", target: "endpoint-winner\n"} {
+		raw, err := os.ReadFile(path)
+		if err != nil || string(raw) != want {
+			t.Fatalf("publication changed %s: %q, %v", path, raw, err)
+		}
+	}
+}
+
+func TestLoadOrCreateDeviceIDDanglingSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks requires Windows privileges or Developer Mode")
+	}
+	directory := t.TempDir()
+	path, target := filepath.Join(directory, "device-id"), filepath.Join(directory, "missing")
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, executable, "-test.run=^TestDeviceIDProcessHelper$")
+	command.Env = append(os.Environ(), "SOHA_APP_DEVICE_ID_TEST_PATH="+path, "SOHA_APP_DEVICE_ID_TEST_EXPECT_MISSING=1")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("dangling identity lookup did not return an error promptly: %v, %s", err, output)
+	}
+	if got, err := os.Readlink(path); err != nil || got != target {
+		t.Fatalf("dangling symlink changed: %q, %v", got, err)
+	}
+	if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing symlink target changed: %v", err)
+	}
+	assertNoDeviceIDTemps(t, path)
+}
+
+func TestLoadOrCreateDeviceIDConcurrentProcesses(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "nested", "device-id")
+	const workers = 16
+	commands := make([]*exec.Cmd, workers)
+	outputs := make([]bytes.Buffer, workers)
+	inputs := make([]io.WriteCloser, workers)
+	for index := range workers {
+		command := exec.Command(executable, "-test.run=^TestDeviceIDProcessHelper$")
+		command.Env = append(os.Environ(), "SOHA_APP_DEVICE_ID_TEST_PATH="+path)
+		command.Stdout, command.Stderr = &outputs[index], &outputs[index]
+		input, err := command.StdinPipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_ = input.Close()
+			if command.Process != nil {
+				_ = command.Process.Kill()
+				_ = command.Wait()
+			}
+		})
+		if err := command.Start(); err != nil {
+			t.Fatal(err)
+		}
+		commands[index], inputs[index] = command, input
+	}
+	for _, input := range inputs {
+		_ = input.Close()
+	}
+	winner := ""
+	for index, command := range commands {
+		if err := command.Wait(); err != nil {
+			t.Fatalf("device id process %d failed: %v, %s", index, err, &outputs[index])
+		}
+		id := outputs[index].String()
+		if !validDeviceID(id) || winner != "" && id != winner {
+			t.Fatalf("device ids diverged: winner %q, process %d returned %q", winner, index, id)
+		}
+		winner = id
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil || string(raw) != winner+"\n" {
+		t.Fatalf("stored device id = %q, %v; want %q", raw, err, winner)
+	}
+	assertNoDeviceIDTemps(t, path)
+}
+
+func TestDeviceIDProcessHelper(t *testing.T) {
+	path := os.Getenv("SOHA_APP_DEVICE_ID_TEST_PATH")
+	if path == "" {
+		return
+	}
+	if _, err := io.Copy(io.Discard, os.Stdin); err != nil {
+		t.Fatal(err)
+	}
+	id, err := loadOrCreateDeviceID(path)
+	if os.Getenv("SOHA_APP_DEVICE_ID_TEST_EXPECT_MISSING") == "1" {
+		if !errors.Is(err, os.ErrNotExist) || id != "" {
+			t.Fatalf("missing device identity = %q, %v", id, err)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Print(id)
+	os.Exit(0)
+}
+
+func assertNoDeviceIDTemps(t *testing.T, path string) {
+	t.Helper()
+	temps, err := filepath.Glob(filepath.Join(filepath.Dir(path), ".device-id-*"))
+	if err != nil || len(temps) != 0 {
+		t.Fatalf("device id temporary files remain: %v, %v", temps, err)
 	}
 }
 
