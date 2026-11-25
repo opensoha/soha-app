@@ -39,6 +39,9 @@ import type {
   PersonalEnvironment,
   WorkbenchImageAttachment,
 } from "@opensoha/contracts/gen/ts/sohaapi";
+import { meshApi } from "./assistant-mesh-api";
+import { previewMeshWorkspace } from "@/native/host";
+import { AssistantMeshPanel } from "./assistant-mesh-panel";
 import {
   prepareAssistantAvatar,
   prepareChatImage,
@@ -170,7 +173,7 @@ export function AssistantPage({ ordinary = false }: { ordinary?: boolean }) {
 }
 
 function AssistantWorkspace({ ordinary }: { ordinary: boolean }) {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const client = useQueryClient();
   const bootstrap = useAppStore((state) => state.bootstrap);
   const serverUrl = useAppStore((state) => state.host?.serverUrl);
@@ -193,6 +196,17 @@ function AssistantWorkspace({ ordinary }: { ordinary: boolean }) {
   const [deletionName, setDeletionName] = useState("");
   const [deletionReconciled, setDeletionReconciled] = useState("");
   const [topics, setTopics] = useState(false);
+  const [meshOpen, setMeshOpen] = useState(false);
+  const [meshPending, setMeshPending] = useState(0);
+  const [meshEntry, setMeshEntry] = useState<{
+    key: number;
+    tab: "find" | "inbox" | "assets" | "profile" | "sent";
+    query?: string;
+    question?: string;
+    sessionId?: string;
+    workspaceSummary?: string;
+    source?: { messageIds?: string[]; runId?: string };
+  }>();
   const [sideOpen, setSideOpen] = useState(false);
   const [professionalOpen, setProfessionalOpen] = useState(false);
   const [streamingRuntime, setStreamingRuntime] = useState<
@@ -243,6 +257,15 @@ function AssistantWorkspace({ ordinary }: { ordinary: boolean }) {
     refetchInterval: 5000,
   });
   const canUseAgent = !ordinary && canChat && access.data?.status === "approved";
+  const meshProfile = useQuery({
+    queryKey: ["assistant-mesh", owner, "profile"],
+    queryFn: meshApi.profile,
+    enabled: canUseAgent && access.isSuccess && Boolean(owner),
+    retry: false,
+    refetchInterval: 10_000,
+  });
+  const meshEnabled = canUseAgent && access.isSuccess && meshProfile.isSuccess;
+
   const enabled = ordinary ? canChat : canUseAgent;
   const main = useQuery({ queryKey: ["ordinary-main", owner], queryFn: assistantApi.chatMain, enabled: ordinary && canChat, retry: false });
   const requestAccess = useMutation({
@@ -685,6 +708,51 @@ function AssistantWorkspace({ ordinary }: { ordinary: boolean }) {
       setPreparingImage(false);
     }
   }
+  function openMesh(
+    tab: NonNullable<typeof meshEntry>["tab"],
+    selection: Omit<NonNullable<typeof meshEntry>, "tab" | "key"> = {},
+  ) {
+    setMeshEntry((entry) => ({ tab, key: (entry?.key ?? 0) + 1, ...selection }));
+    setMeshOpen(true);
+  }
+
+  function submitComposer() {
+    const mention = meshEnabled
+      ? drafts[id]?.trim().match(/^@([^\s@]{0,120})(?:\s+([\s\S]*))?$/)
+      : undefined;
+    if (mention) {
+      openMesh("find", { query: mention[1], question: mention[2]?.trim() });
+      return;
+    }
+    void send();
+  }
+
+  useEffect(() => {
+    if (!meshEnabled || params.get("mesh") !== "inbox") return;
+    setMeshEntry((entry) => ({ tab: "inbox", key: (entry?.key ?? 0) + 1 }));
+    setMeshOpen(true);
+    const next = new URLSearchParams(params);
+    next.delete("mesh");
+    setParams(next, { replace: true });
+  }, [meshEnabled, params, setParams]);
+
+  const workspacePreview = useMutation({
+    mutationFn: previewMeshWorkspace,
+    retry: false,
+    onSuccess: (summary) => {
+      if (summary.status !== "preview") return;
+      const text = `${summary.truncated ? "已扫描部分条目：" : "所选工作区："}${summary.files} 个文件、${summary.directories} 个目录。`;
+      modal.confirm({
+        title: "工作区摘要",
+        content: text,
+        okText: "带入工作进度",
+        cancelText: "关闭",
+        onOk: () => openMesh("assets", { workspaceSummary: text }),
+      });
+    },
+    onError: () => void message.error("无法读取所选工作区摘要。"),
+  });
+
   async function send(
     content = drafts[id]?.trim(),
     taskIntent: WorkbenchTaskIntent = { capabilities: [] },
@@ -989,6 +1057,20 @@ function AssistantWorkspace({ ordinary }: { ordinary: boolean }) {
           </Typography.Text>
         </div>
         <Tag>{ordinary ? "Chat" : "个人助手"}</Tag>
+        {meshEnabled ? (
+          <Button onClick={() => workspacePreview.mutate()} loading={workspacePreview.isPending}>
+            预览工作区摘要
+          </Button>
+        ) : null}
+        {meshEnabled ? (
+          <Button
+            aria-label="助手互联与待办"
+            onClick={() => openMesh(meshPending ? "inbox" : "find")}
+          >
+            助手互联{meshPending ? ` · ${meshPending}` : ""}
+          </Button>
+        ) : null}
+
       </header>
       <Segmented
         className="app-assistant-sections"
@@ -1117,6 +1199,18 @@ function AssistantWorkspace({ ordinary }: { ordinary: boolean }) {
                           }
                         />
                         <MessageApprovals item={item} readOnly={tasks.data?.some(run => run.id === item.metadata?.agentRunId && isReadOnlyRun(run))} />
+                        {meshEnabled &&
+                        item.sessionId === id &&
+                        item.content.trim() &&
+                        (item.role === "user" || item.role === "assistant") ? (
+                          <Button
+                            size="small"
+                            type="text"
+                            onClick={() => openMesh("assets", { sessionId: id, source: { messageIds: [item.id] } })}
+                          >
+                            提炼为协作资产
+                          </Button>
+                        ) : null}
                         {bootstrap?.permissionSnapshot.permissionKeys.includes(
                           "ai.memory.update",
                         ) &&
@@ -1418,10 +1512,11 @@ function AssistantWorkspace({ ordinary }: { ordinary: boolean }) {
                       if (
                         event.key === "Enter" &&
                         !event.shiftKey &&
-                        !event.nativeEvent.isComposing
+                        !event.nativeEvent.isComposing &&
+                        event.keyCode !== 229
                       ) {
                         event.preventDefault();
-                        void send();
+                        submitComposer();
                       }
                     }}
                   />
@@ -1454,7 +1549,7 @@ function AssistantWorkspace({ ordinary }: { ordinary: boolean }) {
                       aria-label="发送"
                       icon={<ArrowUpOutlined />}
                       disabled={!id || !drafts[id]?.trim() || composerLocked}
-                      onClick={() => void send()}
+                      onClick={submitComposer}
                     ></Button>
                   )}
                 </div>
@@ -1497,6 +1592,11 @@ function AssistantWorkspace({ ordinary }: { ordinary: boolean }) {
                     {run.sessionId ? (
                       <Button onClick={() => openChat(run.sessionId!)}>
                         打开对话
+                      </Button>
+                    ) : null}
+                    {meshEnabled && run.sessionId && run.status === "completed" ? (
+                      <Button onClick={() => openMesh("assets", { sessionId: run.sessionId, source: { runId: run.id } })}>
+                        提炼运行成果
                       </Button>
                     ) : null}
                     {run.sessionId && !isReadOnlyRun(run) && isActiveRun(run) ? (
@@ -1897,6 +1997,23 @@ function AssistantWorkspace({ ordinary }: { ordinary: boolean }) {
           </Button>
         ))}
       </nav>
+      {meshEnabled && owner && bootstrap?.currentUser.userId ? (
+        <AssistantMeshPanel
+          owner={owner}
+          userId={bootstrap.currentUser.userId}
+          teams={bootstrap.currentUser.teams ?? []}
+          projects={bootstrap.currentUser.projects ?? []}
+          sessionId={meshEntry?.sessionId || id || undefined}
+          open={meshOpen}
+          onClose={() => setMeshOpen(false)}
+          initial={meshEntry}
+          onPendingCount={setMeshPending}
+          onRunStarted={() => {
+            void tasks.refetch();
+            void messages.refetch();
+          }}
+        />
+      ) : null}
       <Drawer
         title="对话与旁聊"
         placement="left"

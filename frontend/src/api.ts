@@ -43,6 +43,10 @@ import {
   startDesktopAuth,
   wailsRequestBodyHeader,
   savePersonalDataExport,
+  requestMeshNativeAction,
+  type MeshNativeAction,
+  type MeshNativeInput,
+  type MeshNativeReceipt,
 } from "@/native/host";
 
 export class ApiError extends Error {
@@ -681,6 +685,20 @@ function isWailsAssetTransport(): boolean {
     globalThis.location.protocol === "wails:" ||
     globalThis.location.hostname === "wails.localhost"
   );
+}
+
+export async function meshNativeDelegation(
+  action: MeshNativeAction,
+  input: MeshNativeInput,
+): Promise<MeshNativeReceipt> {
+  if (!isWailsAssetTransport()) return { state: "unavailable" };
+  const generation = sessionGeneration;
+  if (!accessToken) await refreshSession();
+  assertCurrentSession(generation);
+  if (!accessToken) throw new ApiError(401, "unauthorized", "当前登录已失效");
+  const result = await requestMeshNativeAction(action, input, accessToken);
+  assertCurrentSession(generation);
+  return result;
 }
 
 export async function saveNativePersonalData(
