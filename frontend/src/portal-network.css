@@ -111,6 +111,218 @@
   font-size: 13px;
 }
 
+.portal-toolbar-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.portal-toolbar-controls .ant-segmented {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.portal-colleague-works {
+  display: grid;
+  gap: 20px;
+}
+
+.portal-subsection-title {
+  margin: 0 0 10px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.portal-author-banner {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-muted);
+}
+
+.portal-author-banner > .ant-btn {
+  padding-inline: 0;
+  height: auto;
+}
+
+.portal-author-banner-profile {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  width: 100%;
+}
+
+.portal-author-banner-meta,
+.portal-author-card-body {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+
+.portal-author-name-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.portal-author-name-row .ant-tag,
+.portal-hosted-author .ant-tag,
+.portal-hosted-header .ant-tag {
+  margin: 0;
+}
+
+.portal-author-count {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.portal-author-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr));
+  gap: 10px;
+}
+
+.portal-author-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 12px;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.portal-author-card:hover,
+.portal-hosted-card:hover,
+.portal-hosted-card:focus-within {
+  border-color: color-mix(in srgb, var(--primary) 45%, var(--border));
+}
+
+.portal-grid.portal-hosted-grid {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr));
+  gap: 14px;
+}
+
+.portal-grid.portal-hosted-grid.compact {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 224px), 1fr));
+  gap: 10px;
+}
+
+.portal-hosted-card {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  gap: 10px;
+  padding: 14px 16px;
+  overflow-wrap: anywhere;
+}
+
+.portal-hosted-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.portal-hosted-header strong {
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+.portal-hosted-description {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.portal-hosted-author {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.portal-hosted-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.portal-hosted-updated {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.portal-colleague-empty-help.ant-typography {
+  max-width: 440px;
+  margin: 8px auto 0;
+  font-size: 12px;
+}
+
+@media (max-width: 620px) {
+  .portal-catalog-toolbar .portal-toolbar-main > .ant-input-affix-wrapper {
+    max-width: 100%;
+    flex-basis: 100%;
+  }
+
+  .portal-toolbar-controls {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .portal-my-apps-btn.ant-btn,
+  .portal-hosted-footer .ant-btn,
+  .portal-categories .ant-btn {
+    min-height: 36px;
+  }
+}
+
+@media (max-width: 420px) {
+  .portal-toolbar-controls .ant-segmented {
+    width: 100%;
+  }
+
+  .portal-toolbar-controls .ant-segmented-item-icon {
+    display: none;
+  }
+
+  .portal-my-apps-btn.ant-btn,
+  .portal-hosted-footer .ant-btn {
+    width: 100%;
+  }
+
+  .portal-hosted-card {
+    padding: 12px;
+  }
+}
+
 .workspace-scroll:has(> .page > .network-hub) {
   background: var(--surface);
 }

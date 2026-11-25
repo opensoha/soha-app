@@ -37,6 +37,7 @@ import {
   requestResponse,
   saveNativePersonalData,
 } from "@/api";
+import type { WorkspaceHostedAppSource } from "@/types";
 
 type PersonalEnvironmentDataExportRequest = Pick<
   PersonalEnvironmentDataDeletionRequest,
@@ -108,6 +109,48 @@ export const isTerminalRun = (run: WorkbenchAgentRun) =>
 export const isReadOnlyRun = (run: WorkbenchAgentRun) => run.providerKind === "native" || run.output?.executionReadOnly === true || run.output?.stopReason === "legacy_reconciliation_required";
 
 export const isDurableRun = (run: WorkbenchAgentRun) => run.providerKind === "native" || (run.providerKind === "dsh" && run.executionOwner === "external");
+
+const nonPublishableArtifactKinds = new Set([
+  "image",
+  "audio",
+  "video",
+  "binary",
+]);
+
+function resolvePersonalArtifactPublishId(entry: PersonalArtifact): string {
+  const snapshotId =
+    typeof entry.artifact?.dataSourceSnapshot?.artifactId === "string"
+      ? entry.artifact.dataSourceSnapshot.artifactId.trim()
+      : "";
+  return (
+    snapshotId || entry.id?.trim() || entry.artifact?.runId?.trim() || ""
+  );
+}
+
+export function isPublishablePersonalArtifact(
+  entry: PersonalArtifact,
+): boolean {
+  const kind = entry.artifact?.kind?.trim().toLowerCase() ?? "";
+  if (!kind || nonPublishableArtifactKinds.has(kind)) return false;
+  if (!resolvePersonalArtifactPublishId(entry)) return false;
+  const content = entry.artifact?.dataSourceSnapshot?.content;
+  return typeof content === "string" && content.trim().length > 0;
+}
+
+export function buildArtifactHostingSource(
+  entry: PersonalArtifact,
+): WorkspaceHostedAppSource {
+  const artifactId = resolvePersonalArtifactPublishId(entry);
+  if (!artifactId) {
+    throw new ApiError(400, "invalid_argument", "成果缺少有效标识");
+  }
+  const sessionId = entry.sessionId?.trim();
+  return {
+    kind: "conversation_artifact",
+    ...(sessionId ? { sessionId } : {}),
+    artifactId,
+  };
+}
 
 export const assistantApi = {
   runtimeProfiles: () => assistantList<AssistantRuntimeProfile>("/copilot/workbench/runtime-profiles"),

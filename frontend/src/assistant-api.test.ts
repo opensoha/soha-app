@@ -4,6 +4,8 @@ import { webcrypto } from "node:crypto";
 import { setAccessToken } from "@/api";
 import {
   assistantApi,
+  buildArtifactHostingSource,
+  isPublishablePersonalArtifact,
   parseAssistantFrames,
   streamAssistant,
 } from "@/assistant-api";
@@ -532,4 +534,67 @@ it("preserves the server's SSE error code", async () => {
   ));
   await expect(streamAssistant("main", { content: "hello" }, new AbortController().signal, vi.fn()))
     .rejects.toMatchObject({ code: "request_not_accepted", message: "未接收" });
+});
+
+it("resolves conversation artifact hosting sources with snapshot/entry id priority and requires static content", () => {
+  const reportEntry = {
+    id: "message:side:0",
+    sessionId: "side",
+    createdAt: "2026-11-21T00:00:00Z",
+    artifact: {
+      kind: "report",
+      runId: "report-1",
+      title: "季度经营看板",
+      summary: "汇总经营指标",
+      dataSourceSnapshot: { content: "<h1>Q4</h1>" },
+    },
+  };
+  expect(isPublishablePersonalArtifact(reportEntry)).toBe(true);
+  expect(buildArtifactHostingSource(reportEntry)).toEqual({
+    kind: "conversation_artifact",
+    sessionId: "side",
+    artifactId: "message:side:0",
+  });
+
+  const snapshotIdEntry = {
+    ...reportEntry,
+    artifact: {
+      ...reportEntry.artifact,
+      dataSourceSnapshot: { artifactId: "custom-art-99", content: "<h1>Q4</h1>" },
+    },
+  };
+  expect(buildArtifactHostingSource(snapshotIdEntry)).toEqual({
+    kind: "conversation_artifact",
+    sessionId: "side",
+    artifactId: "custom-art-99",
+  });
+
+  const runFallbackEntry = {
+    ...reportEntry,
+    id: "   ",
+  };
+  expect(buildArtifactHostingSource(runFallbackEntry)).toEqual({
+    kind: "conversation_artifact",
+    sessionId: "side",
+    artifactId: "report-1",
+  });
+
+  // Summary-only inspection/root-cause cards without static snapshot content must not be publishable
+  expect(
+    isPublishablePersonalArtifact({
+      ...reportEntry,
+      artifact: {
+        kind: "report",
+        runId: "summary-only-1",
+        summary: "仅有文本摘要无静态内容",
+      },
+    }),
+  ).toBe(false);
+
+  expect(
+    isPublishablePersonalArtifact({
+      ...reportEntry,
+      artifact: { kind: "image", runId: "img-1", summary: "png" },
+    }),
+  ).toBe(false);
 });

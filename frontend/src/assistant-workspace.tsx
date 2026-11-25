@@ -3,9 +3,18 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { Alert, App, Button, Drawer, Input, Space, Tabs, Typography } from "antd";
 import type { PersonalEnvironment, PersonalGuestRuntime, PersonalGuestRuntimeInput } from "@opensoha/contracts/gen/ts/sohaapi";
 import { assistantApi } from "@/assistant-api";
+import {
+  normalizeWorkspacePublishPath,
+  WorkspaceAppPublishModal,
+  type WorkspaceAppPublishDraft,
+} from "@/assistant-app-publish";
+import { useAppStore } from "@/store";
 
 export function AssistantWorkspace({ owner, environment, onRefresh }: { owner: string; environment: PersonalEnvironment; onRefresh: () => void }) {
   const { message } = App.useApp();
+  const canPublishHostedApp = useAppStore((state) =>
+    Boolean(state.bootstrap?.permissionSnapshot.permissionKeys?.includes("apphosting.apps.publish")),
+  );
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState("execute");
   const [argv, setArgv] = useState('["/usr/bin/printf","Hello Soha\\n"]');
@@ -17,6 +26,8 @@ export function AssistantWorkspace({ owner, environment, onRefresh }: { owner: s
   const [url, setURL] = useState("https://example.com/");
   const [selector, setSelector] = useState("");
   const [text, setText] = useState("");
+  const [publishPath, setPublishPath] = useState(".");
+  const [publishDraft, setPublishDraft] = useState<WorkspaceAppPublishDraft | null>(null);
   const [toolsID, setToolsID] = useState("");
   const [frame, setFrame] = useState<PersonalGuestRuntime["browser"]>();
   const loadedFile = useRef("");
@@ -90,9 +101,50 @@ export function AssistantWorkspace({ owner, environment, onRefresh }: { owner: s
             <Input aria-label="浏览器元素选择器" value={selector} maxLength={2048} onChange={e => setSelector(e.target.value)} /><Input.Password aria-label="浏览器输入内容" autoComplete="off" value={text} maxLength={4096} onChange={e => setText(e.target.value)} /><Space wrap><Button disabled={!controlled || busy || !selector} onClick={() => browser("click", {selector})}>点击元素</Button><Button disabled={!controlled || busy || !selector} onClick={() => {browser("type", {selector, text});setText("");}}>输入到元素</Button></Space>
             {frame?.jpegBase64 && <><Typography.Text>{frame.title || frame.url} · 800 × 600</Typography.Text><button type="button" disabled={!canPoint || busy} aria-label="在浏览器画面中点击" style={{padding: 0, border: 0, background: "transparent", width: "100%"}} onClick={e => {if (!e.detail) {void message.info("键盘操作请使用元素选择器和点击按钮。");return;} const r = e.currentTarget.getBoundingClientRect();browser("pointer", {x: Math.min(799, Math.floor((e.clientX-r.left)*800/r.width)), y: Math.min(599, Math.floor((e.clientY-r.top)*600/r.height))});}}><img alt="个人浏览器实际画面" src={`data:image/jpeg;base64,${frame.jpegBase64}`} style={{width: "100%", display: "block"}} /></button>{!canPoint && <Typography.Text type="secondary">保留的观察画面；刷新当前控权后才能操作。</Typography.Text>}</>}
           </Space>},
+          ...(canPublishHostedApp ? [{key: "publish", label: "发布应用", children: <Space orientation="vertical" style={{width: "100%"}}>
+            <Typography.Text>直接从服务端个人工作空间打包静态产物（如 <code>.</code>、<code>dist</code> 或子项目目录），产物字节不经过聊天消息。</Typography.Text>
+            <Input
+              aria-label="工作空间相对路径"
+              maxLength={512}
+              onChange={e => setPublishPath(e.target.value)}
+              placeholder="."
+              value={publishPath}
+            />
+            <Button
+              disabled={query.isError || busy || !environment.dataInitialized || !["ready", "sleeping"].includes(environment.state)}
+              onClick={() => {
+                const normalized = normalizeWorkspacePublishPath(publishPath);
+                if (!normalized) {
+                  void message.error("请输入有效的工作空间相对路径（不能包含 ..）。");
+                  return;
+                }
+                const leaf = normalized === "." ? "" : normalized.split("/").at(-1) || "";
+                const defaultName = leaf && !["dist", "build", "public", "out"].includes(leaf) ? leaf : "";
+                setPublishDraft({
+                  ...(defaultName ? { defaultName } : {}),
+                  source: {
+                    kind: "personal_environment",
+                    sourcePath: normalized,
+                    assistantId: environment.assistantId,
+                    environmentVersion: environment.version,
+                  },
+                });
+              }}
+              type="primary"
+            >
+              发布为托管应用
+            </Button>
+          </Space>}] : []),
         ]} />
         {latest && <div role="status"><Typography.Text>{({queued: "等待执行", running: "执行中", succeeded: "已完成", failed: "执行失败", canceled: "已取消", unknown: "结果未确认"})[latest.status]}</Typography.Text><Typography.Paragraph copyable>{latest.id}</Typography.Paragraph>{latest.exitCode !== undefined && <p>退出码：{latest.exitCode}</p>}{latest.output && <pre style={{whiteSpace: "pre-wrap", overflowWrap: "anywhere"}}>{latest.output}</pre>}</div>}
       </Space>
     </Drawer>
+    {canPublishHostedApp ? (
+      <WorkspaceAppPublishModal
+        draft={publishDraft}
+        onClose={() => setPublishDraft(null)}
+        open={Boolean(publishDraft)}
+      />
+    ) : null}
   </>;
 }

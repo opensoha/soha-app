@@ -483,3 +483,172 @@ export interface LocalProxyInterceptionStatus {
   capabilities: { systemProxy: boolean; tun: boolean; reasonCode?: string };
   impact: { systemProxyScope?: string; networkService?: string; ipv4: boolean; ipv6: boolean; dns: boolean };
 }
+
+export type HostedAppKind = 'static' | 'dynamic'
+export type HostedAppStatus = 'draft' | 'online' | 'offline' | 'suspended_by_admin'
+export type HostedAppRevisionStatus = 'uploading' | 'validating' | 'ready' | 'failed' | 'evicted'
+export type HostedAppVisibilityMode = 'private' | 'selected' | 'organization'
+export type HostedAppVisibilityApprovalStatus = 'pending' | 'approved' | 'rejected' | 'withdrawn' | 'invalidated'
+
+export interface HostedAppVisibilityScope {
+  mode: HostedAppVisibilityMode
+  userIds?: string[]
+  teamIds?: string[]
+}
+
+export interface HostedAppVisibilityInput {
+  mode: HostedAppVisibilityMode
+  userIds?: string[]
+  teamIds?: string[]
+}
+
+export interface HostedAppUserSummary {
+  userId: string
+  displayName: string
+  avatarUrl?: string
+  teamNames: string[]
+}
+
+export interface HostedAppVisibilityApproval {
+  id: string
+  appId: string
+  appName: string
+  appDnsLabel: string
+  requesterUserId: string
+  requesterProfile?: HostedAppUserSummary
+  currentVisibility: HostedAppVisibilityScope
+  requestedVisibility: HostedAppVisibilityScope
+  baseRouteGeneration: number
+  policyVersion: number
+  status: HostedAppVisibilityApprovalStatus
+  reason?: string
+  reviewerUserId?: string
+  reviewComment?: string
+  invalidationReason?: string
+  createdAt: string
+  updatedAt: string
+  decidedAt?: string
+}
+
+export interface PortalHostedAppItem {
+  id: string
+  name: string
+  description: string
+  kind: HostedAppKind
+  dnsLabel: string
+  host: string
+  url: string
+  author: HostedAppUserSummary
+  updatedAt: string
+}
+
+export interface PortalHostedAppAuthorSummary {
+  userId: string
+  displayName: string
+  avatarUrl?: string
+  teamNames: string[]
+  visibleAppCount: number
+}
+
+export interface PortalHostedAppCatalog {
+  items: PortalHostedAppItem[]
+  authors: PortalHostedAppAuthorSummary[]
+  selectedAuthor?: PortalHostedAppAuthorSummary
+  myAppsCount: number
+  total: number
+}
+
+export interface AppHostingAudienceUser {
+  id: string
+  username: string
+  displayName: string
+  department?: string
+}
+
+export interface AppHostingAudienceTeam {
+  id: string
+  name: string
+  slug?: string
+}
+
+export interface AppHostingAudienceCandidates {
+  users: AppHostingAudienceUser[]
+  teams: AppHostingAudienceTeam[]
+}
+
+export interface HostedApp {
+  id: string
+  name: string
+  description?: string
+  kind: HostedAppKind
+  dnsLabel: string
+  host: string
+  url: string
+  spaFallback: boolean
+  ownerUserId: string
+  ownerProfile?: HostedAppUserSummary
+  maintainerUserIds: string[]
+  maintainers?: HostedAppUserSummary[]
+  visibility: HostedAppVisibilityScope
+  pendingVisibilityApproval?: HostedAppVisibilityApproval
+  status: HostedAppStatus
+  suspendedReason?: string
+  activeRevisionId?: string
+  activeRevisionNumber?: number
+  totalBytes?: number
+  routeGeneration: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface HostedAppRevision {
+  id: string
+  appId: string
+  revisionNumber: number
+  description?: string
+  kind: HostedAppKind
+  status: HostedAppRevisionStatus
+  bundleSha256: string
+  fileCount: number
+  totalBytes: number
+  spaFallback: boolean
+  storageIntegrationId?: string
+  storagePrefix?: string
+  failureStage?: string
+  failureReason?: string
+  idempotencyKey?: string
+  createdBy: string
+  createdAt: string
+  activatedAt?: string
+}
+
+export type WorkspaceHostedAppSourceKind = 'personal_environment' | 'conversation_artifact'
+
+export interface WorkspaceHostedAppSource {
+  kind: WorkspaceHostedAppSourceKind
+  sourcePath?: string
+  assistantId?: string
+  environmentVersion?: number
+  sessionId?: string
+  artifactId?: string
+  entryFileName?: string
+}
+
+export interface WorkspaceHostedAppDeploymentRequest {
+  appId?: string
+  kind?: HostedAppKind
+  name?: string
+  slug?: string
+  description?: string
+  spaFallback?: boolean
+  visibility?: HostedAppVisibilityInput
+  visibilityReason?: string
+  source: WorkspaceHostedAppSource
+  idempotencyKey: string
+}
+
+export interface WorkspaceHostedAppDeploymentResult {
+  app: HostedApp
+  revision: HostedAppRevision
+  created: boolean
+}
